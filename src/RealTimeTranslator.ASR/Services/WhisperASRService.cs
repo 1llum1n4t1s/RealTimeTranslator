@@ -37,6 +37,13 @@ public class WhisperASRService : IASRService
     {
         await Task.Run(() =>
         {
+            // GPUランタイムの初期化条件:
+            // - AMD Vulkan: Whisper.net.Runtime.Vulkan が必要。Vulkan対応ドライバと ggml 系モデルが必須。
+            // - NVIDIA CUDA: Whisper.net.Runtime.Cublas が必要。CUDA対応ドライバが必須。
+            // - Auto/CPU: 明示的なGPU設定は行わず、Whisper.netに委譲。
+            ConfigureGpuRuntime();
+            ValidateModelCompatibility();
+
             // 低遅延モデル（small/medium）の初期化
             if (File.Exists(_settings.FastModelPath))
             {
@@ -162,6 +169,56 @@ public class WhisperASRService : IASRService
         float avgConfidence = segmentCount > 0 ? totalConfidence / segmentCount : 0;
 
         return (text, avgConfidence);
+    }
+
+    private void ConfigureGpuRuntime()
+    {
+        if (!_settings.GPU.Enabled)
+        {
+            return;
+        }
+
+        switch (_settings.GPU.Type)
+        {
+            case GPUType.AMD_Vulkan:
+                // Vulkan実行時はデバイス番号を環境変数で指定（Whisper.net.Runtime.Vulkan/ggml-vulkan）
+                Environment.SetEnvironmentVariable("GGML_VK_DEVICE", _settings.GPU.DeviceId.ToString());
+                break;
+            case GPUType.NVIDIA_CUDA:
+                // CUDA実行時はCUDAデバイスを指定（Whisper.net.Runtime.Cublas）
+                Environment.SetEnvironmentVariable("CUDA_VISIBLE_DEVICES", _settings.GPU.DeviceId.ToString());
+                break;
+            case GPUType.CPU:
+            case GPUType.Auto:
+            default:
+                break;
+        }
+    }
+
+    private void ValidateModelCompatibility()
+    {
+        if (!_settings.GPU.Enabled || _settings.GPU.Type != GPUType.AMD_Vulkan)
+        {
+            return;
+        }
+
+        EnsureGgmlModel(_settings.FastModelPath);
+        EnsureGgmlModel(_settings.AccurateModelPath);
+    }
+
+    private static void EnsureGgmlModel(string modelPath)
+    {
+        if (string.IsNullOrWhiteSpace(modelPath) || !File.Exists(modelPath))
+        {
+            return;
+        }
+
+        var fileName = Path.GetFileName(modelPath);
+        if (fileName.IndexOf("ggml", StringComparison.OrdinalIgnoreCase) < 0)
+        {
+            throw new InvalidOperationException(
+                $"AMD Vulkanランタイムはggml形式モデルのみ対応しています。ggml-*.bin を指定してください: {modelPath}");
+        }
     }
 
     /// <summary>
