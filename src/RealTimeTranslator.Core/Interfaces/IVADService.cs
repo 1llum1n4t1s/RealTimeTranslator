@@ -1,5 +1,7 @@
 namespace RealTimeTranslator.Core.Interfaces;
 
+using RealTimeTranslator.Core.Models;
+
 /// <summary>
 /// VAD（Voice Activity Detection）サービスのインターフェース
 /// 無音区間を検出し、発話単位で音声を分割
@@ -27,6 +29,12 @@ public interface IVADService
     /// 最大発話長（秒）
     /// </summary>
     float MaxSpeechDuration { get; set; }
+
+    /// <summary>
+    /// 設定を再適用
+    /// </summary>
+    /// <param name="settings">音声キャプチャ設定</param>
+    void ApplySettings(AudioCaptureSettings settings);
 }
 
 /// <summary>
