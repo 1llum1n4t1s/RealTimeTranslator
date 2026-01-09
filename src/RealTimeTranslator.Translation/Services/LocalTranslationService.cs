@@ -19,7 +19,6 @@ public class LocalTranslationService : ITranslationService
     private bool _isModelLoaded = false;
     private object? _translationModel;
     private Func<string, string>? _translateFunc;
-    private Process? _translationProcess;
     private readonly SemaphoreSlim _translateLock = new(1, 1);
 
     public bool IsModelLoaded => _isModelLoaded;
@@ -41,16 +40,15 @@ public class LocalTranslationService : ITranslationService
             {
                 Console.WriteLine($"Translation model not found at: {_settings.ModelPath}");
                 Console.WriteLine("Running in fallback mode (no actual translation)");
-                _isModelLoaded = true;
+                _isModelLoaded = false;
                 return;
             }
 
-            if (!TryLoadArgosModel(modelPath, _settings.SourceLanguage, _settings.TargetLanguage))
+            _isModelLoaded = TryLoadArgosModel(modelPath, _settings.SourceLanguage, _settings.TargetLanguage);
+            if (!_isModelLoaded)
             {
                 Console.WriteLine("Argos Translate model load failed. Running in fallback mode.");
             }
-
-            _isModelLoaded = true;
         });
     }
 
@@ -140,8 +138,16 @@ public class LocalTranslationService : ITranslationService
 
         return await Task.Run(() =>
         {
-            var translated = _translateFunc(text);
-            return string.IsNullOrWhiteSpace(translated) ? $"[{targetLanguage}] {text}" : translated;
+            try
+            {
+                var translated = _translateFunc(text);
+                return string.IsNullOrWhiteSpace(translated) ? $"[{targetLanguage}] {text}" : translated;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Argos Translate translation error: {ex.Message}");
+                return $"[{targetLanguage}] {text}";
+            }
         });
     }
 
@@ -266,8 +272,6 @@ public class LocalTranslationService : ITranslationService
 
     public void Dispose()
     {
-        _translationProcess?.Kill();
-        _translationProcess?.Dispose();
         _translateLock.Dispose();
     }
 }
