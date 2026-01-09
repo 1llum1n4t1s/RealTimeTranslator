@@ -11,4 +11,8 @@
     <ProjectReference Include="..\RealTimeTranslator.Core\RealTimeTranslator.Core.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <PackageReference Include="ArgosTranslate.NET" Version="1.0.0" />
+  </ItemGroup>
+
 </Project>

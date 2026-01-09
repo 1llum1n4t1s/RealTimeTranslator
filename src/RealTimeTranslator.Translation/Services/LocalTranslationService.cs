@@ -8,7 +8,7 @@ namespace RealTimeTranslator.Translation.Services;
 
 /// <summary>
 /// ローカル翻訳サービス
-/// CTranslate2またはArgos Translateを使用した翻訳
+/// Argos Translate(.NETバインディング)を使用した翻訳
 /// </summary>
 public class LocalTranslationService : ITranslationService
 {
@@ -17,6 +17,8 @@ public class LocalTranslationService : ITranslationService
     private Dictionary<string, string> _preTranslationDict = new();
     private Dictionary<string, string> _postTranslationDict = new();
     private bool _isModelLoaded = false;
+    private object? _translationModel;
+    private Func<string, string>? _translateFunc;
     private Process? _translationProcess;
     private readonly SemaphoreSlim _translateLock = new(1, 1);
 
@@ -32,23 +34,23 @@ public class LocalTranslationService : ITranslationService
     /// </summary>
     public async Task InitializeAsync()
     {
-        // CTranslate2またはArgos Translateの初期化
-        // 実際の実装では、Pythonプロセスを起動するか、
-        // .NETバインディングを使用
         await Task.Run(() =>
         {
-            // モデルの存在確認
-            if (Directory.Exists(_settings.ModelPath))
+            var modelPath = ResolveModelPath();
+            if (modelPath == null)
             {
-                _isModelLoaded = true;
-            }
-            else
-            {
-                // モデルが存在しない場合は、ダミーモードで動作
                 Console.WriteLine($"Translation model not found at: {_settings.ModelPath}");
                 Console.WriteLine("Running in fallback mode (no actual translation)");
-                _isModelLoaded = true; // フォールバックモードとして動作
+                _isModelLoaded = true;
+                return;
             }
+
+            if (!TryLoadArgosModel(modelPath, _settings.SourceLanguage, _settings.TargetLanguage))
+            {
+                Console.WriteLine("Argos Translate model load failed. Running in fallback mode.");
+            }
+
+            _isModelLoaded = true;
         });
     }
 
@@ -131,20 +133,87 @@ public class LocalTranslationService : ITranslationService
 
     private async Task<string> PerformTranslationAsync(string text, string sourceLanguage, string targetLanguage)
     {
-        // 実際の翻訳処理
-        // CTranslate2またはArgos Translateを使用
-        // ここではフォールバック実装として、テキストをそのまま返す
+        if (!_isModelLoaded || _translateFunc == null)
+        {
+            return $"[{targetLanguage}] {text}";
+        }
 
-        // TODO: 実際の翻訳エンジンとの連携
-        // 以下はプレースホルダー実装
+        return await Task.Run(() =>
+        {
+            var translated = _translateFunc(text);
+            return string.IsNullOrWhiteSpace(translated) ? $"[{targetLanguage}] {text}" : translated;
+        });
+    }
 
-        // Pythonスクリプトを呼び出す例:
-        // var result = await CallPythonTranslatorAsync(text, sourceLanguage, targetLanguage);
+    private string? ResolveModelPath()
+    {
+        if (File.Exists(_settings.ModelPath))
+        {
+            return _settings.ModelPath;
+        }
 
-        await Task.Delay(10); // シミュレーション
+        if (Directory.Exists(_settings.ModelPath))
+        {
+            var modelFile = Directory.GetFiles(_settings.ModelPath, "*.argosmodel", SearchOption.TopDirectoryOnly)
+                .FirstOrDefault();
+            return modelFile;
+        }
 
-        // フォールバック: 原文をそのまま返す（実際の翻訳エンジンがない場合）
-        return $"[{targetLanguage}] {text}";
+        return null;
+    }
+
+    private bool TryLoadArgosModel(string modelPath, string sourceLanguage, string targetLanguage)
+    {
+        try
+        {
+            var packageType = Type.GetType("ArgosTranslate.Models.Package, ArgosTranslate.NET");
+            if (packageType == null)
+            {
+                return false;
+            }
+
+            var loadFromMethod = packageType.GetMethod("LoadFrom", new[] { typeof(string) });
+            if (loadFromMethod == null)
+            {
+                return false;
+            }
+
+            var package = loadFromMethod.Invoke(null, new object[] { modelPath });
+            if (package == null)
+            {
+                return false;
+            }
+
+            var installMethod = packageType.GetMethod("Install", Type.EmptyTypes);
+            installMethod?.Invoke(package, null);
+
+            var getTranslationMethod = packageType.GetMethod("GetTranslation", new[] { typeof(string), typeof(string) });
+            _translationModel = getTranslationMethod != null
+                ? getTranslationMethod.Invoke(package, new object[] { sourceLanguage, targetLanguage })
+                : package;
+
+            if (_translationModel == null)
+            {
+                return false;
+            }
+
+            var translateMethod = _translationModel.GetType().GetMethod("Translate", new[] { typeof(string) });
+            if (translateMethod == null)
+            {
+                return false;
+            }
+
+            _translateFunc = (Func<string, string>)translateMethod.CreateDelegate(
+                typeof(Func<string, string>),
+                _translationModel);
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Argos Translate initialization error: {ex.Message}");
+            return false;
+        }
     }
 
     /// <summary>
