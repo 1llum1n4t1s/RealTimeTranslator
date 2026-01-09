@@ -16,6 +16,7 @@ public class AudioCaptureService : IAudioCaptureService
     private readonly List<float> _audioBuffer = new();
     private readonly object _bufferLock = new();
     private bool _isCapturing;
+    private bool _isDisposed;
     private int _targetProcessId;
 
     public bool IsCapturing => _isCapturing;
@@ -35,7 +36,7 @@ public class AudioCaptureService : IAudioCaptureService
         if (processId <= 0)
             throw new ArgumentOutOfRangeException(nameof(processId), "プロセスIDは正の値で指定してください。");
 
-        if (_isCapturing)
+        if (_capture != null)
             StopCapture();
 
         _targetProcessId = processId;
@@ -55,10 +56,25 @@ public class AudioCaptureService : IAudioCaptureService
     /// </summary>
     public void StopCapture()
     {
-        if (!_isCapturing)
+        if (_capture == null)
+        {
+            _isCapturing = false;
             return;
+        }
 
-        _capture?.StopRecording();
+        _capture.DataAvailable -= OnDataAvailable;
+        _capture.RecordingStopped -= OnRecordingStopped;
+
+        if (_isCapturing)
+        {
+            _capture.StopRecording();
+        }
+
+        if (_capture is IDisposable disposable)
+        {
+            disposable.Dispose();
+        }
+        _capture = null;
         _isCapturing = false;
     }
 
@@ -207,11 +223,10 @@ public class AudioCaptureService : IAudioCaptureService
 
     public void Dispose()
     {
+        if (_isDisposed)
+            return;
+
+        _isDisposed = true;
         StopCapture();
-        if (_capture is IDisposable disposable)
-        {
-            disposable.Dispose();
-        }
-        _capture = null;
     }
 }
