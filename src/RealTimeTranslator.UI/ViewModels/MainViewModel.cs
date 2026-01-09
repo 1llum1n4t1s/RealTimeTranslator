@@ -5,6 +5,7 @@ using System.Windows.Media;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Microsoft.Extensions.DependencyInjection;
+using NAudio.CoreAudioApi;
 using RealTimeTranslator.Core.Interfaces;
 using RealTimeTranslator.Core.Models;
 using RealTimeTranslator.UI.Views;
@@ -84,15 +85,20 @@ public partial class MainViewModel : ObservableObject
     private void RefreshProcesses()
     {
         Processes.Clear();
-        
+
+        var activeProcessIds = GetActiveAudioProcessIds();
         var processes = Process.GetProcesses()
-            .Where(p => !string.IsNullOrEmpty(p.MainWindowTitle))
+            .Where(p => activeProcessIds.Contains(p.Id))
             .OrderBy(p => p.ProcessName)
-            .Select(p => new ProcessInfo
+            .Select(p =>
             {
-                Id = p.Id,
-                Name = p.ProcessName,
-                Title = p.MainWindowTitle
+                var title = string.IsNullOrWhiteSpace(p.MainWindowTitle) ? p.ProcessName : p.MainWindowTitle;
+                return new ProcessInfo
+                {
+                    Id = p.Id,
+                    Name = p.ProcessName,
+                    Title = title
+                };
             });
 
         foreach (var process in processes)
@@ -285,6 +291,31 @@ public partial class MainViewModel : ObservableObject
         _settings.LastSelectedProcessName = process.Name;
         _settings.Save(_settingsFilePath.Value);
         Log($"選択プロセス '{process.DisplayName}' を設定ファイルに保存しました");
+    }
+
+    private static HashSet<int> GetActiveAudioProcessIds()
+    {
+        var processIds = new HashSet<int>();
+        using var enumerator = new MMDeviceEnumerator();
+        using var device = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
+        using var sessionManager = device.AudioSessionManager;
+        using var sessions = sessionManager.Sessions;
+
+        for (var i = 0; i < sessions.Count; i++)
+        {
+            using var session = sessions[i];
+            if (session.State != AudioSessionState.AudioSessionStateActive)
+            {
+                continue;
+            }
+
+            if (session is AudioSessionControl2 session2 && session2.ProcessID > 0)
+            {
+                processIds.Add((int)session2.ProcessID);
+            }
+        }
+
+        return processIds;
     }
 }
 

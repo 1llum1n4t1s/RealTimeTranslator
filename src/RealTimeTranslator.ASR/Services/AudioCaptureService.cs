@@ -32,13 +32,16 @@ public class AudioCaptureService : IAudioCaptureService
     /// </summary>
     public void StartCapture(int processId)
     {
+        if (processId <= 0)
+            throw new ArgumentOutOfRangeException(nameof(processId), "プロセスIDは正の値で指定してください。");
+
         if (_isCapturing)
             StopCapture();
 
         _targetProcessId = processId;
         _audioBuffer.Clear();
 
-        // プロセス単位キャプチャはAudioClientActivationParams経由で初期化する必要がある
+        // Windows Core Audio API(AudioClientActivationParams/IAudioClient3)で対象プロセスのみを初期化する
         _capture = new ProcessLoopbackCapture(_targetProcessId);
         _capture.DataAvailable += OnDataAvailable;
         _capture.RecordingStopped += OnRecordingStopped;
