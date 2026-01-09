@@ -130,6 +130,7 @@ public partial class MainViewModel : ObservableObject
             {
                 _asrService.SetHotwords(profile.Hotwords);
                 _asrService.SetInitialPrompt(profile.InitialPrompt);
+                _asrService.SetCorrectionDictionary(profile.ASRCorrectionDictionary);
                 _translationService.SetPreTranslationDictionary(profile.PreTranslationDictionary);
                 _translationService.SetPostTranslationDictionary(profile.PostTranslationDictionary);
                 Log($"プロファイル '{profile.Name}' を適用しました");

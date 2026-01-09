@@ -18,6 +18,7 @@ public class WhisperASRService : IASRService
     private WhisperFactory? _accurateFactory;
     private readonly ASRSettings _settings;
     private readonly List<string> _hotwords = new();
+    private Dictionary<string, string> _correctionDictionary = new();
     private string _initialPrompt = string.Empty;
     private bool _isModelLoaded = false;
     private readonly SemaphoreSlim _fastLock = new(1, 1);
@@ -48,10 +49,11 @@ public class WhisperASRService : IASRService
             if (File.Exists(_settings.FastModelPath))
             {
                 _fastFactory = WhisperFactory.FromPath(_settings.FastModelPath);
-                _fastProcessor = _fastFactory.CreateBuilder()
+                var fastBuilder = _fastFactory.CreateBuilder()
                     .WithLanguage(_settings.Language)
-                    .WithThreads(4)
-                    .Build();
+                    .WithThreads(4);
+                ConfigurePromptAndHotwords(fastBuilder);
+                _fastProcessor = fastBuilder.Build();
             }
 
             // 高精度モデル（large系）の初期化
@@ -67,6 +69,7 @@ public class WhisperASRService : IASRService
                     builder.WithBeamSearchSamplingStrategy();
                 }
 
+                ConfigurePromptAndHotwords(builder);
                 _accurateProcessor = builder.Build();
             }
 
@@ -245,10 +248,87 @@ public class WhisperASRService : IASRService
     }
 
     /// <summary>
+    /// ASR誤変換補正辞書を設定
+    /// </summary>
+    public void SetCorrectionDictionary(Dictionary<string, string> dictionary)
+    {
+        _correctionDictionary = new Dictionary<string, string>(dictionary);
+    }
+
+    private void ConfigurePromptAndHotwords(object builder)
+    {
+        var hasHotwords = _hotwords.Count > 0;
+        var hasPrompt = !string.IsNullOrWhiteSpace(_initialPrompt);
+
+        var hotwordsApplied = false;
+        if (hasHotwords)
+        {
+            hotwordsApplied = TryInvokeBuilder(builder, "WithHotwords", _hotwords)
+                || TryInvokeBuilder(builder, "WithHotwords", string.Join(", ", _hotwords));
+        }
+
+        var promptText = hasPrompt ? _initialPrompt : string.Empty;
+        if (hasHotwords && !hotwordsApplied)
+        {
+            promptText = BuildPromptText();
+        }
+
+        if (!string.IsNullOrWhiteSpace(promptText))
+        {
+            TryInvokeBuilder(builder, "WithInitialPrompt", promptText);
+            TryInvokeBuilder(builder, "WithPrompt", promptText);
+        }
+    }
+
+    private string BuildPromptText()
+    {
+        var parts = new List<string>();
+        if (!string.IsNullOrWhiteSpace(_initialPrompt))
+        {
+            parts.Add(_initialPrompt.Trim());
+        }
+
+        if (_hotwords.Count > 0)
+        {
+            parts.Add(string.Join(", ", _hotwords));
+        }
+
+        return string.Join(" ", parts).Trim();
+    }
+
+    private static bool TryInvokeBuilder(object builder, string methodName, object argument)
+    {
+        var method = builder.GetType()
+            .GetMethods()
+            .FirstOrDefault(info =>
+                string.Equals(info.Name, methodName, StringComparison.Ordinal)
+                && info.GetParameters().Length == 1
+                && info.GetParameters()[0].ParameterType.IsAssignableFrom(argument.GetType()));
+
+        if (method == null)
+        {
+            return false;
+        }
+
+        method.Invoke(builder, new[] { argument });
+        return true;
+    }
+
+    /// <summary>
     /// 誤変換補正を適用
     /// </summary>
     private string ApplyCorrections(string text)
     {
+        foreach (var entry in _correctionDictionary)
+        {
+            text = System.Text.RegularExpressions.Regex.Replace(
+                text,
+                System.Text.RegularExpressions.Regex.Escape(entry.Key),
+                entry.Value,
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase
+            );
+        }
+
         // ホットワードに基づく補正（簡易実装）
         // 実際の実装では、より高度なマッチングアルゴリズムを使用
         foreach (var hotword in _hotwords)

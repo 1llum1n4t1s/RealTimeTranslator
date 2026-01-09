@@ -35,6 +35,12 @@ public interface IASRService : IDisposable
     void SetInitialPrompt(string prompt);
 
     /// <summary>
+    /// ASR誤変換補正辞書を設定
+    /// </summary>
+    /// <param name="dictionary">誤変換補正辞書（原文 -> 補正後）</param>
+    void SetCorrectionDictionary(Dictionary<string, string> dictionary);
+
+    /// <summary>
     /// モデルが読み込まれているか
     /// </summary>
     bool IsModelLoaded { get; }
