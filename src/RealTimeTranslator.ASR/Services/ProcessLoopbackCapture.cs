@@ -112,7 +112,7 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
         var activationParams = new AudioClientActivationParams
         {
             ActivationType = AudioClientActivationType.ProcessLoopback,
-            ProcessLoopbackMode = ProcessLoopbackMode.ExcludeTargetProcessTree,
+            ProcessLoopbackMode = ProcessLoopbackMode.IncludeTargetProcessTree,
             TargetProcessId = (uint)targetProcessId
         };
 
