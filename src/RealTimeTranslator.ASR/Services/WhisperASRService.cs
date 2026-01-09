@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Management;
 using RealTimeTranslator.Core.Interfaces;
 using RealTimeTranslator.Core.Models;
 using Whisper.net;
@@ -183,7 +184,15 @@ public class WhisperASRService : IASRService
             return;
         }
 
-        switch (_settings.GPU.Type)
+        var effectiveGpuType = _settings.GPU.Type;
+        if (effectiveGpuType == GPUType.Auto)
+        {
+            effectiveGpuType = DetectGpuType();
+            _settings.GPU.Type = effectiveGpuType;
+            LogGpuDetection(effectiveGpuType);
+        }
+
+        switch (effectiveGpuType)
         {
             case GPUType.AMD_Vulkan:
                 // Vulkan実行時はデバイス番号を環境変数で指定（Whisper.net.Runtime.Vulkan/ggml-vulkan）
@@ -202,6 +211,70 @@ public class WhisperASRService : IASRService
                 Environment.SetEnvironmentVariable("CUDA_VISIBLE_DEVICES", null);
                 break;
         }
+    }
+
+    private static void LogGpuDetection(GPUType gpuType)
+    {
+        var message = $"検出したGPU種別: {gpuType}";
+        Trace.WriteLine(message);
+        Debug.WriteLine(message);
+    }
+
+    private static GPUType DetectGpuType()
+    {
+        try
+        {
+            if (!OperatingSystem.IsWindows())
+            {
+                return GPUType.CPU;
+            }
+
+            var hasNvidia = false;
+            var hasAmd = false;
+
+            using var searcher = new ManagementObjectSearcher("select Name from Win32_VideoController");
+            foreach (var result in searcher.Get())
+            {
+                if (result is not ManagementObject obj)
+                {
+                    continue;
+                }
+
+                var name = obj["Name"]?.ToString();
+                if (string.IsNullOrWhiteSpace(name))
+                {
+                    continue;
+                }
+
+                if (name.Contains("NVIDIA", StringComparison.OrdinalIgnoreCase))
+                {
+                    hasNvidia = true;
+                }
+
+                if (name.Contains("AMD", StringComparison.OrdinalIgnoreCase)
+                    || name.Contains("Radeon", StringComparison.OrdinalIgnoreCase))
+                {
+                    hasAmd = true;
+                }
+            }
+
+            if (hasNvidia)
+            {
+                return GPUType.NVIDIA_CUDA;
+            }
+
+            if (hasAmd)
+            {
+                return GPUType.AMD_Vulkan;
+            }
+        }
+        catch (Exception ex)
+        {
+            Trace.WriteLine($"GPU検出に失敗しました: {ex.Message}");
+            Debug.WriteLine($"GPU検出に失敗しました: {ex.Message}");
+        }
+
+        return GPUType.CPU;
     }
 
     private void ValidateModelCompatibility()
