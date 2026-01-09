@@ -25,6 +25,7 @@ public partial class MainViewModel : ObservableObject
     private readonly AppSettings _settings;
     private readonly IServiceProvider _serviceProvider;
     private readonly SettingsFilePath _settingsFilePath;
+    private readonly SettingsViewModel _settingsViewModel;
     private readonly StringBuilder _logBuilder = new();
 
     [ObservableProperty]
@@ -61,7 +62,8 @@ public partial class MainViewModel : ObservableObject
         OverlayViewModel overlayViewModel,
         AppSettings settings,
         IServiceProvider serviceProvider,
-        SettingsFilePath settingsFilePath)
+        SettingsFilePath settingsFilePath,
+        SettingsViewModel settingsViewModel)
     {
         _audioCaptureService = audioCaptureService;
         _vadService = vadService;
@@ -71,14 +73,35 @@ public partial class MainViewModel : ObservableObject
         _settings = settings;
         _serviceProvider = serviceProvider;
         _settingsFilePath = settingsFilePath;
+        _settingsViewModel = settingsViewModel;
 
         // 音声データ受信時の処理
         _audioCaptureService.AudioDataAvailable += OnAudioDataAvailable;
+        _settingsViewModel.SettingsSaved += OnSettingsSaved;
 
         // 初期化
         RefreshProcesses();
         RestoreLastSelectedProcess();
         Log("アプリケーションを起動しました");
+    }
+
+    private void OnSettingsSaved(object? sender, SettingsSavedEventArgs e)
+    {
+        _audioCaptureService.ApplySettings(e.Settings.AudioCapture);
+        _vadService.ApplySettings(e.Settings.AudioCapture);
+
+        if (IsRunning)
+        {
+            Stop();
+            StatusText = "設定変更のため停止しました。再開時に新しい設定が反映されます。";
+            StatusColor = Brushes.Orange;
+            Log("設定変更を検知したため停止しました。再開時に新しい設定が反映されます。");
+            return;
+        }
+
+        StatusText = "設定を更新しました。次回開始時に反映されます。";
+        StatusColor = Brushes.Gray;
+        Log("設定変更を反映しました（次回開始時に適用）。");
     }
 
     [RelayCommand]

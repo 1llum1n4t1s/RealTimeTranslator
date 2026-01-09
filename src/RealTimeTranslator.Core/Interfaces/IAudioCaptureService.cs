@@ -1,5 +1,7 @@
 namespace RealTimeTranslator.Core.Interfaces;
 
+using RealTimeTranslator.Core.Models;
+
 /// <summary>
 /// 音声キャプチャサービスのインターフェース
 /// プロセス単位のループバックキャプチャを提供
@@ -21,6 +23,12 @@ public interface IAudioCaptureService : IDisposable
     /// キャプチャ中かどうか
     /// </summary>
     bool IsCapturing { get; }
+
+    /// <summary>
+    /// 設定を再適用
+    /// </summary>
+    /// <param name="settings">音声キャプチャ設定</param>
+    void ApplySettings(AudioCaptureSettings settings);
 
     /// <summary>
     /// 音声データが利用可能になったときに発火するイベント

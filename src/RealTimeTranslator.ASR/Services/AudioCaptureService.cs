@@ -29,6 +29,30 @@ public class AudioCaptureService : IAudioCaptureService
     }
 
     /// <summary>
+    /// 設定を再適用
+    /// </summary>
+    public void ApplySettings(AudioCaptureSettings settings)
+    {
+        if (settings == null)
+        {
+            throw new ArgumentNullException(nameof(settings));
+        }
+
+        _settings.SampleRate = settings.SampleRate;
+        _settings.VADSensitivity = settings.VADSensitivity;
+        _settings.MinSpeechDuration = settings.MinSpeechDuration;
+        _settings.MaxSpeechDuration = settings.MaxSpeechDuration;
+        _settings.SilenceThreshold = settings.SilenceThreshold;
+
+        _targetFormat = WaveFormat.CreateIeeeFloatWaveFormat(_settings.SampleRate, 1);
+
+        lock (_bufferLock)
+        {
+            _audioBuffer.Clear();
+        }
+    }
+
+    /// <summary>
     /// 指定したプロセスIDの音声キャプチャを開始
     /// </summary>
     public void StartCapture(int processId)

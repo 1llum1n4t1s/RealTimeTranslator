@@ -9,7 +9,7 @@ namespace RealTimeTranslator.ASR.Services;
 /// </summary>
 public class VADService : IVADService
 {
-    private readonly int _sampleRate;
+    private int _sampleRate;
     private readonly List<float> _audioBuffer = new();
     private readonly object _bufferLock = new();
     private float _currentTime = 0;
@@ -32,6 +32,25 @@ public class VADService : IVADService
         MinSpeechDuration = s.MinSpeechDuration;
         MaxSpeechDuration = s.MaxSpeechDuration;
         _silenceThreshold = s.SilenceThreshold;
+    }
+
+    /// <summary>
+    /// 設定を再適用
+    /// </summary>
+    public void ApplySettings(AudioCaptureSettings settings)
+    {
+        if (settings == null)
+        {
+            throw new ArgumentNullException(nameof(settings));
+        }
+
+        _sampleRate = settings.SampleRate;
+        Sensitivity = settings.VADSensitivity;
+        MinSpeechDuration = settings.MinSpeechDuration;
+        MaxSpeechDuration = settings.MaxSpeechDuration;
+        _silenceThreshold = settings.SilenceThreshold;
+
+        Reset();
     }
 
     /// <summary>

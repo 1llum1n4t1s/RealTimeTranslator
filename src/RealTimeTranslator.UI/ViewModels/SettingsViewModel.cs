@@ -17,6 +17,8 @@ public partial class SettingsViewModel : ObservableObject
     private readonly string _settingsPath;
     private readonly OverlayViewModel _overlayViewModel;
 
+    public event EventHandler<SettingsSavedEventArgs>? SettingsSaved;
+
     public SettingsViewModel(AppSettings settings, string settingsPath, OverlayViewModel overlayViewModel)
     {
         _settings = settings;
@@ -138,6 +140,7 @@ public partial class SettingsViewModel : ObservableObject
         _settings.GameProfiles = GameProfiles.ToList();
         _settings.Save(_settingsPath);
         _overlayViewModel.ReloadSettings();
+        SettingsSaved?.Invoke(this, new SettingsSavedEventArgs(_settings));
         StatusMessage = $"設定を保存しました: {DateTime.Now:HH:mm:ss}";
     }
 
@@ -177,5 +180,15 @@ public partial class SettingsViewModel : ObservableObject
     private static string SerializeDictionary(IReadOnlyDictionary<string, string> dictionary)
     {
         return string.Join(Environment.NewLine, dictionary.Select(entry => $"{entry.Key}={entry.Value}"));
+    }
+}
+
+public class SettingsSavedEventArgs : EventArgs
+{
+    public AppSettings Settings { get; }
+
+    public SettingsSavedEventArgs(AppSettings settings)
+    {
+        Settings = settings;
     }
 }
