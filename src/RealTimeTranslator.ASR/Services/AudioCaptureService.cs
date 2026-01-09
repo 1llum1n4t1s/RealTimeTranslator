@@ -1,5 +1,3 @@
-using System.Runtime.InteropServices;
-using NAudio.CoreAudioApi;
 using NAudio.Wave;
 using RealTimeTranslator.Core.Interfaces;
 using RealTimeTranslator.Core.Models;
@@ -12,7 +10,7 @@ namespace RealTimeTranslator.ASR.Services;
 /// </summary>
 public class AudioCaptureService : IAudioCaptureService
 {
-    private WasapiLoopbackCapture? _capture;
+    private IWaveIn? _capture;
     private WaveFormat? _targetFormat;
     private readonly AudioCaptureSettings _settings;
     private readonly List<float> _audioBuffer = new();
@@ -40,9 +38,8 @@ public class AudioCaptureService : IAudioCaptureService
         _targetProcessId = processId;
         _audioBuffer.Clear();
 
-        // WASAPIループバックキャプチャを初期化
-        // 注意: Windows 10 21H1以降では、プロセス単位のキャプチャにはAudioClientActivationParamsが必要
-        _capture = new WasapiLoopbackCapture();
+        // プロセス単位キャプチャはAudioClientActivationParams経由で初期化する必要がある
+        _capture = new ProcessLoopbackCapture(_targetProcessId);
         _capture.DataAvailable += OnDataAvailable;
         _capture.RecordingStopped += OnRecordingStopped;
 
@@ -208,7 +205,10 @@ public class AudioCaptureService : IAudioCaptureService
     public void Dispose()
     {
         StopCapture();
-        _capture?.Dispose();
+        if (_capture is IDisposable disposable)
+        {
+            disposable.Dispose();
+        }
         _capture = null;
     }
 }
