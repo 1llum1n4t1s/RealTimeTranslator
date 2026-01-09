@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Net.Http;
 using System.Text.RegularExpressions;
 using RealTimeTranslator.Core.Interfaces;
 using RealTimeTranslator.Core.Models;
@@ -12,6 +13,8 @@ namespace RealTimeTranslator.Translation.Services;
 /// </summary>
 public class LocalTranslationService : ITranslationService
 {
+    private const string DefaultModelFileName = "translate-en_ja.argosmodel";
+    private const string DefaultModelDownloadUrl = "https://www.argosopentech.com/argospm/translate-en_ja.argosmodel";
     private readonly TranslationSettings _settings;
     private readonly ConcurrentDictionary<string, string> _cache = new();
     private Dictionary<string, string> _preTranslationDict = new();
@@ -33,12 +36,18 @@ public class LocalTranslationService : ITranslationService
     /// </summary>
     public async Task InitializeAsync()
     {
+        var modelPath = ResolveModelPath();
+        if (modelPath == null)
+        {
+            await TryDownloadModelAsync();
+            modelPath = ResolveModelPath();
+        }
+
         await Task.Run(() =>
         {
-            var modelPath = ResolveModelPath();
             if (modelPath == null)
             {
-                Console.WriteLine($"Translation model not found at: {_settings.ModelPath}");
+                Console.WriteLine($"Translation model not found at: {GetModelRootPath()}");
                 Console.WriteLine("Running in fallback mode (no actual translation)");
                 _isModelLoaded = false;
                 return;
@@ -153,19 +162,66 @@ public class LocalTranslationService : ITranslationService
 
     private string? ResolveModelPath()
     {
-        if (File.Exists(_settings.ModelPath))
+        var modelRootPath = GetModelRootPath();
+
+        if (File.Exists(modelRootPath))
         {
-            return _settings.ModelPath;
+            return modelRootPath;
         }
 
-        if (Directory.Exists(_settings.ModelPath))
+        if (Directory.Exists(modelRootPath))
         {
-            var modelFile = Directory.GetFiles(_settings.ModelPath, "*.argosmodel", SearchOption.TopDirectoryOnly)
+            var modelFile = Directory.GetFiles(modelRootPath, "*.argosmodel", SearchOption.TopDirectoryOnly)
                 .FirstOrDefault();
             return modelFile;
         }
 
         return null;
+    }
+
+    private string GetModelRootPath()
+    {
+        if (Path.IsPathRooted(_settings.ModelPath))
+        {
+            return _settings.ModelPath;
+        }
+
+        return Path.Combine(AppContext.BaseDirectory, _settings.ModelPath);
+    }
+
+    private async Task TryDownloadModelAsync()
+    {
+        var modelRootPath = GetModelRootPath();
+        string targetPath = Path.HasExtension(modelRootPath)
+            ? modelRootPath
+            : Path.Combine(modelRootPath, DefaultModelFileName);
+
+        if (File.Exists(targetPath))
+        {
+            return;
+        }
+
+        var targetDirectory = Path.GetDirectoryName(targetPath);
+        if (!string.IsNullOrWhiteSpace(targetDirectory))
+        {
+            Directory.CreateDirectory(targetDirectory);
+        }
+
+        try
+        {
+            using var httpClient = new HttpClient();
+            using var response = await httpClient.GetAsync(DefaultModelDownloadUrl, HttpCompletionOption.ResponseHeadersRead);
+            response.EnsureSuccessStatusCode();
+
+            await using var httpStream = await response.Content.ReadAsStreamAsync();
+            await using var fileStream = new FileStream(targetPath, FileMode.Create, FileAccess.Write, FileShare.None);
+            await httpStream.CopyToAsync(fileStream);
+            Console.WriteLine($"Downloaded translation model to: {targetPath}");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Failed to download translation model: {ex.Message}");
+        }
     }
 
     private bool TryLoadArgosModel(string modelPath, string sourceLanguage, string targetLanguage)
