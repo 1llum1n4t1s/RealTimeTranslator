@@ -4,6 +4,8 @@ using System.Diagnostics;
 using System.Text;
 using System.Threading;
 using System.Threading.Channels;
+using System.Threading.Tasks;
+using System.Windows;
 using System.Windows.Media;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -26,6 +28,7 @@ public partial class MainViewModel : ObservableObject
     private readonly ITranslationService _translationService;
     private readonly OverlayViewModel _overlayViewModel;
     private readonly AppSettings _settings;
+    private readonly IUpdateService _updateService;
     private readonly IServiceProvider _serviceProvider;
     private readonly SettingsFilePath _settingsFilePath;
     private readonly SettingsViewModel _settingsViewModel;
@@ -71,6 +74,7 @@ public partial class MainViewModel : ObservableObject
         ITranslationService translationService,
         OverlayViewModel overlayViewModel,
         AppSettings settings,
+        IUpdateService updateService,
         IServiceProvider serviceProvider,
         SettingsFilePath settingsFilePath,
         SettingsViewModel settingsViewModel)
@@ -81,6 +85,7 @@ public partial class MainViewModel : ObservableObject
         _translationService = translationService;
         _overlayViewModel = overlayViewModel;
         _settings = settings;
+        _updateService = updateService;
         _serviceProvider = serviceProvider;
         _settingsFilePath = settingsFilePath;
         _settingsViewModel = settingsViewModel;
@@ -92,6 +97,10 @@ public partial class MainViewModel : ObservableObject
         _asrService.ModelStatusChanged += OnModelStatusChanged;
         _translationService.ModelDownloadProgress += OnModelDownloadProgress;
         _translationService.ModelStatusChanged += OnModelStatusChanged;
+        _updateService.StatusChanged += OnUpdateStatusChanged;
+        _updateService.UpdateAvailable += OnUpdateAvailable;
+        _updateService.UpdateReady += OnUpdateReady;
+        _updateService.UpdateSettings(_settings.Update);
 
         // 初期化
         RefreshProcesses();
@@ -103,6 +112,7 @@ public partial class MainViewModel : ObservableObject
     {
         _audioCaptureService.ApplySettings(e.Settings.AudioCapture);
         _vadService.ApplySettings(e.Settings.AudioCapture);
+        _updateService.UpdateSettings(e.Settings.Update);
         var sourceLanguage = e.Settings.Translation.SourceLanguage;
         var targetLanguage = e.Settings.Translation.TargetLanguage;
 
@@ -118,6 +128,89 @@ public partial class MainViewModel : ObservableObject
         StatusText = "設定を更新しました。次回開始時に反映されます。";
         StatusColor = Brushes.Gray;
         Log($"設定変更を反映しました（次回開始時に適用）。翻訳言語: {sourceLanguage}→{targetLanguage}");
+    }
+
+    private void OnUpdateStatusChanged(object? sender, UpdateStatusChangedEventArgs e)
+    {
+        RunOnUiThread(() =>
+        {
+            Log($"更新: {e.Message}");
+            if (!IsRunning && e.Status == UpdateStatus.Failed)
+            {
+                StatusText = "更新エラー";
+                StatusColor = Brushes.Red;
+            }
+        });
+    }
+
+    private void OnUpdateAvailable(object? sender, UpdateAvailableEventArgs e)
+    {
+        RunOnUiThread(() =>
+        {
+            Log($"更新: {e.Message}");
+            if (!_settings.Update.AutoApply)
+            {
+                MessageBox.Show(
+                    $"更新が見つかりました。\n{e.Message}",
+                    "更新通知",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+            }
+        });
+    }
+
+    private async void OnUpdateReady(object? sender, UpdateReadyEventArgs e)
+    {
+        await RunOnUiThreadAsync(async () =>
+        {
+            Log($"更新: {e.Message}");
+            if (_settings.Update.AutoApply)
+            {
+                Log("更新を自動適用します。");
+                await _updateService.ApplyUpdateAsync(CancellationToken.None);
+                return;
+            }
+
+            var result = MessageBox.Show(
+                "更新のダウンロードが完了しました。今すぐ適用しますか？",
+                "更新適用",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Question);
+
+            if (result == MessageBoxResult.Yes)
+            {
+                await _updateService.ApplyUpdateAsync(CancellationToken.None);
+            }
+            else
+            {
+                _updateService.DismissPendingUpdate();
+                Log("更新の適用を保留しました。");
+            }
+        });
+    }
+
+    private static void RunOnUiThread(Action action)
+    {
+        var dispatcher = Application.Current?.Dispatcher;
+        if (dispatcher == null || dispatcher.CheckAccess())
+        {
+            action();
+        }
+        else
+        {
+            dispatcher.Invoke(action);
+        }
+    }
+
+    private static Task RunOnUiThreadAsync(Func<Task> action)
+    {
+        var dispatcher = Application.Current?.Dispatcher;
+        if (dispatcher == null || dispatcher.CheckAccess())
+        {
+            return action();
+        }
+
+        return dispatcher.InvokeAsync(action).Task.Unwrap();
     }
 
     [RelayCommand]

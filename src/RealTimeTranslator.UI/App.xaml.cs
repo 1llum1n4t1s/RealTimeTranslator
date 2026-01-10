@@ -1,17 +1,16 @@
 using System;
-using System.Diagnostics;
 using System.IO;
-using System.Threading.Tasks;
+using System.Threading;
 using System.Windows;
 using Microsoft.Extensions.DependencyInjection;
 using RealTimeTranslator.ASR.Services;
 using RealTimeTranslator.Core.Interfaces;
 using RealTimeTranslator.Core.Models;
 using RealTimeTranslator.Translation.Services;
+using RealTimeTranslator.UI.Services;
 using RealTimeTranslator.UI.ViewModels;
 using RealTimeTranslator.UI.Views;
 using Velopack;
-using Velopack.Sources;
 
 namespace RealTimeTranslator.UI;
 
@@ -22,6 +21,7 @@ public partial class App : Application
 {
     private ServiceProvider? _serviceProvider;
     private OverlayWindow? _overlayWindow;
+    private CancellationTokenSource? _updateCancellation;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -37,7 +37,10 @@ public partial class App : Application
         ConfigureServices(services, settings, settingsPath);
         _serviceProvider = services.BuildServiceProvider();
 
-        _ = InitializeUpdatesAsync(settings.Update);
+        var updateService = _serviceProvider.GetRequiredService<IUpdateService>();
+        updateService.UpdateSettings(settings.Update);
+        _updateCancellation = new CancellationTokenSource();
+        _ = updateService.StartAsync(_updateCancellation.Token);
 
         // オーバーレイウィンドウを表示
         var overlayViewModel = _serviceProvider.GetRequiredService<OverlayViewModel>();
@@ -76,6 +79,7 @@ public partial class App : Application
             var translationService = new LocalTranslationService(sp.GetRequiredService<TranslationSettings>());
             return translationService;
         });
+        services.AddSingleton<IUpdateService, UpdateService>();
 
         // ViewModels
         services.AddSingleton<OverlayViewModel>();
@@ -91,37 +95,10 @@ public partial class App : Application
 
     protected override void OnExit(ExitEventArgs e)
     {
+        _updateCancellation?.Cancel();
+        _updateCancellation?.Dispose();
         _overlayWindow?.Close();
         _serviceProvider?.Dispose();
         base.OnExit(e);
-    }
-
-    private static async Task InitializeUpdatesAsync(UpdateSettings updateSettings)
-    {
-        if (!updateSettings.Enabled || string.IsNullOrWhiteSpace(updateSettings.FeedUrl))
-        {
-            return;
-        }
-
-        try
-        {
-            var source = new SimpleWebSource(new Uri(updateSettings.FeedUrl));
-            using var manager = new UpdateManager(source);
-            var updateInfo = await manager.CheckForUpdatesAsync();
-            if (updateInfo is null)
-            {
-                return;
-            }
-
-            await manager.DownloadUpdatesAsync(updateInfo);
-            if (updateSettings.AutoApply)
-            {
-                manager.ApplyUpdatesAndRestart(updateInfo);
-            }
-        }
-        catch (Exception ex)
-        {
-            Debug.WriteLine($"Velopack update failed: {ex.Message}");
-        }
     }
 }
