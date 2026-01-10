@@ -1,0 +1,59 @@
+name: Velopack リリース作成
+
+on:
+  push:
+    branches:
+      - releases
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    name: Velopack リリース作成
+    runs-on: windows-latest
+    env:
+      RELEASE_VERSION: 0.0.${{ github.run_number }}
+    steps:
+      - name: リポジトリをチェックアウト
+        uses: actions/checkout@v4
+
+      - name: .NET SDK をセットアップ
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+          dotnet-quality: 'preview'
+
+      - name: 依存関係を復元
+        run: dotnet restore RealTimeTranslator.sln
+
+      - name: アプリを公開ビルド
+        run: >
+          dotnet publish src/RealTimeTranslator.UI/RealTimeTranslator.UI.csproj
+          -c Release
+          -r win-x64
+          --self-contained true
+          -p:PublishSingleFile=true
+          -p:IncludeNativeLibrariesForSelfExtract=true
+
+      - name: Velopack CLI をインストール
+        run: |
+          dotnet tool install --global vpk
+          echo "$env:USERPROFILE\.dotnet\tools" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Velopack パッケージを作成
+        run: >
+          vpk pack
+          --packId RealTimeTranslator
+          --packVersion ${{ env.RELEASE_VERSION }}
+          --packTitle "Real-Time Subtitle Translator"
+          --mainExe RealTimeTranslator.UI.exe
+          --publishDir src/RealTimeTranslator.UI/bin/Release/net10.0-windows/win-x64/publish
+          --outputDir artifacts
+
+      - name: GitHub Releases にアップロード
+        run: >
+          vpk upload github
+          --repo ${{ github.repository }}
+          --token ${{ secrets.GITHUB_TOKEN }}
+          --releaseDir artifacts
