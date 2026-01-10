@@ -12,9 +12,11 @@ Windows環境で動作する、完全ローカル・GPU駆動のリアルタイ�
 |------|------|
 | **完全ローカル動作** | クラウドAPIを使用せず、サーバーコストがかかりません |
 | **二段構えASR** | 低遅延ASR（仮字幕）と高精度ASR（確定字幕）を組み合わせ、速報性と正確性を両立 |
-| **GPU最適化** | NVIDIA (CUDA) および AMD (Vulkan) のGPUを活用 |
-| **プロセス単位キャプチャ** | 特定のアプリの音声のみを抽出し、ASR精度を最大化 |
+| **GPU最適化** | NVIDIA (CUDA) / AMD (Vulkan) を自動検出して活用 |
+| **プロセス単位キャプチャ** | 再生中の音声を出しているプロセスのみを抽出 |
 | **WPFオーバーレイ** | ゲーム画面などの最前面に透過字幕を表示（クリック透過対応） |
+| **ローカル翻訳** | Argos Translateモデルで英語→日本語をローカル翻訳 |
+| **自動更新** | Velopackを用いた更新チェック/ダウンロード（任意） |
 
 ## システム構成
 
@@ -28,10 +30,10 @@ Windows環境で動作する、完全ローカル・GPU駆動のリアルタイ�
 
 1. **音声キャプチャ**: WASAPIループバックキャプチャでプロセス単位の音声を取得
 2. **音声前処理**: 16kHz/mono変換、ゲイン正規化
-3. **VAD**: エネルギーベースの発話区間検出（2〜6秒で分割）
-4. **低遅延ASR**: Whisper small/mediumモデルで即時文字起こし
+3. **VAD**: エネルギーベースの発話区間検出（最小/最大長で分割）
+4. **低遅延ASR**: Whisper small系モデルで即時文字起こし
 5. **高精度ASR**: Whisper large-v3モデルで高精度文字起こし
-6. **翻訳**: ローカル翻訳エンジンで英語→日本語変換
+6. **翻訳**: Argos Translateモデルで英語→日本語変換（未ロード時はタグ付けフォールバック）
 7. **オーバーレイ表示**: WPFで透過字幕を最前面表示
 
 ## 遅延目標
@@ -78,7 +80,7 @@ src/
 | 項目 | 要件 |
 |------|------|
 | IDE | Visual Studio 2022 (17.8以降) |
-| SDK | .NET 8.0 |
+| SDK | .NET 10.0 (net10.0-windows) |
 | GPU | NVIDIA (CUDA 12.x) または AMD (Vulkan対応) |
 
 ## 依存ライブラリ
@@ -86,7 +88,9 @@ src/
 | ライブラリ | 用途 |
 |-----------|------|
 | [NAudio](https://github.com/naudio/NAudio) | 音声キャプチャ |
-| [Whisper.net](https://github.com/sandrohanea/whisper.net) | Whisperランタイム |
+| [Whisper.net](https://github.com/sandrohanea/whisper.net) | Whisperランタイム（CUDA/Vulkan対応） |
+| [ArgosTranslate.NET](https://github.com/argosopentech/argos-translate) | ローカル翻訳 |
+| [Velopack](https://github.com/velopack/velopack) | 自動更新 |
 | [CommunityToolkit.Mvvm](https://github.com/CommunityToolkit/dotnet) | MVVMフレームワーク |
 
 ## ビルド手順
@@ -107,22 +111,34 @@ src/
 
 ## モデルの配置
 
-`models/` ディレクトリに以下のファイルを配置してください：
+`models/` ディレクトリに以下のファイルを配置してください（未配置の場合は初回起動時に自動ダウンロードを試みます）：
 
 | ファイル | 用途 | ダウンロード元 |
 |----------|------|----------------|
 | `ggml-small.bin` | 低遅延ASR | [Hugging Face](https://huggingface.co/ggerganov/whisper.cpp) |
 | `ggml-large-v3.bin` | 高精度ASR | [Hugging Face](https://huggingface.co/ggerganov/whisper.cpp) |
+| `translate-en_ja.argosmodel` | 翻訳モデル | [Argos Translate](https://www.argosopentech.com/argospm/translate-en_ja.argosmodel) |
 
 ## 設定ファイル
 
-`settings.json` で以下の項目をカスタマイズできます：
+起動時にアプリの配置フォルダにある `settings.json` を読み込みます。設定画面または直接編集で以下の項目をカスタマイズできます：
 
-- ASRモデルパス・言語設定
-- GPU設定（CUDA/Vulkan）
-- オーバーレイの外観（フォント、色、表示時間）
-- VADパラメータ
-- ゲーム別プロファイル（ホットワード、辞書）
+- ASRモデルパス・言語設定・Beam Search
+- GPU設定（Auto/CUDA/Vulkan/CPU）
+- 翻訳モデルパス・翻訳キャッシュサイズ
+- オーバーレイの外観（フォント、色、表示時間、表示位置）
+- VADパラメータ（感度、最小/最大発話長）
+- ゲーム別プロファイル（ホットワード、辞書、初期プロンプト）
+- 更新設定（フィードURL、自動適用）
+
+## 設定画面
+
+メイン画面の「設定」から、翻訳・ASR・オーバーレイ・ゲーム別プロファイルの編集ができます。
+
+## 連絡先
+
+- 名前: ゆろち
+- 連絡先: https://github.com/1llum1n4t1s
 
 ## ライセンス
 
