@@ -1,0 +1,29 @@
+name: .NET ビルド
+
+on:
+  push:
+    branches-ignore:
+      - releases
+  pull_request:
+    branches-ignore:
+      - releases
+
+jobs:
+  build:
+    name: .NET ビルド
+    runs-on: windows-latest
+    steps:
+      - name: リポジトリをチェックアウト
+        uses: actions/checkout@v4
+
+      - name: .NET SDK をセットアップ
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+          dotnet-quality: 'preview'
+
+      - name: 依存関係を復元
+        run: dotnet restore RealTimeTranslator.sln
+
+      - name: ビルド
+        run: dotnet build RealTimeTranslator.sln
