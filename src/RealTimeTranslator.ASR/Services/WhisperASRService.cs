@@ -14,6 +14,9 @@ namespace RealTimeTranslator.ASR.Services;
 /// </summary>
 public class WhisperASRService : IASRService
 {
+    private const string ServiceName = "ASR";
+    private const string FastModelLabel = "高速ASRモデル";
+    private const string AccurateModelLabel = "高精度ASRモデル";
     private const string DefaultFastModelFileName = "ggml-small.bin";
     private const string DefaultAccurateModelFileName = "ggml-large-v3.bin";
     private const string DefaultFastModelDownloadUrl =
@@ -34,6 +37,9 @@ public class WhisperASRService : IASRService
 
     public bool IsModelLoaded => _isModelLoaded;
 
+    public event EventHandler<ModelDownloadProgressEventArgs>? ModelDownloadProgress;
+    public event EventHandler<ModelStatusChangedEventArgs>? ModelStatusChanged;
+
     public WhisperASRService(ASRSettings? settings = null)
     {
         _settings = settings ?? new ASRSettings();
@@ -44,14 +50,22 @@ public class WhisperASRService : IASRService
     /// </summary>
     public async Task InitializeAsync()
     {
+        OnModelStatusChanged(new ModelStatusChangedEventArgs(
+            ServiceName,
+            "ASR",
+            ModelStatusType.Info,
+            "ASRモデルの初期化を開始しました。"));
+
         var fastModelPath = await EnsureModelAsync(
             _settings.FastModelPath,
             DefaultFastModelFileName,
-            DefaultFastModelDownloadUrl);
+            DefaultFastModelDownloadUrl,
+            FastModelLabel);
         var accurateModelPath = await EnsureModelAsync(
             _settings.AccurateModelPath,
             DefaultAccurateModelFileName,
-            DefaultAccurateModelDownloadUrl);
+            DefaultAccurateModelDownloadUrl,
+            AccurateModelLabel);
 
         await Task.Run(() =>
         {
@@ -71,6 +85,19 @@ public class WhisperASRService : IASRService
                     .WithThreads(4);
                 ConfigurePromptAndHotwords(fastBuilder);
                 _fastProcessor = fastBuilder.Build();
+                OnModelStatusChanged(new ModelStatusChangedEventArgs(
+                    ServiceName,
+                    FastModelLabel,
+                    ModelStatusType.LoadSucceeded,
+                    "高速ASRモデルの読み込みが完了しました。"));
+            }
+            else
+            {
+                OnModelStatusChanged(new ModelStatusChangedEventArgs(
+                    ServiceName,
+                    FastModelLabel,
+                    ModelStatusType.LoadFailed,
+                    "高速ASRモデルが見つからないため読み込みをスキップしました。"));
             }
 
             // 高精度モデル（large系）の初期化
@@ -85,10 +112,32 @@ public class WhisperASRService : IASRService
 
                 ConfigurePromptAndHotwords(builder);
                 _accurateProcessor = builder.Build();
+                OnModelStatusChanged(new ModelStatusChangedEventArgs(
+                    ServiceName,
+                    AccurateModelLabel,
+                    ModelStatusType.LoadSucceeded,
+                    "高精度ASRモデルの読み込みが完了しました。"));
+            }
+            else
+            {
+                OnModelStatusChanged(new ModelStatusChangedEventArgs(
+                    ServiceName,
+                    AccurateModelLabel,
+                    ModelStatusType.LoadFailed,
+                    "高精度ASRモデルが見つからないため読み込みをスキップしました。"));
             }
 
             _isModelLoaded = _fastProcessor != null || _accurateProcessor != null;
         });
+
+        if (!_isModelLoaded)
+        {
+            OnModelStatusChanged(new ModelStatusChangedEventArgs(
+                ServiceName,
+                "ASR",
+                ModelStatusType.Fallback,
+                "ASRモデルが未ロードのため音声認識は実行できません。"));
+        }
     }
 
     /// <summary>
@@ -316,16 +365,30 @@ public class WhisperASRService : IASRService
         }
     }
 
-    private static async Task<string?> EnsureModelAsync(string modelPath, string defaultFileName, string downloadUrl)
+    private async Task<string?> EnsureModelAsync(
+        string modelPath,
+        string defaultFileName,
+        string downloadUrl,
+        string modelLabel)
     {
         var resolvedPath = ResolveModelPath(modelPath, defaultFileName);
         if (string.IsNullOrWhiteSpace(resolvedPath))
         {
+            OnModelStatusChanged(new ModelStatusChangedEventArgs(
+                ServiceName,
+                modelLabel,
+                ModelStatusType.LoadFailed,
+                "モデルパスが未設定のためダウンロードをスキップしました。"));
             return null;
         }
 
         if (File.Exists(resolvedPath))
         {
+            OnModelStatusChanged(new ModelStatusChangedEventArgs(
+                ServiceName,
+                modelLabel,
+                ModelStatusType.Info,
+                "モデルファイルを検出しました。"));
             return resolvedPath;
         }
 
@@ -343,15 +406,61 @@ public class WhisperASRService : IASRService
 
             await using var httpStream = await response.Content.ReadAsStreamAsync();
             await using var fileStream = new FileStream(resolvedPath, FileMode.Create, FileAccess.Write, FileShare.None);
-            await httpStream.CopyToAsync(fileStream);
+            var totalBytes = response.Content.Headers.ContentLength;
+            var buffer = new byte[81920];
+            long totalRead = 0;
+            int bytesRead;
+
+            OnModelStatusChanged(new ModelStatusChangedEventArgs(
+                ServiceName,
+                modelLabel,
+                ModelStatusType.Downloading,
+                "モデルのダウンロードを開始しました。"));
+
+            while ((bytesRead = await httpStream.ReadAsync(buffer.AsMemory(0, buffer.Length))) > 0)
+            {
+                await fileStream.WriteAsync(buffer.AsMemory(0, bytesRead));
+                totalRead += bytesRead;
+                var progress = totalBytes.HasValue && totalBytes.Value > 0
+                    ? totalRead * 100d / totalBytes.Value
+                    : null;
+                OnModelDownloadProgress(new ModelDownloadProgressEventArgs(
+                    ServiceName,
+                    modelLabel,
+                    totalRead,
+                    totalBytes,
+                    progress));
+            }
             Console.WriteLine($"Downloaded ASR model to: {resolvedPath}");
+            OnModelStatusChanged(new ModelStatusChangedEventArgs(
+                ServiceName,
+                modelLabel,
+                ModelStatusType.DownloadCompleted,
+                "モデルのダウンロードが完了しました。"));
         }
         catch (Exception ex)
         {
             Console.WriteLine($"Failed to download ASR model: {ex.Message}");
+            OnModelStatusChanged(new ModelStatusChangedEventArgs(
+                ServiceName,
+                modelLabel,
+                ModelStatusType.DownloadFailed,
+                "モデルのダウンロードに失敗しました。",
+                ex));
+            return null;
         }
 
-        return resolvedPath;
+        return File.Exists(resolvedPath) ? resolvedPath : null;
+    }
+
+    private void OnModelDownloadProgress(ModelDownloadProgressEventArgs args)
+    {
+        ModelDownloadProgress?.Invoke(this, args);
+    }
+
+    private void OnModelStatusChanged(ModelStatusChangedEventArgs args)
+    {
+        ModelStatusChanged?.Invoke(this, args);
     }
 
     private static string? ResolveModelPath(string modelPath, string defaultFileName)

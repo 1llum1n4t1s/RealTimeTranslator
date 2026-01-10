@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.Text;
@@ -80,6 +81,10 @@ public partial class MainViewModel : ObservableObject
         // 音声データ受信時の処理
         _audioCaptureService.AudioDataAvailable += OnAudioDataAvailable;
         _settingsViewModel.SettingsSaved += OnSettingsSaved;
+        _asrService.ModelDownloadProgress += OnModelDownloadProgress;
+        _asrService.ModelStatusChanged += OnModelStatusChanged;
+        _translationService.ModelDownloadProgress += OnModelDownloadProgress;
+        _translationService.ModelStatusChanged += OnModelStatusChanged;
 
         // 初期化
         RefreshProcesses();
@@ -146,7 +151,8 @@ public partial class MainViewModel : ObservableObject
         void HandleInitializationFailure(string serviceName, Exception ex)
         {
             IsRunning = false;
-            StatusText = $"{serviceName}初期化失敗: {ex.Message}";
+            var formattedMessage = FormatExceptionMessage(ex);
+            StatusText = $"{serviceName}初期化失敗: {formattedMessage}";
             StatusColor = Brushes.Red;
             Log($"{serviceName}初期化エラー: {ex}");
         }
@@ -187,6 +193,15 @@ public partial class MainViewModel : ObservableObject
                 return;
             }
 
+            if (!_asrService.IsModelLoaded)
+            {
+                IsRunning = false;
+                StatusText = "ASRモデル未ロード: 音声認識を開始できません。";
+                StatusColor = Brushes.Red;
+                Log("ASRモデル未ロードのため音声認識を停止しました。");
+                return;
+            }
+
             StatusText = "翻訳初期化中...";
             var sourceLanguage = _settings.Translation.SourceLanguage;
             var targetLanguage = _settings.Translation.TargetLanguage;
@@ -200,6 +215,11 @@ public partial class MainViewModel : ObservableObject
             {
                 HandleInitializationFailure("翻訳", ex);
                 return;
+            }
+
+            if (!_translationService.IsModelLoaded)
+            {
+                Log("翻訳モデル未ロードのためタグ付け翻訳にフォールバックします。");
             }
 
             // キャプチャ開始
@@ -367,6 +387,46 @@ public partial class MainViewModel : ObservableObject
         }
         
         LogText = _logBuilder.ToString();
+    }
+
+    private void OnModelDownloadProgress(object? sender, ModelDownloadProgressEventArgs e)
+    {
+        var progressText = e.ProgressPercentage.HasValue
+            ? $"{e.ProgressPercentage.Value:F1}%"
+            : "進捗不明";
+        StatusText = $"{e.ServiceName} {e.ModelName} ダウンロード中... {progressText}";
+        StatusColor = Brushes.Orange;
+        Log($"{e.ServiceName} {e.ModelName} ダウンロード進行中: {progressText}");
+    }
+
+    private void OnModelStatusChanged(object? sender, ModelStatusChangedEventArgs e)
+    {
+        var message = e.Exception != null
+            ? $"{e.Message} ({FormatExceptionMessage(e.Exception)})"
+            : e.Message;
+
+        StatusText = $"{e.ServiceName}: {message}";
+        StatusColor = e.Status == ModelStatusType.DownloadFailed || e.Status == ModelStatusType.LoadFailed
+            ? Brushes.Red
+            : Brushes.Orange;
+        Log($"{e.ServiceName} {e.ModelName}: {message}");
+    }
+
+    private static string FormatExceptionMessage(Exception ex)
+    {
+        var messages = new List<string>();
+        Exception? current = ex;
+        while (current != null)
+        {
+            if (!string.IsNullOrWhiteSpace(current.Message))
+            {
+                messages.Add(current.Message.Trim());
+            }
+            current = current.InnerException;
+        }
+
+        var normalized = messages.Distinct().ToList();
+        return normalized.Count > 0 ? string.Join(" / ", normalized) : ex.GetType().Name;
     }
 
     partial void OnSelectedProcessChanged(ProcessInfo? value)

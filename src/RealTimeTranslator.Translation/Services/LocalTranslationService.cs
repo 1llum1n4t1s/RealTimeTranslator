@@ -13,6 +13,8 @@ namespace RealTimeTranslator.Translation.Services;
 /// </summary>
 public class LocalTranslationService : ITranslationService
 {
+    private const string ServiceName = "翻訳";
+    private const string ModelLabel = "翻訳モデル";
     private const string DefaultModelFileName = "translate-en_ja.argosmodel";
     private const string DefaultModelDownloadUrl = "https://www.argosopentech.com/argospm/translate-en_ja.argosmodel";
     private readonly TranslationSettings _settings;
@@ -26,6 +28,9 @@ public class LocalTranslationService : ITranslationService
 
     public bool IsModelLoaded => _isModelLoaded;
 
+    public event EventHandler<ModelDownloadProgressEventArgs>? ModelDownloadProgress;
+    public event EventHandler<ModelStatusChangedEventArgs>? ModelStatusChanged;
+
     public LocalTranslationService(TranslationSettings? settings = null)
     {
         _settings = settings ?? new TranslationSettings();
@@ -36,6 +41,12 @@ public class LocalTranslationService : ITranslationService
     /// </summary>
     public async Task InitializeAsync()
     {
+        OnModelStatusChanged(new ModelStatusChangedEventArgs(
+            ServiceName,
+            ModelLabel,
+            ModelStatusType.Info,
+            "翻訳モデルの初期化を開始しました。"));
+
         var modelPath = ResolveModelPath();
         if (modelPath == null)
         {
@@ -49,6 +60,11 @@ public class LocalTranslationService : ITranslationService
             {
                 Console.WriteLine($"Translation model not found at: {GetModelRootPath()}");
                 Console.WriteLine("Running in fallback mode (no actual translation)");
+                OnModelStatusChanged(new ModelStatusChangedEventArgs(
+                    ServiceName,
+                    ModelLabel,
+                    ModelStatusType.Fallback,
+                    "翻訳モデルが見つからないためタグ付け翻訳で継続します。"));
                 _isModelLoaded = false;
                 return;
             }
@@ -57,6 +73,19 @@ public class LocalTranslationService : ITranslationService
             if (!_isModelLoaded)
             {
                 Console.WriteLine("Argos Translate model load failed. Running in fallback mode.");
+                OnModelStatusChanged(new ModelStatusChangedEventArgs(
+                    ServiceName,
+                    ModelLabel,
+                    ModelStatusType.Fallback,
+                    "翻訳モデルの読み込みに失敗したためタグ付け翻訳で継続します。"));
+            }
+            else
+            {
+                OnModelStatusChanged(new ModelStatusChangedEventArgs(
+                    ServiceName,
+                    ModelLabel,
+                    ModelStatusType.LoadSucceeded,
+                    "翻訳モデルの読み込みが完了しました。"));
             }
         });
     }
@@ -215,12 +244,47 @@ public class LocalTranslationService : ITranslationService
 
             await using var httpStream = await response.Content.ReadAsStreamAsync();
             await using var fileStream = new FileStream(targetPath, FileMode.Create, FileAccess.Write, FileShare.None);
-            await httpStream.CopyToAsync(fileStream);
+            var totalBytes = response.Content.Headers.ContentLength;
+            var buffer = new byte[81920];
+            long totalRead = 0;
+            int bytesRead;
+
+            OnModelStatusChanged(new ModelStatusChangedEventArgs(
+                ServiceName,
+                ModelLabel,
+                ModelStatusType.Downloading,
+                "翻訳モデルのダウンロードを開始しました。"));
+
+            while ((bytesRead = await httpStream.ReadAsync(buffer.AsMemory(0, buffer.Length))) > 0)
+            {
+                await fileStream.WriteAsync(buffer.AsMemory(0, bytesRead));
+                totalRead += bytesRead;
+                var progress = totalBytes.HasValue && totalBytes.Value > 0
+                    ? totalRead * 100d / totalBytes.Value
+                    : null;
+                OnModelDownloadProgress(new ModelDownloadProgressEventArgs(
+                    ServiceName,
+                    ModelLabel,
+                    totalRead,
+                    totalBytes,
+                    progress));
+            }
             Console.WriteLine($"Downloaded translation model to: {targetPath}");
+            OnModelStatusChanged(new ModelStatusChangedEventArgs(
+                ServiceName,
+                ModelLabel,
+                ModelStatusType.DownloadCompleted,
+                "翻訳モデルのダウンロードが完了しました。"));
         }
         catch (Exception ex)
         {
             Console.WriteLine($"Failed to download translation model: {ex.Message}");
+            OnModelStatusChanged(new ModelStatusChangedEventArgs(
+                ServiceName,
+                ModelLabel,
+                ModelStatusType.DownloadFailed,
+                "翻訳モデルのダウンロードに失敗しました。",
+                ex));
         }
     }
 
@@ -274,6 +338,12 @@ public class LocalTranslationService : ITranslationService
         catch (Exception ex)
         {
             Console.WriteLine($"Argos Translate initialization error: {ex.Message}");
+            OnModelStatusChanged(new ModelStatusChangedEventArgs(
+                ServiceName,
+                ModelLabel,
+                ModelStatusType.LoadFailed,
+                "翻訳モデルの初期化に失敗しました。",
+                ex));
             return false;
         }
     }
@@ -329,5 +399,15 @@ public class LocalTranslationService : ITranslationService
     public void Dispose()
     {
         _translateLock.Dispose();
+    }
+
+    private void OnModelDownloadProgress(ModelDownloadProgressEventArgs args)
+    {
+        ModelDownloadProgress?.Invoke(this, args);
+    }
+
+    private void OnModelStatusChanged(ModelStatusChangedEventArgs args)
+    {
+        ModelStatusChanged?.Invoke(this, args);
     }
 }

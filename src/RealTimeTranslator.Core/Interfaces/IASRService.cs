@@ -1,3 +1,5 @@
+using RealTimeTranslator.Core.Models;
+
 namespace RealTimeTranslator.Core.Interfaces;
 
 /// <summary>
@@ -6,6 +8,9 @@ namespace RealTimeTranslator.Core.Interfaces;
 /// </summary>
 public interface IASRService : IDisposable
 {
+    event EventHandler<ModelDownloadProgressEventArgs>? ModelDownloadProgress;
+    event EventHandler<ModelStatusChangedEventArgs>? ModelStatusChanged;
+
     /// <summary>
     /// ASRモデルを初期化
     /// </summary>
