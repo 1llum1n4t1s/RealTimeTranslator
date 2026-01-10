@@ -91,19 +91,21 @@ public partial class MainViewModel : ObservableObject
     {
         _audioCaptureService.ApplySettings(e.Settings.AudioCapture);
         _vadService.ApplySettings(e.Settings.AudioCapture);
+        var sourceLanguage = e.Settings.Translation.SourceLanguage;
+        var targetLanguage = e.Settings.Translation.TargetLanguage;
 
         if (IsRunning)
         {
             Stop();
             StatusText = "設定変更のため停止しました。再開時に新しい設定が反映されます。";
             StatusColor = Brushes.Orange;
-            Log("設定変更を検知したため停止しました。再開時に新しい設定が反映されます。");
+            Log($"設定変更を検知したため停止しました。再開時に新しい設定が反映されます。翻訳言語: {sourceLanguage}→{targetLanguage}");
             return;
         }
 
         StatusText = "設定を更新しました。次回開始時に反映されます。";
         StatusColor = Brushes.Gray;
-        Log("設定変更を反映しました（次回開始時に適用）。");
+        Log($"設定変更を反映しました（次回開始時に適用）。翻訳言語: {sourceLanguage}→{targetLanguage}");
     }
 
     [RelayCommand]
@@ -186,11 +188,13 @@ public partial class MainViewModel : ObservableObject
             }
 
             StatusText = "翻訳初期化中...";
-            Log("翻訳の初期化を開始しました");
+            var sourceLanguage = _settings.Translation.SourceLanguage;
+            var targetLanguage = _settings.Translation.TargetLanguage;
+            Log($"翻訳の初期化を開始しました ({sourceLanguage}→{targetLanguage})");
             try
             {
                 await _translationService.InitializeAsync();
-                Log("翻訳の初期化が完了しました");
+                Log($"翻訳の初期化が完了しました ({sourceLanguage}→{targetLanguage})");
             }
             catch (Exception ex)
             {
