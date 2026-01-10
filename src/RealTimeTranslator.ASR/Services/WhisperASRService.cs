@@ -30,6 +30,8 @@ public class WhisperASRService : IASRService
     private readonly ASRSettings _settings;
     private readonly List<string> _hotwords = new();
     private Dictionary<string, string> _correctionDictionary = new();
+    private readonly Dictionary<string, System.Text.RegularExpressions.Regex> _compiledCorrectionRegexes = new();
+    private readonly Dictionary<string, System.Text.RegularExpressions.Regex> _compiledHotwordRegexes = new();
     private string _initialPrompt = string.Empty;
     private bool _isModelLoaded = false;
     private readonly SemaphoreSlim _fastLock = new(1, 1);
@@ -489,6 +491,19 @@ public class WhisperASRService : IASRService
     {
         _hotwords.Clear();
         _hotwords.AddRange(hotwords);
+
+        // 正規表現を事前コンパイル
+        _compiledHotwordRegexes.Clear();
+        foreach (var hotword in _hotwords)
+        {
+            if (!string.IsNullOrWhiteSpace(hotword))
+            {
+                var pattern = System.Text.RegularExpressions.Regex.Escape(hotword);
+                _compiledHotwordRegexes[hotword] = new System.Text.RegularExpressions.Regex(
+                    pattern,
+                    System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Compiled);
+            }
+        }
     }
 
     /// <summary>
@@ -505,6 +520,19 @@ public class WhisperASRService : IASRService
     public void SetCorrectionDictionary(Dictionary<string, string> dictionary)
     {
         _correctionDictionary = new Dictionary<string, string>(dictionary);
+
+        // 正規表現を事前コンパイル
+        _compiledCorrectionRegexes.Clear();
+        foreach (var entry in _correctionDictionary)
+        {
+            if (!string.IsNullOrWhiteSpace(entry.Key))
+            {
+                var pattern = System.Text.RegularExpressions.Regex.Escape(entry.Key);
+                _compiledCorrectionRegexes[entry.Key] = new System.Text.RegularExpressions.Regex(
+                    pattern,
+                    System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Compiled);
+            }
+        }
     }
 
     private void ConfigurePromptAndHotwords(object builder)
@@ -626,27 +654,24 @@ public class WhisperASRService : IASRService
     /// </summary>
     private string ApplyCorrections(string text)
     {
+        // 事前コンパイルした正規表現を使用
         foreach (var entry in _correctionDictionary)
         {
-            text = System.Text.RegularExpressions.Regex.Replace(
-                text,
-                System.Text.RegularExpressions.Regex.Escape(entry.Key),
-                entry.Value,
-                System.Text.RegularExpressions.RegexOptions.IgnoreCase
-            );
+            if (_compiledCorrectionRegexes.TryGetValue(entry.Key, out var regex))
+            {
+                text = regex.Replace(text, entry.Value);
+            }
         }
 
         // ホットワードに基づく補正（簡易実装）
         // 実際の実装では、より高度なマッチングアルゴリズムを使用
         foreach (var hotword in _hotwords)
         {
-            // 大文字小文字を無視した置換
-            text = System.Text.RegularExpressions.Regex.Replace(
-                text,
-                System.Text.RegularExpressions.Regex.Escape(hotword),
-                hotword,
-                System.Text.RegularExpressions.RegexOptions.IgnoreCase
-            );
+            if (_compiledHotwordRegexes.TryGetValue(hotword, out var regex))
+            {
+                // 大文字小文字を無視した置換
+                text = regex.Replace(text, hotword);
+            }
         }
 
         return text;

@@ -21,6 +21,7 @@ public class LocalTranslationService : ITranslationService
     private readonly ConcurrentDictionary<string, string> _cache = new();
     private Dictionary<string, string> _preTranslationDict = new();
     private Dictionary<string, string> _postTranslationDict = new();
+    private readonly Dictionary<string, Regex> _compiledPreTranslationRegexes = new();
     private bool _isModelLoaded = false;
     private object? _translationModel;
     private Func<string, string>? _translateFunc;
@@ -353,9 +354,13 @@ public class LocalTranslationService : ITranslationService
     /// </summary>
     private string ApplyPreTranslation(string text)
     {
+        // 事前コンパイルした正規表現を使用
         foreach (var kvp in _preTranslationDict)
         {
-            text = Regex.Replace(text, Regex.Escape(kvp.Key), kvp.Value, RegexOptions.IgnoreCase);
+            if (_compiledPreTranslationRegexes.TryGetValue(kvp.Key, out var regex))
+            {
+                text = regex.Replace(text, kvp.Value);
+            }
         }
         return text;
     }
@@ -378,6 +383,19 @@ public class LocalTranslationService : ITranslationService
     public void SetPreTranslationDictionary(Dictionary<string, string> dictionary)
     {
         _preTranslationDict = new Dictionary<string, string>(dictionary);
+
+        // 正規表現を事前コンパイル
+        _compiledPreTranslationRegexes.Clear();
+        foreach (var entry in _preTranslationDict)
+        {
+            if (!string.IsNullOrWhiteSpace(entry.Key))
+            {
+                var pattern = Regex.Escape(entry.Key);
+                _compiledPreTranslationRegexes[entry.Key] = new Regex(
+                    pattern,
+                    RegexOptions.IgnoreCase | RegexOptions.Compiled);
+            }
+        }
     }
 
     /// <summary>

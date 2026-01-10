@@ -9,6 +9,10 @@ namespace RealTimeTranslator.ASR.Services;
 /// </summary>
 internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
 {
+    private const int AudioBufferDurationMs = 100; // オーディオバッファの長さ（ミリ秒）
+    private const int CaptureThreadSleepMs = 5; // キャプチャスレッドのスリープ時間（ミリ秒）
+    private const long HundredNanosecondsPerSecond = 10000000L; // 1秒あたりの100ナノ秒単位数
+
     private readonly IAudioClient3 _audioClient;
     private readonly IAudioCaptureClient _captureClient;
     private readonly object _captureLock = new();
@@ -29,27 +33,54 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
     public ProcessLoopbackCapture(int targetProcessId)
     {
         _targetProcessId = targetProcessId;
-        var device = GetDefaultRenderDevice();
-        var audioClient = ActivateProcessAudioClient(device, targetProcessId);
-        _audioClient = audioClient;
-
+        MMDevice? device = null;
+        IAudioClient3? audioClient = null;
+        IAudioCaptureClient? captureClient = null;
         var formatPointer = IntPtr.Zero;
+
         try
         {
-            ThrowOnError(_audioClient.GetMixFormat(out formatPointer));
-            WaveFormat = CreateWaveFormat(formatPointer);
-            InitializeAudioClient(formatPointer, WaveFormat);
+            device = GetDefaultRenderDevice();
+            audioClient = ActivateProcessAudioClient(device, targetProcessId);
+            _audioClient = audioClient;
+
+            try
+            {
+                ThrowOnError(_audioClient.GetMixFormat(out formatPointer));
+                WaveFormat = CreateWaveFormat(formatPointer);
+                InitializeAudioClient(formatPointer, WaveFormat);
+            }
+            finally
+            {
+                if (formatPointer != IntPtr.Zero)
+                {
+                    Marshal.FreeCoTaskMem(formatPointer);
+                    formatPointer = IntPtr.Zero;
+                }
+            }
+
+            ThrowOnError(_audioClient.GetBufferSize(out _));
+            captureClient = GetCaptureClient(_audioClient);
+            _captureClient = captureClient;
+        }
+        catch
+        {
+            // 初期化失敗時にリソースをクリーンアップ
+            if (captureClient != null)
+            {
+                Marshal.ReleaseComObject(captureClient);
+            }
+            if (audioClient != null)
+            {
+                Marshal.ReleaseComObject(audioClient);
+            }
+            device?.Dispose();
+            throw;
         }
         finally
         {
-            if (formatPointer != IntPtr.Zero)
-            {
-                Marshal.FreeCoTaskMem(formatPointer);
-            }
+            device?.Dispose();
         }
-
-        ThrowOnError(_audioClient.GetBufferSize(out _));
-        _captureClient = GetCaptureClient(_audioClient);
     }
 
     public void StartRecording()
@@ -160,7 +191,7 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
     private void InitializeAudioClient(IntPtr formatPointer, WaveFormat waveFormat)
     {
         var streamFlags = AudioClientStreamFlags.Loopback;
-        var bufferDuration = 10000000L / 10; // 100ms
+        var bufferDuration = HundredNanosecondsPerSecond * AudioBufferDurationMs / 1000;
         ThrowOnError(_audioClient.Initialize(AudioClientShareMode.Shared, streamFlags, bufferDuration, 0, formatPointer, Guid.Empty));
     }
 
@@ -192,7 +223,7 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
                     ThrowOnError(_captureClient.GetNextPacketSize(out packetFrames));
                 }
 
-                Thread.Sleep(5);
+                Thread.Sleep(CaptureThreadSleepMs);
             }
         }
         catch (Exception ex)

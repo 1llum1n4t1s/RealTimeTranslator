@@ -22,6 +22,9 @@ namespace RealTimeTranslator.UI.ViewModels;
 /// </summary>
 public partial class MainViewModel : ObservableObject
 {
+    private const int MaxAccurateParallelism = 2; // 高精度ASRの最大並列処理数
+    private const int MaxLogLines = 1000; // ログの最大行数
+
     private readonly IAudioCaptureService _audioCaptureService;
     private readonly IVADService _vadService;
     private readonly IASRService _asrService;
@@ -32,14 +35,13 @@ public partial class MainViewModel : ObservableObject
     private readonly IServiceProvider _serviceProvider;
     private readonly SettingsFilePath _settingsFilePath;
     private readonly SettingsViewModel _settingsViewModel;
-    private readonly StringBuilder _logBuilder = new();
+    private readonly Queue<string> _logLines = new();
     private CancellationTokenSource? _processingCancellation;
     private Channel<SpeechSegmentWorkItem>? _segmentChannel;
     private Channel<SpeechSegmentWorkItem>? _accurateChannel;
     private Task? _fastProcessingTask;
     private Task? _accurateProcessingTask;
     private long _segmentSequence;
-    private const int MaxAccurateParallelism = 2;
 
     [ObservableProperty]
     private ObservableCollection<ProcessInfo> _processes = new();
@@ -623,17 +625,17 @@ public partial class MainViewModel : ObservableObject
     private void Log(string message)
     {
         var timestamp = DateTime.Now.ToString("HH:mm:ss");
-        _logBuilder.AppendLine($"[{timestamp}] {message}");
-        
-        // 最新1000行のみ保持
-        var lines = _logBuilder.ToString().Split('\n');
-        if (lines.Length > 1000)
+        var logLine = $"[{timestamp}] {message}";
+
+        _logLines.Enqueue(logLine);
+
+        // 最新MaxLogLines行のみ保持
+        while (_logLines.Count > MaxLogLines)
         {
-            _logBuilder.Clear();
-            _logBuilder.AppendLine(string.Join("\n", lines.TakeLast(1000)));
+            _logLines.Dequeue();
         }
-        
-        LogText = _logBuilder.ToString();
+
+        LogText = string.Join(Environment.NewLine, _logLines);
     }
 
     private void OnModelDownloadProgress(object? sender, ModelDownloadProgressEventArgs e)

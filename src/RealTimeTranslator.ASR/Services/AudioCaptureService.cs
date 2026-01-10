@@ -10,6 +10,9 @@ namespace RealTimeTranslator.ASR.Services;
 /// </summary>
 public class AudioCaptureService : IAudioCaptureService
 {
+    private const int AudioChunkDurationMs = 100; // 音声チャンクの長さ（ミリ秒）
+    private const int MonoChannelCount = 1; // モノラルチャンネル数
+
     private IWaveIn? _capture;
     private WaveFormat? _targetFormat;
     private readonly AudioCaptureSettings _settings;
@@ -25,7 +28,7 @@ public class AudioCaptureService : IAudioCaptureService
     public AudioCaptureService(AudioCaptureSettings? settings = null)
     {
         _settings = settings ?? new AudioCaptureSettings();
-        _targetFormat = WaveFormat.CreateIeeeFloatWaveFormat(_settings.SampleRate, 1);
+        _targetFormat = WaveFormat.CreateIeeeFloatWaveFormat(_settings.SampleRate, MonoChannelCount);
     }
 
     /// <summary>
@@ -38,16 +41,15 @@ public class AudioCaptureService : IAudioCaptureService
             throw new ArgumentNullException(nameof(settings));
         }
 
-        _settings.SampleRate = settings.SampleRate;
-        _settings.VADSensitivity = settings.VADSensitivity;
-        _settings.MinSpeechDuration = settings.MinSpeechDuration;
-        _settings.MaxSpeechDuration = settings.MaxSpeechDuration;
-        _settings.SilenceThreshold = settings.SilenceThreshold;
-
-        _targetFormat = WaveFormat.CreateIeeeFloatWaveFormat(_settings.SampleRate, 1);
-
         lock (_bufferLock)
         {
+            _settings.SampleRate = settings.SampleRate;
+            _settings.VADSensitivity = settings.VADSensitivity;
+            _settings.MinSpeechDuration = settings.MinSpeechDuration;
+            _settings.MaxSpeechDuration = settings.MaxSpeechDuration;
+            _settings.SilenceThreshold = settings.SilenceThreshold;
+
+            _targetFormat = WaveFormat.CreateIeeeFloatWaveFormat(_settings.SampleRate, MonoChannelCount);
             _audioBuffer.Clear();
         }
     }
@@ -111,10 +113,16 @@ public class AudioCaptureService : IAudioCaptureService
         var sourceFormat = _capture!.WaveFormat;
         var samples = ConvertToFloat(e.Buffer, e.BytesRecorded, sourceFormat);
 
-        // リサンプリング（必要に応じて）
-        if (sourceFormat.SampleRate != _settings.SampleRate)
+        int targetSampleRate;
+        lock (_bufferLock)
         {
-            samples = Resample(samples, sourceFormat.SampleRate, _settings.SampleRate);
+            targetSampleRate = _settings.SampleRate;
+        }
+
+        // リサンプリング（必要に応じて）
+        if (sourceFormat.SampleRate != targetSampleRate)
+        {
+            samples = Resample(samples, sourceFormat.SampleRate, targetSampleRate);
         }
 
         // モノラルに変換（必要に応じて）
@@ -129,7 +137,7 @@ public class AudioCaptureService : IAudioCaptureService
             _audioBuffer.AddRange(samples);
 
             // 一定量のデータが溜まったらイベントを発火
-            var samplesPerChunk = _settings.SampleRate / 10; // 100ms分
+            var samplesPerChunk = targetSampleRate * AudioChunkDurationMs / 1000;
             while (_audioBuffer.Count >= samplesPerChunk)
             {
                 var chunk = _audioBuffer.Take(samplesPerChunk).ToArray();
