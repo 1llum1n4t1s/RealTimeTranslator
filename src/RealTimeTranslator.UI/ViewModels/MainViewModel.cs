@@ -238,19 +238,39 @@ public partial class MainViewModel : ObservableObject, IDisposable
         if (activeProcessIds.Count > 0)
         {
             // アクティブなオーディオプロセスのみを表示
-            processes = Process.GetProcesses()
+            var allProcesses = Process.GetProcesses()
                 .Where(p => activeProcessIds.Contains(p.Id))
                 .OrderBy(p => p.ProcessName)
-                .Select(p =>
+                .ThenBy(p => p.Id);
+
+            var processList = new List<ProcessInfo>();
+            var processNames = new Dictionary<string, int>();
+
+            foreach (var p in allProcesses)
+            {
+                var title = string.IsNullOrWhiteSpace(p.MainWindowTitle) ? p.ProcessName : p.MainWindowTitle;
+                var name = p.ProcessName;
+
+                // 同じプロセス名が複数ある場合（例：複数のChromeプロセス）、IDをタイトルに追加
+                if (!processNames.ContainsKey(name))
                 {
-                    var title = string.IsNullOrWhiteSpace(p.MainWindowTitle) ? p.ProcessName : p.MainWindowTitle;
-                    return new ProcessInfo
-                    {
-                        Id = p.Id,
-                        Name = p.ProcessName,
-                        Title = title
-                    };
+                    processNames[name] = 0;
+                }
+                processNames[name]++;
+
+                var displayTitle = processNames[name] > 1
+                    ? $"{title} (PID: {p.Id})"
+                    : title;
+
+                processList.Add(new ProcessInfo
+                {
+                    Id = p.Id,
+                    Name = name,
+                    Title = displayTitle
                 });
+            }
+
+            processes = processList;
         }
         else
         {
@@ -258,6 +278,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
             processes = Process.GetProcesses()
                 .Where(p => p.MainWindowHandle != IntPtr.Zero && !string.IsNullOrWhiteSpace(p.MainWindowTitle))
                 .OrderBy(p => p.ProcessName)
+                .ThenBy(p => p.Id)
                 .Select(p => new ProcessInfo
                 {
                     Id = p.Id,
