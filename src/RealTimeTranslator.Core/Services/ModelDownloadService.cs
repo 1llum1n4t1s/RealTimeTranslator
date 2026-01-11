@@ -249,15 +249,22 @@ public class ModelDownloadService : IDisposable
 
         System.Diagnostics.Debug.WriteLine($"ResolveModelPath: rootPath={rootPath}, Directory.Exists={Directory.Exists(rootPath)}, HasExtension={Path.HasExtension(rootPath)}");
 
+        string result;
         if (Directory.Exists(rootPath) || !Path.HasExtension(rootPath))
         {
-            var result = Path.Combine(rootPath, defaultFileName);
+            result = Path.Combine(rootPath, defaultFileName);
             System.Diagnostics.Debug.WriteLine($"ResolveModelPath: returning combined path={result}");
-            return result;
+        }
+        else
+        {
+            result = rootPath;
+            System.Diagnostics.Debug.WriteLine($"ResolveModelPath: returning rootPath={rootPath}");
         }
 
-        System.Diagnostics.Debug.WriteLine($"ResolveModelPath: returning rootPath={rootPath}");
-        return rootPath;
+        // パス区切り文字を正規化（Windows標準に統一）
+        result = Path.GetFullPath(result);
+        System.Diagnostics.Debug.WriteLine($"ResolveModelPath: normalized path={result}");
+        return result;
     }
 
     /// <summary>
