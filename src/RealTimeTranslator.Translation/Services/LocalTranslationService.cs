@@ -76,7 +76,7 @@ public class LocalTranslationService : ITranslationService
                 return;
             }
 
-            _isModelLoaded = TryLoadArgosModel(modelPath, _settings.SourceLanguage, _settings.TargetLanguage);
+            _isModelLoaded = TryLoadArgosModel(modelPath, _settings.SourceLanguage.ToString(), _settings.TargetLanguage.ToString());
             if (!_isModelLoaded)
             {
                 LoggerService.LogError($"Argos Translate model load failed. modelPath={modelPath}");
@@ -397,7 +397,6 @@ public class LocalTranslationService : ITranslationService
         _translateLock.Dispose();
     }
 }
-
 /// <summary>
 /// スレッドセーフなLRUキャッシュ実装
 /// </summary>
@@ -481,3 +480,4 @@ internal class LruCache<TKey, TValue> where TKey : notnull
 
     private record struct CacheItem(TKey Key, TValue Value);
 }
+

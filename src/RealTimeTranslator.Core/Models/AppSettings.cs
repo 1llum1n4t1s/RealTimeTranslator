@@ -198,7 +198,8 @@ public class ASRSettings
     /// <summary>
     /// 言語設定（固定: en）
     /// </summary>
-    public string Language { get; set; } = "en";
+    [JsonConverter(typeof(JsonStringEnumConverter))]
+    public LanguageType Language { get; set; } = LanguageType.en;
 
     /// <summary>
     /// Beam Search有効化（高精度ASRのみ）
@@ -250,6 +251,16 @@ public enum GPUType
 }
 
 /// <summary>
+/// 言語タイプ
+/// </summary>
+public enum LanguageType
+{
+    en,
+    ja,
+    zh
+}
+
+/// <summary>
 /// 翻訳設定
 /// </summary>
 public class TranslationSettings
@@ -262,12 +273,14 @@ public class TranslationSettings
     /// <summary>
     /// ソース言語
     /// </summary>
-    public string SourceLanguage { get; set; } = "en";
+    [JsonConverter(typeof(JsonStringEnumConverter))]
+    public LanguageType SourceLanguage { get; set; } = LanguageType.en;
 
     /// <summary>
     /// ターゲット言語
     /// </summary>
-    public string TargetLanguage { get; set; } = "ja";
+    [JsonConverter(typeof(JsonStringEnumConverter))]
+    public LanguageType TargetLanguage { get; set; } = LanguageType.ja;
 
     /// <summary>
     /// キャッシュサイズ（エントリ数）

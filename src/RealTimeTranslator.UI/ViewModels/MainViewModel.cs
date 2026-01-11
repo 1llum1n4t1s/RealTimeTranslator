@@ -525,8 +525,8 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 return;
             }
 
-            var sourceLanguage = _settings.Translation.SourceLanguage;
-            var targetLanguage = _settings.Translation.TargetLanguage;
+            var sourceLanguage = _settings.Translation.SourceLanguage.ToString();
+            var targetLanguage = _settings.Translation.TargetLanguage.ToString();
 
             // Whisper翻訳で音声を直接翻訳
             string translatedText = string.Empty;

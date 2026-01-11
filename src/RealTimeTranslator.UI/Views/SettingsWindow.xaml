@@ -37,16 +37,18 @@
                                  Text="{Binding Settings.ASR.AccurateModelPath, UpdateSourceTrigger=PropertyChanged}"/>
 
                         <TextBlock Grid.Row="2" Grid.Column="0" Text="言語" Margin="0,6,0,0"/>
-                        <TextBox Grid.Row="2" Grid.Column="1" Margin="0,6,0,0"
-                                 Text="{Binding Settings.ASR.Language, UpdateSourceTrigger=PropertyChanged}"/>
+                        <ComboBox Grid.Row="2" Grid.Column="1" Margin="0,6,0,0"
+                                  ItemsSource="{Binding Languages}"
+                                  SelectedItem="{Binding Settings.ASR.Language}"/>
 
                         <CheckBox Grid.Row="3" Grid.Column="1" Margin="0,6,0,0"
                                   Content="Beam Searchを有効化"
                                   IsChecked="{Binding Settings.ASR.UseBeamSearch}"/>
 
                         <TextBlock Grid.Row="4" Grid.Column="0" Text="Beamサイズ" Margin="0,6,0,0"/>
-                        <TextBox Grid.Row="4" Grid.Column="1" Margin="0,6,0,0"
-                                 Text="{Binding Settings.ASR.BeamSize, UpdateSourceTrigger=PropertyChanged}"/>
+                        <ComboBox Grid.Row="4" Grid.Column="1" Margin="0,6,0,0"
+                                  ItemsSource="{Binding BeamSizes}"
+                                  SelectedItem="{Binding Settings.ASR.BeamSize}"/>
                     </Grid>
                 </GroupBox>
 
@@ -73,8 +75,9 @@
                                   SelectedItem="{Binding Settings.ASR.GPU.Type}"/>
 
                         <TextBlock Grid.Row="2" Grid.Column="0" Text="GPUデバイスID" Margin="0,6,0,0"/>
-                        <TextBox Grid.Row="2" Grid.Column="1" Margin="0,6,0,0"
-                                 Text="{Binding Settings.ASR.GPU.DeviceId, UpdateSourceTrigger=PropertyChanged}"/>
+                        <ComboBox Grid.Row="2" Grid.Column="1" Margin="0,6,0,0"
+                                  ItemsSource="{Binding DeviceIds}"
+                                  SelectedItem="{Binding Settings.ASR.GPU.DeviceId}"/>
                     </Grid>
                 </GroupBox>
 
@@ -90,47 +93,20 @@
                             <RowDefinition Height="Auto"/>
                         </Grid.RowDefinitions>
 
-                        <TextBlock Grid.Row="0" Grid.Column="0" Text="モデルパス"/>
-                        <TextBox Grid.Row="0" Grid.Column="1"
-                                 Text="{Binding Settings.Translation.ModelPath, UpdateSourceTrigger=PropertyChanged}"/>
+                        <TextBlock Grid.Row="0" Grid.Column="0" Text="ソース言語"/>
+                        <ComboBox Grid.Row="0" Grid.Column="1"
+                                  ItemsSource="{Binding Languages}"
+                                  SelectedItem="{Binding Settings.Translation.SourceLanguage}"/>
 
-                        <TextBlock Grid.Row="1" Grid.Column="0" Text="ソース言語" Margin="0,6,0,0"/>
-                        <TextBox Grid.Row="1" Grid.Column="1" Margin="0,6,0,0"
-                                 Text="{Binding Settings.Translation.SourceLanguage, UpdateSourceTrigger=PropertyChanged}"/>
+                        <TextBlock Grid.Row="1" Grid.Column="0" Text="ターゲット言語" Margin="0,6,0,0"/>
+                        <ComboBox Grid.Row="1" Grid.Column="1" Margin="0,6,0,0"
+                                  ItemsSource="{Binding Languages}"
+                                  SelectedItem="{Binding Settings.Translation.TargetLanguage}"/>
 
-                        <TextBlock Grid.Row="2" Grid.Column="0" Text="ターゲット言語" Margin="0,6,0,0"/>
-                        <TextBox Grid.Row="2" Grid.Column="1" Margin="0,6,0,0"
-                                 Text="{Binding Settings.Translation.TargetLanguage, UpdateSourceTrigger=PropertyChanged}"/>
-
-                        <TextBlock Grid.Row="3" Grid.Column="0" Text="キャッシュサイズ" Margin="0,6,0,0"/>
-                        <TextBox Grid.Row="3" Grid.Column="1" Margin="0,6,0,0"
-                                 Text="{Binding Settings.Translation.CacheSize, UpdateSourceTrigger=PropertyChanged}"/>
-                    </Grid>
-                </GroupBox>
-
-                <GroupBox Header="更新設定" Padding="10" Margin="0,0,0,10">
-                    <Grid>
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="160"/>
-                            <ColumnDefinition Width="*"/>
-                        </Grid.ColumnDefinitions>
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="Auto"/>
-                        </Grid.RowDefinitions>
-
-                        <CheckBox Grid.Row="0" Grid.Column="1"
-                                  Content="更新を有効化"
-                                  IsChecked="{Binding Settings.Update.Enabled}"/>
-
-                        <TextBlock Grid.Row="1" Grid.Column="0" Text="フィードURL" Margin="0,6,0,0"/>
-                        <TextBox Grid.Row="1" Grid.Column="1" Margin="0,6,0,0"
-                                 Text="{Binding Settings.Update.FeedUrl, UpdateSourceTrigger=PropertyChanged}"/>
-
-                        <CheckBox Grid.Row="2" Grid.Column="1" Margin="0,6,0,0"
-                                  Content="更新を自動適用"
-                                  IsChecked="{Binding Settings.Update.AutoApply}"/>
+                        <TextBlock Grid.Row="2" Grid.Column="0" Text="キャッシュサイズ" Margin="0,6,0,0"/>
+                        <ComboBox Grid.Row="2" Grid.Column="1" Margin="0,6,0,0"
+                                  ItemsSource="{Binding CacheSizes}"
+                                  SelectedItem="{Binding Settings.Translation.CacheSize}"/>
                     </Grid>
                 </GroupBox>
 
@@ -220,9 +196,6 @@
                             <RowDefinition Height="Auto"/>
                             <RowDefinition Height="Auto"/>
                             <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="Auto"/>
                         </Grid.RowDefinitions>
 
                         <TextBlock Grid.Row="0" Grid.Column="0" Text="フォント"/>
@@ -230,8 +203,9 @@
                                  Text="{Binding Settings.Overlay.FontFamily, UpdateSourceTrigger=PropertyChanged}"/>
 
                         <TextBlock Grid.Row="1" Grid.Column="0" Text="フォントサイズ" Margin="0,6,0,0"/>
-                        <TextBox Grid.Row="1" Grid.Column="1" Margin="0,6,0,0"
-                                 Text="{Binding Settings.Overlay.FontSize, UpdateSourceTrigger=PropertyChanged}"/>
+                        <ComboBox Grid.Row="1" Grid.Column="1" Margin="0,6,0,0"
+                                  ItemsSource="{Binding FontSizes}"
+                                  SelectedItem="{Binding Settings.Overlay.FontSize}"/>
 
                         <TextBlock Grid.Row="2" Grid.Column="0" Text="仮字幕色" Margin="0,6,0,0"/>
                         <TextBox Grid.Row="2" Grid.Column="1" Margin="0,6,0,0"
@@ -245,21 +219,10 @@
                         <TextBox Grid.Row="4" Grid.Column="1" Margin="0,6,0,0"
                                  Text="{Binding Settings.Overlay.BackgroundColor, UpdateSourceTrigger=PropertyChanged}"/>
 
-                        <TextBlock Grid.Row="5" Grid.Column="0" Text="表示時間(秒)" Margin="0,6,0,0"/>
-                        <TextBox Grid.Row="5" Grid.Column="1" Margin="0,6,0,0"
-                                 Text="{Binding Settings.Overlay.DisplayDuration, UpdateSourceTrigger=PropertyChanged}"/>
-
-                        <TextBlock Grid.Row="6" Grid.Column="0" Text="フェードアウト時間(秒)" Margin="0,6,0,0"/>
-                        <TextBox Grid.Row="6" Grid.Column="1" Margin="0,6,0,0"
-                                 Text="{Binding Settings.Overlay.FadeOutDuration, UpdateSourceTrigger=PropertyChanged}"/>
-
-                        <TextBlock Grid.Row="7" Grid.Column="0" Text="下部マージン(%)" Margin="0,6,0,0"/>
-                        <TextBox Grid.Row="7" Grid.Column="1" Margin="0,6,0,0"
-                                 Text="{Binding Settings.Overlay.BottomMarginPercent, UpdateSourceTrigger=PropertyChanged}"/>
-
-                        <TextBlock Grid.Row="8" Grid.Column="0" Text="最大行数" Margin="0,6,0,0"/>
-                        <TextBox Grid.Row="8" Grid.Column="1" Margin="0,6,0,0"
-                                 Text="{Binding Settings.Overlay.MaxLines, UpdateSourceTrigger=PropertyChanged}"/>
+                        <TextBlock Grid.Row="5" Grid.Column="0" Text="最大行数" Margin="0,6,0,0"/>
+                        <ComboBox Grid.Row="5" Grid.Column="1" Margin="0,6,0,0"
+                                  ItemsSource="{Binding MaxLinesList}"
+                                  SelectedItem="{Binding Settings.Overlay.MaxLines}"/>
                     </Grid>
                 </GroupBox>
 
@@ -273,13 +236,12 @@
                             <RowDefinition Height="Auto"/>
                             <RowDefinition Height="Auto"/>
                             <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="Auto"/>
                         </Grid.RowDefinitions>
 
                         <TextBlock Grid.Row="0" Grid.Column="0" Text="サンプルレート"/>
-                        <TextBox Grid.Row="0" Grid.Column="1"
-                                 Text="{Binding Settings.AudioCapture.SampleRate, UpdateSourceTrigger=PropertyChanged}"/>
+                        <ComboBox Grid.Row="0" Grid.Column="1"
+                                  ItemsSource="{Binding SampleRates}"
+                                  SelectedItem="{Binding Settings.AudioCapture.SampleRate}"/>
 
                         <TextBlock Grid.Row="1" Grid.Column="0" Text="VAD感度" Margin="0,6,0,0"/>
                         <TextBox Grid.Row="1" Grid.Column="1" Margin="0,6,0,0"
@@ -288,14 +250,6 @@
                         <TextBlock Grid.Row="2" Grid.Column="0" Text="最小発話長(秒)" Margin="0,6,0,0"/>
                         <TextBox Grid.Row="2" Grid.Column="1" Margin="0,6,0,0"
                                  Text="{Binding Settings.AudioCapture.MinSpeechDuration, UpdateSourceTrigger=PropertyChanged}"/>
-
-                        <TextBlock Grid.Row="3" Grid.Column="0" Text="最大発話長(秒)" Margin="0,6,0,0"/>
-                        <TextBox Grid.Row="3" Grid.Column="1" Margin="0,6,0,0"
-                                 Text="{Binding Settings.AudioCapture.MaxSpeechDuration, UpdateSourceTrigger=PropertyChanged}"/>
-
-                        <TextBlock Grid.Row="4" Grid.Column="0" Text="無音判定閾値(秒)" Margin="0,6,0,0"/>
-                        <TextBox Grid.Row="4" Grid.Column="1" Margin="0,6,0,0"
-                                 Text="{Binding Settings.AudioCapture.SilenceThreshold, UpdateSourceTrigger=PropertyChanged}"/>
                     </Grid>
                 </GroupBox>
             </StackPanel>

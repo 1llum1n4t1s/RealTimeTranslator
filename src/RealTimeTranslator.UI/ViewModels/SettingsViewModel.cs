@@ -25,6 +25,13 @@ public partial class SettingsViewModel : ObservableObject
         _settingsPath = settingsPath;
         _overlayViewModel = overlayViewModel;
         GpuTypes = new ReadOnlyCollection<GPUType>(Enum.GetValues<GPUType>());
+        Languages = new ReadOnlyCollection<LanguageType>(Enum.GetValues<LanguageType>());
+        SampleRates = new ReadOnlyCollection<int>(new[] { 8000, 16000, 44100, 48000 });
+        FontSizes = new ReadOnlyCollection<int>(new[] { 12, 14, 16, 18, 20, 24, 28, 32, 36, 40 });
+        BeamSizes = new ReadOnlyCollection<int>(new[] { 1, 3, 5, 10, 15, 20 });
+        DeviceIds = new ReadOnlyCollection<int>(new[] { 0, 1, 2, 3 });
+        CacheSizes = new ReadOnlyCollection<int>(new[] { 100, 500, 1000, 2000, 5000, 10000 });
+        MaxLinesList = new ReadOnlyCollection<int>(new[] { 1, 2, 3, 4, 5 });
         GameProfiles = new ObservableCollection<GameProfile>(_settings.GameProfiles);
         SelectedGameProfile = GameProfiles.FirstOrDefault();
     }
@@ -32,6 +39,20 @@ public partial class SettingsViewModel : ObservableObject
     public AppSettings Settings => _settings;
 
     public ReadOnlyCollection<GPUType> GpuTypes { get; }
+
+    public ReadOnlyCollection<LanguageType> Languages { get; }
+
+    public ReadOnlyCollection<int> SampleRates { get; }
+
+    public ReadOnlyCollection<int> FontSizes { get; }
+
+    public ReadOnlyCollection<int> BeamSizes { get; }
+
+    public ReadOnlyCollection<int> DeviceIds { get; }
+
+    public ReadOnlyCollection<int> CacheSizes { get; }
+
+    public ReadOnlyCollection<int> MaxLinesList { get; }
 
     public ObservableCollection<GameProfile> GameProfiles { get; }
 
