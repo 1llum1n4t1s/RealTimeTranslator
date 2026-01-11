@@ -113,10 +113,14 @@ public class WhisperASRService : IASRService
                 catch (Exception ex)
                 {
                     var errorMsg = $"高速ASRモデルの読み込みに失敗しました: {ex.Message}";
-                    var debugMsg = $"Failed to load fast ASR model from {fastModelPath}: {ex.Message}";
-                    if (ex.InnerException != null)
+                    var debugMsg = $"Failed to load fast ASR model from {fastModelPath}: {ex.GetType().Name}: {ex.Message}";
+                    var current = ex;
+                    var level = 0;
+                    while (current != null)
                     {
-                        debugMsg += $"\n  InnerException: {ex.InnerException.Message}";
+                        level++;
+                        debugMsg += $"\n  [{level}] {current.GetType().FullName}: {current.Message}";
+                        current = current.InnerException;
                     }
                     OnModelStatusChanged(new ModelStatusChangedEventArgs(
                         ServiceName,
@@ -167,10 +171,14 @@ public class WhisperASRService : IASRService
                 catch (Exception ex)
                 {
                     var errorMsg = $"高精度ASRモデルの読み込みに失敗しました: {ex.Message}";
-                    var debugMsg = $"Failed to load accurate ASR model from {accurateModelPath}: {ex.Message}";
-                    if (ex.InnerException != null)
+                    var debugMsg = $"Failed to load accurate ASR model from {accurateModelPath}: {ex.GetType().Name}: {ex.Message}";
+                    var current = ex;
+                    var level = 0;
+                    while (current != null)
                     {
-                        debugMsg += $"\n  InnerException: {ex.InnerException.Message}";
+                        level++;
+                        debugMsg += $"\n  [{level}] {current.GetType().FullName}: {current.Message}";
+                        current = current.InnerException;
                     }
                     OnModelStatusChanged(new ModelStatusChangedEventArgs(
                         ServiceName,

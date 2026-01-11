@@ -40,6 +40,8 @@ public class ModelDownloadService : IDisposable
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
+        System.Diagnostics.Debug.WriteLine($"[{serviceName}] EnsureModelAsync called: modelPath={modelPath}, defaultFileName={defaultFileName}, downloadUrl={downloadUrl}");
+
         if (string.IsNullOrWhiteSpace(modelPath))
         {
             OnStatusChanged(new ModelStatusChangedEventArgs(
@@ -47,6 +49,7 @@ public class ModelDownloadService : IDisposable
                 modelLabel,
                 ModelStatusType.LoadFailed,
                 "モデルパスが未設定のためダウンロードをスキップしました。"));
+            System.Diagnostics.Debug.WriteLine($"[{serviceName}] Model path is not set.");
             return null;
         }
 
@@ -58,10 +61,12 @@ public class ModelDownloadService : IDisposable
                 modelLabel,
                 ModelStatusType.LoadFailed,
                 "モデルパスが不正です。"));
+            System.Diagnostics.Debug.WriteLine($"[{serviceName}] Model path is invalid: {modelPath}");
             return null;
         }
 
         var resolvedPath = ResolveModelPath(modelPath, defaultFileName);
+        System.Diagnostics.Debug.WriteLine($"[{serviceName}] Resolved path: {resolvedPath}");
         if (string.IsNullOrWhiteSpace(resolvedPath))
         {
             OnStatusChanged(new ModelStatusChangedEventArgs(
@@ -86,6 +91,8 @@ public class ModelDownloadService : IDisposable
         }
 
         System.Diagnostics.Debug.WriteLine($"[{serviceName}] Model file not found at {resolvedPath}. Will attempt to download from {downloadUrl}");
+        System.Diagnostics.Debug.WriteLine($"[{serviceName}] AppContext.BaseDirectory: {AppContext.BaseDirectory}");
+        System.Diagnostics.Debug.WriteLine($"[{serviceName}] Current directory: {Directory.GetCurrentDirectory()}");
 
         // URLを検証
         if (!IsValidDownloadUrl(downloadUrl))
@@ -106,10 +113,13 @@ public class ModelDownloadService : IDisposable
 
         try
         {
+            System.Diagnostics.Debug.WriteLine($"[{serviceName}] Starting model download...");
             await DownloadModelAsync(resolvedPath, downloadUrl, serviceName, modelLabel, cancellationToken);
+            System.Diagnostics.Debug.WriteLine($"[{serviceName}] Model download completed.");
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException ex)
         {
+            System.Diagnostics.Debug.WriteLine($"[{serviceName}] Download cancelled: {ex.Message}");
             OnStatusChanged(new ModelStatusChangedEventArgs(
                 serviceName,
                 modelLabel,
@@ -117,13 +127,36 @@ public class ModelDownloadService : IDisposable
                 "モデルのダウンロードがキャンセルされました。"));
             return null;
         }
-        catch (Exception ex) when (ex is HttpRequestException or IOException)
+        catch (HttpRequestException ex)
         {
+            System.Diagnostics.Debug.WriteLine($"[{serviceName}] HTTP error during download: {ex.Message}");
             OnStatusChanged(new ModelStatusChangedEventArgs(
                 serviceName,
                 modelLabel,
                 ModelStatusType.DownloadFailed,
-                "モデルのダウンロードに失敗しました。",
+                $"モデルのダウンロードに失敗しました: {ex.Message}",
+                ex));
+            return null;
+        }
+        catch (IOException ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"[{serviceName}] IO error during download: {ex.Message}");
+            OnStatusChanged(new ModelStatusChangedEventArgs(
+                serviceName,
+                modelLabel,
+                ModelStatusType.DownloadFailed,
+                $"モデルのダウンロードに失敗しました: {ex.Message}",
+                ex));
+            return null;
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"[{serviceName}] Unexpected error during download: {ex.GetType().Name}: {ex.Message}");
+            OnStatusChanged(new ModelStatusChangedEventArgs(
+                serviceName,
+                modelLabel,
+                ModelStatusType.DownloadFailed,
+                $"モデルのダウンロードに失敗しました: {ex.Message}",
                 ex));
             return null;
         }
@@ -206,15 +239,24 @@ public class ModelDownloadService : IDisposable
             return null;
         }
 
-        var rootPath = Path.IsPathRooted(modelPath)
+        var isRooted = Path.IsPathRooted(modelPath);
+        System.Diagnostics.Debug.WriteLine($"ResolveModelPath: modelPath={modelPath}, isRooted={isRooted}");
+        System.Diagnostics.Debug.WriteLine($"ResolveModelPath: AppContext.BaseDirectory={AppContext.BaseDirectory}");
+
+        var rootPath = isRooted
             ? modelPath
             : Path.Combine(AppContext.BaseDirectory, modelPath);
 
+        System.Diagnostics.Debug.WriteLine($"ResolveModelPath: rootPath={rootPath}, Directory.Exists={Directory.Exists(rootPath)}, HasExtension={Path.HasExtension(rootPath)}");
+
         if (Directory.Exists(rootPath) || !Path.HasExtension(rootPath))
         {
-            return Path.Combine(rootPath, defaultFileName);
+            var result = Path.Combine(rootPath, defaultFileName);
+            System.Diagnostics.Debug.WriteLine($"ResolveModelPath: returning combined path={result}");
+            return result;
         }
 
+        System.Diagnostics.Debug.WriteLine($"ResolveModelPath: returning rootPath={rootPath}");
         return rootPath;
     }
 
@@ -225,31 +267,46 @@ public class ModelDownloadService : IDisposable
     {
         if (string.IsNullOrWhiteSpace(path))
         {
+            System.Diagnostics.Debug.WriteLine($"IsValidPath: path is null or empty, returning false");
             return false;
         }
 
         try
         {
-            // パストラバーサル攻撃のチェック
-            var normalizedPath = Path.GetFullPath(path);
-            var basePath = Path.GetFullPath(AppContext.BaseDirectory);
-
-            // 相対パスの場合、BaseDirectory配下であることを確認
-            if (!Path.IsPathRooted(path) && !normalizedPath.StartsWith(basePath, StringComparison.OrdinalIgnoreCase))
-            {
-                return false;
-            }
-
             // 不正な文字のチェック
             if (path.IndexOfAny(Path.GetInvalidPathChars()) >= 0)
             {
+                System.Diagnostics.Debug.WriteLine($"IsValidPath: invalid characters in path, returning false");
                 return false;
             }
 
+            // パストラバーサル攻撃のチェック（相対パスのみ）
+            if (!Path.IsPathRooted(path))
+            {
+                // 相対パスの場合、".." を含まないことを確認
+                var normalizedPath = Path.GetFullPath(path);
+                var basePath = Path.GetFullPath(AppContext.BaseDirectory);
+
+                System.Diagnostics.Debug.WriteLine($"IsValidPath: relative path={path}, normalizedPath={normalizedPath}, basePath={basePath}");
+
+                // パストラバーサル攻撃の検出（basePath配下になることを確認）
+                if (!normalizedPath.StartsWith(basePath, StringComparison.OrdinalIgnoreCase))
+                {
+                    System.Diagnostics.Debug.WriteLine($"IsValidPath: relative path not in base directory, returning false");
+                    return false;
+                }
+            }
+            else
+            {
+                System.Diagnostics.Debug.WriteLine($"IsValidPath: absolute path={path}, allowing");
+            }
+
+            System.Diagnostics.Debug.WriteLine($"IsValidPath: path is valid, returning true");
             return true;
         }
         catch (Exception ex) when (ex is ArgumentException or System.Security.SecurityException or NotSupportedException)
         {
+            System.Diagnostics.Debug.WriteLine($"IsValidPath: exception {ex.GetType().Name}: {ex.Message}, returning false");
             return false;
         }
     }
