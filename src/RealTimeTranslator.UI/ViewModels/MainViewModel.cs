@@ -657,7 +657,8 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
         // StringBuilderを使用して効率的に文字列を構築
         var sb = new StringBuilder(_logLines.Count * 50); // 概算容量を事前確保
-        foreach (var line in _logLines)
+        // ToArray()でスナップショットを作成し、列挙中のコレクション変更エラーを回避
+        foreach (var line in _logLines.ToArray())
         {
             sb.AppendLine(line);
         }
