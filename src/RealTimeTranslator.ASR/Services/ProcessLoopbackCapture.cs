@@ -415,28 +415,36 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
 
     /// <summary>
     /// PROPVARIANT 構造体（VT_BLOB用）
-    /// Windows API仕様に準拠したレイアウト
+    /// 64ビット環境ではポインタが8バイトアラインされるため、明示的なレイアウトが必要
     /// </summary>
-    [StructLayout(LayoutKind.Sequential)]
+    [StructLayout(LayoutKind.Explicit)]
     private struct PropVariant
     {
         /// <summary>
         /// バリアント型（VT_BLOB = 0x41 = 65）
-        /// VARTYPE は USHORT (2バイト)
         /// </summary>
+        [FieldOffset(0)]
         public ushort vt;
+
+        [FieldOffset(2)]
         public ushort wReserved1;
+
+        [FieldOffset(4)]
         public ushort wReserved2;
+
+        [FieldOffset(6)]
         public ushort wReserved3;
 
         /// <summary>
-        /// BLOB データサイズ
+        /// BLOB データサイズ（offset 8）
         /// </summary>
+        [FieldOffset(8)]
         public uint blobSize;
 
         /// <summary>
-        /// BLOB データへのポインタ
+        /// BLOB データへのポインタ（offset 16、8バイトアライン）
         /// </summary>
+        [FieldOffset(16)]
         public IntPtr pointerValue;
     }
 
