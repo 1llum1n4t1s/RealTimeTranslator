@@ -69,7 +69,24 @@ public class WhisperTranslationService : ITranslationService
 
         try
         {
-            await Task.Run(() => LoadModel());
+            // モデルファイルをダウンロード/確認
+            const string defaultModelFileName = "ggml-large-v3.bin";
+            const string downloadUrl = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3.bin";
+
+            var modelFilePath = await _downloadService.EnsureModelAsync(
+                _settings.ModelPath,
+                defaultModelFileName,
+                downloadUrl,
+                ServiceName,
+                ModelLabel);
+
+            if (string.IsNullOrWhiteSpace(modelFilePath))
+            {
+                throw new FileNotFoundException($"Failed to ensure model file for: {_settings.ModelPath}");
+            }
+
+            // モデルをロード
+            await Task.Run(() => LoadModelFromPath(modelFilePath));
         }
         catch (Exception ex)
         {
@@ -257,31 +274,14 @@ public class WhisperTranslationService : ITranslationService
         return text;
     }
 
-    private void LoadModel()
+    private void LoadModelFromPath(string modelPath)
     {
         try
         {
-            LoggerService.LogDebug("Whisper翻訳モデルの読み込み開始");
-
-            OnModelStatusChanged(new ModelStatusChangedEventArgs(
-                ServiceName,
-                ModelLabel,
-                ModelStatusType.Info,
-                "Whisper翻訳モデルを初期化中..."));
-
-            // 翻訳用モデルのパスを取得（large-v3を使用）
-            var baseModelPath = Path.IsPathRooted(_settings.ModelPath)
-                ? _settings.ModelPath
-                : Path.Combine(AppContext.BaseDirectory, _settings.ModelPath);
-
-            baseModelPath = Path.GetFullPath(baseModelPath);
-
-            // ggml-large-v3.bin のみを使用（最高精度）
-            var modelPath = Path.Combine(baseModelPath, "ggml-large-v3.bin");
+            LoggerService.LogDebug($"Whisper翻訳モデルの読み込み開始: {modelPath}");
 
             if (!File.Exists(modelPath))
             {
-                LoggerService.LogError($"ggml-large-v3.bin が見つかりません: {modelPath}");
                 throw new FileNotFoundException($"Translation model not found: {modelPath}");
             }
 
@@ -301,9 +301,9 @@ public class WhisperTranslationService : ITranslationService
                 "WhisperProcessor を作成中..."));
 
             var builder = _factory.CreateBuilder()
-                .WithLanguage("en")  // ソース言語を英語に指定
+                .WithLanguage("en")
                 .WithThreads(Environment.ProcessorCount)
-                .WithTranslate();  // 翻訳モードを有効化
+                .WithTranslate();
 
             _processor = builder.Build();
 
