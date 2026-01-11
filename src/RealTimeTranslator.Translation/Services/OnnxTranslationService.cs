@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text.Json;
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
 using RealTimeTranslator.Core.Interfaces;
@@ -22,9 +23,14 @@ public class OnnxTranslationService : ITranslationService
     private const string DefaultTokenizerFileName = "tokenizer.json";
     private const string ModelDownloadUrl = "https://huggingface.co/sotalab/nllb-trilingual-en-vi-ja-onnx/resolve/main";
 
+    private const int MaxCacheSize = 1000; // キャッシュサイズの上限
+    private const string LanguageTagJapanese = "<ja_XX>";
+    private const string LanguageTagEnglish = "<en_XX>";
+
     private readonly TranslationSettings _settings;
     private readonly ModelDownloadService _downloadService;
     private readonly Dictionary<string, string> _cache = new();
+    private readonly LinkedList<string> _cacheOrder = new(); // LRU キャッシュ用
     private readonly object _cacheLock = new();
 
     private bool _isModelLoaded = false;
@@ -204,21 +210,18 @@ public class OnnxTranslationService : ITranslationService
         var cacheKey = $"{sourceLanguage}:{targetLanguage}:{text}";
 
         // キャッシュをチェック
-        lock (_cacheLock)
+        if (TryGetFromCache(cacheKey, out var cachedTranslation) && cachedTranslation != null)
         {
-            if (_cache.TryGetValue(cacheKey, out var cachedTranslation))
+            sw.Stop();
+            return new TranslationResult
             {
-                sw.Stop();
-                return new TranslationResult
-                {
-                    OriginalText = text,
-                    TranslatedText = cachedTranslation,
-                    SourceLanguage = sourceLanguage,
-                    TargetLanguage = targetLanguage,
-                    FromCache = true,
-                    ProcessingTimeMs = sw.ElapsedMilliseconds
-                };
-            }
+                OriginalText = text,
+                TranslatedText = cachedTranslation,
+                SourceLanguage = sourceLanguage,
+                TargetLanguage = targetLanguage,
+                FromCache = true,
+                ProcessingTimeMs = sw.ElapsedMilliseconds
+            };
         }
 
         await _translateLock.WaitAsync();
@@ -234,10 +237,7 @@ public class OnnxTranslationService : ITranslationService
             translatedText = ApplyPostTranslation(translatedText);
 
             // キャッシュに保存
-            lock (_cacheLock)
-            {
-                _cache[cacheKey] = translatedText;
-            }
+            AddToCache(cacheKey, translatedText);
 
             sw.Stop();
             return new TranslationResult
@@ -253,6 +253,53 @@ public class OnnxTranslationService : ITranslationService
         finally
         {
             _translateLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// キャッシュに追加（LRU キャッシュ戦略）
+    /// </summary>
+    private void AddToCache(string key, string value)
+    {
+        lock (_cacheLock)
+        {
+            // 既存キーの場合は削除して再追加
+            if (_cache.ContainsKey(key))
+            {
+                _cacheOrder.Remove(_cacheOrder.Find(key)!);
+            }
+
+            _cache[key] = value;
+            _cacheOrder.AddLast(key);
+
+            // キャッシュサイズが上限を超えた場合は最も古いものを削除
+            if (_cacheOrder.Count > MaxCacheSize)
+            {
+                var oldestKey = _cacheOrder.First!.Value;
+                _cacheOrder.RemoveFirst();
+                _cache.Remove(oldestKey);
+            }
+        }
+    }
+
+    /// <summary>
+    /// キャッシュから取得
+    /// </summary>
+    private bool TryGetFromCache(string key, out string? value)
+    {
+        lock (_cacheLock)
+        {
+            if (_cache.TryGetValue(key, out var cachedValue))
+            {
+                // LRU: アクセスされたキーを末尾に移動
+                _cacheOrder.Remove(_cacheOrder.Find(key)!);
+                _cacheOrder.AddLast(key);
+                value = cachedValue;
+                return true;
+            }
+
+            value = null;
+            return false;
         }
     }
 
@@ -274,6 +321,26 @@ public class OnnxTranslationService : ITranslationService
         return text;
     }
 
+    /// <summary>
+    /// 言語コードを NLLB 言語タグに変換
+    /// </summary>
+    private static string GetLanguageTag(string languageCode)
+    {
+        return languageCode switch
+        {
+            "ja" => LanguageTagJapanese,
+            "en" => LanguageTagEnglish,
+            "vi" => "<vi_VN>",
+            "fr" => "<fra_Latn>",
+            "de" => "<deu_Latn>",
+            "es" => "<spa_Latn>",
+            "pt" => "<por_Latn>",
+            "zh" => "<zho_Hans>",
+            "ko" => "<kor_Hang>",
+            _ => $"<{languageCode}>"
+        };
+    }
+
     private async Task<string> PerformTranslationAsync(string text, string sourceLanguage, string targetLanguage)
     {
         LogDebug($"[PerformTranslationAsync] 開始: Text={text}, Source={sourceLanguage}, Target={targetLanguage}");
@@ -282,8 +349,8 @@ public class OnnxTranslationService : ITranslationService
         if (!_isModelLoaded || _session == null || _tokenizer == null)
         {
             LogError($"[PerformTranslationAsync] フォールバック: IsModelLoaded={_isModelLoaded}, Session is null={_session == null}, Tokenizer is null={_tokenizer == null}");
-            // フォールバック：原文に言語タグを付けて返す
-            return $"[{targetLanguage}] {text}";
+            // フォールバック：原文を返す
+            return text;
         }
 
         LogDebug("[PerformTranslationAsync] 実際の翻訳処理に進入");
@@ -291,8 +358,12 @@ public class OnnxTranslationService : ITranslationService
         {
             try
             {
+                // NLLB 言語タグを追加
+                var targetLanguageTag = GetLanguageTag(targetLanguage);
+                var textWithTag = $"{targetLanguageTag} {text}";
+                
                 // テキストをトークン化
-                var (inputIds, attentionMask) = _tokenizer.Encode(text);
+                var (inputIds, attentionMask) = _tokenizer.Encode(textWithTag);
 
                 // 入力テンソルを作成
                 var inputTensor = new long[1, inputIds.Length];
@@ -462,6 +533,7 @@ public class OnnxTranslationService : ITranslationService
         lock (_cacheLock)
         {
             _cache.Clear();
+            _cacheOrder.Clear();
         }
     }
 
@@ -512,10 +584,43 @@ public class OnnxTranslationService : ITranslationService
         {
             try
             {
-                // 簡略版：tokenizer.jsonが存在する場合は、基本的なボキャブラリのみを初期化
-                // 完全な実装にはJSON解析が必要
+                if (!File.Exists(path))
+                {
+                    InitializeBasicTokenizer();
+                    return;
+                }
+
+                // tokenizer.json から vocab を読み込み
+                using var jsonDoc = JsonDocument.Parse(File.ReadAllText(path));
+                if (jsonDoc.RootElement.TryGetProperty("model", out var modelElement) &&
+                    modelElement.TryGetProperty("vocab", out var vocabElement))
+                {
+                    // vocab オブジェクトからトークンを読み込み
+                    foreach (var property in vocabElement.EnumerateObject())
+                    {
+                        var token = property.Name;
+                        if (property.Value.TryGetInt32(out var id))
+                        {
+                            _vocab[token] = id;
+                            // _inverseVocab のサイズを必要に応じて拡張
+                            while (_inverseVocab.Count <= id)
+                            {
+                                _inverseVocab.Add(string.Empty);
+                            }
+                            _inverseVocab[id] = token;
+                        }
+                    }
+
+                    if (_vocab.Count > 0)
+                    {
+                        LoggerService.LogInfo($"Tokenizer loaded from JSON: {_vocab.Count} tokens");
+                        return;
+                    }
+                }
+
+                // JSON 読み込みが失敗した場合は基本トークナイザーを使用
+                LoggerService.LogWarning($"Failed to parse tokenizer JSON, using basic tokenizer: {path}");
                 InitializeBasicTokenizer();
-                LoggerService.LogWarning($"Tokenizer file found but using basic tokenizer: {path}");
             }
             catch (Exception ex)
             {
