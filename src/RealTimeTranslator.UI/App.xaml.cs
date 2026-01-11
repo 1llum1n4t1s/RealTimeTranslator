@@ -105,7 +105,7 @@ public partial class App : Application
         services.AddSingleton<IAudioCaptureService, AudioCaptureService>();
         services.AddSingleton<IVADService, VADService>();
         services.AddSingleton<IASRService, WhisperASRService>();
-        services.AddSingleton<ITranslationService, OnnxTranslationService>();
+        services.AddSingleton<ITranslationService, WhisperTranslationService>();
         services.AddSingleton<IUpdateService, UpdateService>();
 
         // ViewModels
