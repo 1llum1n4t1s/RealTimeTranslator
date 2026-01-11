@@ -1,9 +1,9 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
-using System.Net.Http;
 using System.Text.RegularExpressions;
 using RealTimeTranslator.Core.Interfaces;
 using RealTimeTranslator.Core.Models;
+using RealTimeTranslator.Core.Services;
 
 namespace RealTimeTranslator.Translation.Services;
 
@@ -18,6 +18,7 @@ public class LocalTranslationService : ITranslationService
     private const string DefaultModelFileName = "translate-en_ja.argosmodel";
     private const string DefaultModelDownloadUrl = "https://www.argosopentech.com/argospm/translate-en_ja.argosmodel";
     private readonly TranslationSettings _settings;
+    private readonly ModelDownloadService _downloadService;
     private readonly LruCache<string, string> _cache;
     private Dictionary<string, string> _preTranslationDict = new();
     private Dictionary<string, string> _postTranslationDict = new();
@@ -32,10 +33,15 @@ public class LocalTranslationService : ITranslationService
     public event EventHandler<ModelDownloadProgressEventArgs>? ModelDownloadProgress;
     public event EventHandler<ModelStatusChangedEventArgs>? ModelStatusChanged;
 
-    public LocalTranslationService(TranslationSettings? settings = null)
+    public LocalTranslationService(TranslationSettings settings, ModelDownloadService downloadService)
     {
-        _settings = settings ?? new TranslationSettings();
+        _settings = settings ?? throw new ArgumentNullException(nameof(settings));
+        _downloadService = downloadService ?? throw new ArgumentNullException(nameof(downloadService));
         _cache = new LruCache<string, string>(_settings.CacheSize);
+
+        // イベントを転送
+        _downloadService.DownloadProgress += (sender, e) => ModelDownloadProgress?.Invoke(this, e);
+        _downloadService.StatusChanged += (sender, e) => ModelStatusChanged?.Invoke(this, e);
     }
 
     /// <summary>
@@ -223,62 +229,13 @@ public class LocalTranslationService : ITranslationService
             return;
         }
 
-        var targetDirectory = Path.GetDirectoryName(targetPath);
-        if (!string.IsNullOrWhiteSpace(targetDirectory))
-        {
-            Directory.CreateDirectory(targetDirectory);
-        }
-
-        try
-        {
-            using var httpClient = new HttpClient();
-            using var response = await httpClient.GetAsync(DefaultModelDownloadUrl, HttpCompletionOption.ResponseHeadersRead);
-            response.EnsureSuccessStatusCode();
-
-            await using var httpStream = await response.Content.ReadAsStreamAsync();
-            await using var fileStream = new FileStream(targetPath, FileMode.Create, FileAccess.Write, FileShare.None);
-            var totalBytes = response.Content.Headers.ContentLength;
-            var buffer = new byte[81920];
-            long totalRead = 0;
-            int bytesRead;
-
-            OnModelStatusChanged(new ModelStatusChangedEventArgs(
-                ServiceName,
-                ModelLabel,
-                ModelStatusType.Downloading,
-                "翻訳モデルのダウンロードを開始しました。"));
-
-            while ((bytesRead = await httpStream.ReadAsync(buffer.AsMemory(0, buffer.Length))) > 0)
-            {
-                await fileStream.WriteAsync(buffer.AsMemory(0, bytesRead));
-                totalRead += bytesRead;
-                double? progress = totalBytes.HasValue && totalBytes.Value > 0
-                    ? totalRead * 100d / totalBytes.Value
-                    : null;
-                OnModelDownloadProgress(new ModelDownloadProgressEventArgs(
-                    ServiceName,
-                    ModelLabel,
-                    totalRead,
-                    totalBytes,
-                    progress));
-            }
-            Console.WriteLine($"Downloaded translation model to: {targetPath}");
-            OnModelStatusChanged(new ModelStatusChangedEventArgs(
-                ServiceName,
-                ModelLabel,
-                ModelStatusType.DownloadCompleted,
-                "翻訳モデルのダウンロードが完了しました。"));
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"Failed to download translation model: {ex.Message}");
-            OnModelStatusChanged(new ModelStatusChangedEventArgs(
-                ServiceName,
-                ModelLabel,
-                ModelStatusType.DownloadFailed,
-                "翻訳モデルのダウンロードに失敗しました。",
-                ex));
-        }
+        await _downloadService.EnsureModelAsync(
+            _settings.ModelPath,
+            DefaultModelFileName,
+            DefaultModelDownloadUrl,
+            ServiceName,
+            ModelLabel,
+            CancellationToken.None);
     }
 
     private bool TryLoadArgosModel(string modelPath, string sourceLanguage, string targetLanguage)
@@ -409,16 +366,6 @@ public class LocalTranslationService : ITranslationService
     public void Dispose()
     {
         _translateLock.Dispose();
-    }
-
-    private void OnModelDownloadProgress(ModelDownloadProgressEventArgs args)
-    {
-        ModelDownloadProgress?.Invoke(this, args);
-    }
-
-    private void OnModelStatusChanged(ModelStatusChangedEventArgs args)
-    {
-        ModelStatusChanged?.Invoke(this, args);
     }
 }
 

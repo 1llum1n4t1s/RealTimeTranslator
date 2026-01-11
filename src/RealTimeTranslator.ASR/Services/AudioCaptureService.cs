@@ -12,6 +12,12 @@ public class AudioCaptureService : IAudioCaptureService
 {
     private const int AudioChunkDurationMs = 100; // 音声チャンクの長さ（ミリ秒）
     private const int MonoChannelCount = 1; // モノラルチャンネル数
+    private const int BytesPerInt16 = 2;
+    private const int BytesPerInt32 = 4;
+    private const int BytesPerFloat = 4;
+    private const float Int16MaxValue = 32768f; // 16-bit PCMの最大値
+    private const int BitsPerSample16 = 16;
+    private const int BitsPerSample32 = 32;
 
     private IWaveIn? _capture;
     private WaveFormat? _targetFormat;
@@ -165,29 +171,29 @@ public class AudioCaptureService : IAudioCaptureService
 
         if (format.Encoding == WaveFormatEncoding.IeeeFloat)
         {
-            sampleCount = bytesRecorded / 4;
+            sampleCount = bytesRecorded / BytesPerFloat;
             samples = new float[sampleCount];
             Buffer.BlockCopy(buffer, 0, samples, 0, bytesRecorded);
         }
         else if (format.Encoding == WaveFormatEncoding.Pcm)
         {
-            if (format.BitsPerSample == 16)
+            if (format.BitsPerSample == BitsPerSample16)
             {
-                sampleCount = bytesRecorded / 2;
+                sampleCount = bytesRecorded / BytesPerInt16;
                 samples = new float[sampleCount];
                 for (int i = 0; i < sampleCount; i++)
                 {
-                    short sample = BitConverter.ToInt16(buffer, i * 2);
-                    samples[i] = sample / 32768f;
+                    short sample = BitConverter.ToInt16(buffer, i * BytesPerInt16);
+                    samples[i] = sample / Int16MaxValue;
                 }
             }
-            else if (format.BitsPerSample == 32)
+            else if (format.BitsPerSample == BitsPerSample32)
             {
-                sampleCount = bytesRecorded / 4;
+                sampleCount = bytesRecorded / BytesPerInt32;
                 samples = new float[sampleCount];
                 for (int i = 0; i < sampleCount; i++)
                 {
-                    int sample = BitConverter.ToInt32(buffer, i * 4);
+                    int sample = BitConverter.ToInt32(buffer, i * BytesPerInt32);
                     samples[i] = sample / (float)int.MaxValue;
                 }
             }

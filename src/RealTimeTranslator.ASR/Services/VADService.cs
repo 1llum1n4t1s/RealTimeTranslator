@@ -21,6 +21,7 @@ public class VADService : IVADService
 
     private readonly List<float> _audioBuffer = new();
     private readonly object _settingsLock = new();
+    private readonly object _stateLock = new(); // スレッドセーフティのための状態ロック
     private float _currentTime = 0;
     private bool _isSpeaking = false;
     private float _speechStartTime = 0;
@@ -130,52 +131,68 @@ public class VADService : IVADService
     /// </summary>
     public IEnumerable<SpeechSegment> DetectSpeech(float[] audioData)
     {
-        var segments = new List<SpeechSegment>();
-
-        // 設定値をスレッドセーフに読み取り
-        int frameSize;
-        float maxSpeechDuration;
-        float silenceThreshold;
-        lock (_settingsLock)
+        lock (_stateLock)
         {
-            frameSize = _sampleRate / FramesPerSecond;
-            maxSpeechDuration = _maxSpeechDuration;
-            silenceThreshold = _silenceThreshold;
-        }
+            var segments = new List<SpeechSegment>();
 
-        float frameDuration = 1.0f / FramesPerSecond;
-
-        for (int i = 0; i < audioData.Length; i += frameSize)
-        {
-            int frameEnd = Math.Min(i + frameSize, audioData.Length);
-            var frame = audioData.AsSpan(i, frameEnd - i);
-
-            // フレームのエネルギー（RMS）を計算
-            float energy = CalculateRMS(frame);
-            bool isSpeech = energy > GetEnergyThreshold();
-
-            if (isSpeech)
+            // 設定値をスレッドセーフに読み取り
+            int frameSize;
+            float maxSpeechDuration;
+            float silenceThreshold;
+            lock (_settingsLock)
             {
-                if (!_isSpeaking)
+                frameSize = _sampleRate / FramesPerSecond;
+                maxSpeechDuration = _maxSpeechDuration;
+                silenceThreshold = _silenceThreshold;
+            }
+
+            float frameDuration = 1.0f / FramesPerSecond;
+
+            for (int i = 0; i < audioData.Length; i += frameSize)
+            {
+                int frameEnd = Math.Min(i + frameSize, audioData.Length);
+                var frame = audioData.AsSpan(i, frameEnd - i);
+
+                // フレームのエネルギー（RMS）を計算
+                float energy = CalculateRMS(frame);
+                bool isSpeech = energy > GetEnergyThreshold();
+
+                if (isSpeech)
                 {
-                    // 発話開始
-                    _isSpeaking = true;
-                    _speechStartTime = _currentTime;
-                    _currentSpeechBuffer.Clear();
+                    if (!_isSpeaking)
+                    {
+                        // 発話開始
+                        _isSpeaking = true;
+                        _speechStartTime = _currentTime;
+                        _currentSpeechBuffer.Clear();
+                        _silenceDuration = 0;
+                    }
+
+                    _currentSpeechBuffer.AddRange(frame.ToArray());
                     _silenceDuration = 0;
                 }
+                else if (_isSpeaking)
+                {
+                    // 発話中の無音
+                    _silenceDuration += frameDuration;
+                    _currentSpeechBuffer.AddRange(frame.ToArray());
 
-                _currentSpeechBuffer.AddRange(frame.ToArray());
-                _silenceDuration = 0;
-            }
-            else if (_isSpeaking)
-            {
-                // 発話中の無音
-                _silenceDuration += frameDuration;
-                _currentSpeechBuffer.AddRange(frame.ToArray());
+                    // 無音が閾値を超えたら発話終了
+                    if (_silenceDuration >= silenceThreshold)
+                    {
+                        var segment = CreateSegment();
+                        if (segment != null)
+                        {
+                            segments.Add(segment);
+                        }
+                        _isSpeaking = false;
+                        _currentSpeechBuffer.Clear();
+                    }
+                }
 
-                // 無音が閾値を超えたら発話終了
-                if (_silenceDuration >= silenceThreshold)
+                // 最大発話長を超えた場合は強制的に分割
+                float currentSpeechDuration = _currentTime - _speechStartTime;
+                if (_isSpeaking && currentSpeechDuration >= maxSpeechDuration)
                 {
                     var segment = CreateSegment();
                     if (segment != null)
@@ -185,25 +202,12 @@ public class VADService : IVADService
                     _isSpeaking = false;
                     _currentSpeechBuffer.Clear();
                 }
+
+                _currentTime += frameDuration;
             }
 
-            // 最大発話長を超えた場合は強制的に分割
-            float currentSpeechDuration = _currentTime - _speechStartTime;
-            if (_isSpeaking && currentSpeechDuration >= maxSpeechDuration)
-            {
-                var segment = CreateSegment();
-                if (segment != null)
-                {
-                    segments.Add(segment);
-                }
-                _isSpeaking = false;
-                _currentSpeechBuffer.Clear();
-            }
-
-            _currentTime += frameDuration;
+            return segments;
         }
-
-        return segments;
     }
 
     /// <summary>
@@ -211,15 +215,18 @@ public class VADService : IVADService
     /// </summary>
     public SpeechSegment? FlushPendingSegment()
     {
-        if (!_isSpeaking || _currentSpeechBuffer.Count == 0)
+        lock (_stateLock)
         {
-            Reset();
-            return null;
-        }
+            if (!_isSpeaking || _currentSpeechBuffer.Count == 0)
+            {
+                ResetInternal();
+                return null;
+            }
 
-        var segment = CreateSegment();
-        Reset();
-        return segment;
+            var segment = CreateSegment();
+            ResetInternal();
+            return segment;
+        }
     }
 
     private SpeechSegment? CreateSegment()
@@ -273,6 +280,17 @@ public class VADService : IVADService
     /// バッファをリセット
     /// </summary>
     public void Reset()
+    {
+        lock (_stateLock)
+        {
+            ResetInternal();
+        }
+    }
+
+    /// <summary>
+    /// バッファをリセット（内部メソッド、ロック不要）
+    /// </summary>
+    private void ResetInternal()
     {
         _currentTime = 0;
         _isSpeaking = false;

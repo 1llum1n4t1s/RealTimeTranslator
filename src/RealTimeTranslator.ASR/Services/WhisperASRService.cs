@@ -1,8 +1,8 @@
 using System.Diagnostics;
 using System.Management;
-using System.Net.Http;
 using RealTimeTranslator.Core.Interfaces;
 using RealTimeTranslator.Core.Models;
+using RealTimeTranslator.Core.Services;
 using Whisper.net;
 using Whisper.net.Ggml;
 
@@ -28,6 +28,7 @@ public class WhisperASRService : IASRService
     private WhisperFactory? _fastFactory;
     private WhisperFactory? _accurateFactory;
     private readonly ASRSettings _settings;
+    private readonly ModelDownloadService _downloadService;
     private readonly List<string> _hotwords = new();
     private Dictionary<string, string> _correctionDictionary = new();
     private readonly Dictionary<string, System.Text.RegularExpressions.Regex> _compiledCorrectionRegexes = new();
@@ -42,9 +43,14 @@ public class WhisperASRService : IASRService
     public event EventHandler<ModelDownloadProgressEventArgs>? ModelDownloadProgress;
     public event EventHandler<ModelStatusChangedEventArgs>? ModelStatusChanged;
 
-    public WhisperASRService(ASRSettings? settings = null)
+    public WhisperASRService(ASRSettings settings, ModelDownloadService downloadService)
     {
-        _settings = settings ?? new ASRSettings();
+        _settings = settings ?? throw new ArgumentNullException(nameof(settings));
+        _downloadService = downloadService ?? throw new ArgumentNullException(nameof(downloadService));
+
+        // イベントを転送
+        _downloadService.DownloadProgress += (sender, e) => ModelDownloadProgress?.Invoke(this, e);
+        _downloadService.StatusChanged += (sender, e) => ModelStatusChanged?.Invoke(this, e);
     }
 
     /// <summary>
@@ -373,115 +379,18 @@ public class WhisperASRService : IASRService
         string downloadUrl,
         string modelLabel)
     {
-        var resolvedPath = ResolveModelPath(modelPath, defaultFileName);
-        if (string.IsNullOrWhiteSpace(resolvedPath))
-        {
-            OnModelStatusChanged(new ModelStatusChangedEventArgs(
-                ServiceName,
-                modelLabel,
-                ModelStatusType.LoadFailed,
-                "モデルパスが未設定のためダウンロードをスキップしました。"));
-            return null;
-        }
-
-        if (File.Exists(resolvedPath))
-        {
-            OnModelStatusChanged(new ModelStatusChangedEventArgs(
-                ServiceName,
-                modelLabel,
-                ModelStatusType.Info,
-                "モデルファイルを検出しました。"));
-            return resolvedPath;
-        }
-
-        var targetDirectory = Path.GetDirectoryName(resolvedPath);
-        if (!string.IsNullOrWhiteSpace(targetDirectory))
-        {
-            Directory.CreateDirectory(targetDirectory);
-        }
-
-        try
-        {
-            using var httpClient = new HttpClient();
-            using var response = await httpClient.GetAsync(downloadUrl, HttpCompletionOption.ResponseHeadersRead);
-            response.EnsureSuccessStatusCode();
-
-            await using var httpStream = await response.Content.ReadAsStreamAsync();
-            await using var fileStream = new FileStream(resolvedPath, FileMode.Create, FileAccess.Write, FileShare.None);
-            var totalBytes = response.Content.Headers.ContentLength;
-            var buffer = new byte[81920];
-            long totalRead = 0;
-            int bytesRead;
-
-            OnModelStatusChanged(new ModelStatusChangedEventArgs(
-                ServiceName,
-                modelLabel,
-                ModelStatusType.Downloading,
-                "モデルのダウンロードを開始しました。"));
-
-            while ((bytesRead = await httpStream.ReadAsync(buffer.AsMemory(0, buffer.Length))) > 0)
-            {
-                await fileStream.WriteAsync(buffer.AsMemory(0, bytesRead));
-                totalRead += bytesRead;
-                double? progress = totalBytes.HasValue && totalBytes.Value > 0
-                    ? totalRead * 100d / totalBytes.Value
-                    : null;
-                OnModelDownloadProgress(new ModelDownloadProgressEventArgs(
-                    ServiceName,
-                    modelLabel,
-                    totalRead,
-                    totalBytes,
-                    progress));
-            }
-            Console.WriteLine($"Downloaded ASR model to: {resolvedPath}");
-            OnModelStatusChanged(new ModelStatusChangedEventArgs(
-                ServiceName,
-                modelLabel,
-                ModelStatusType.DownloadCompleted,
-                "モデルのダウンロードが完了しました。"));
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"Failed to download ASR model: {ex.Message}");
-            OnModelStatusChanged(new ModelStatusChangedEventArgs(
-                ServiceName,
-                modelLabel,
-                ModelStatusType.DownloadFailed,
-                "モデルのダウンロードに失敗しました。",
-                ex));
-            return null;
-        }
-
-        return File.Exists(resolvedPath) ? resolvedPath : null;
-    }
-
-    private void OnModelDownloadProgress(ModelDownloadProgressEventArgs args)
-    {
-        ModelDownloadProgress?.Invoke(this, args);
+        return await _downloadService.EnsureModelAsync(
+            modelPath,
+            defaultFileName,
+            downloadUrl,
+            ServiceName,
+            modelLabel,
+            CancellationToken.None);
     }
 
     private void OnModelStatusChanged(ModelStatusChangedEventArgs args)
     {
         ModelStatusChanged?.Invoke(this, args);
-    }
-
-    private static string? ResolveModelPath(string modelPath, string defaultFileName)
-    {
-        if (string.IsNullOrWhiteSpace(modelPath))
-        {
-            return null;
-        }
-
-        var rootPath = Path.IsPathRooted(modelPath)
-            ? modelPath
-            : Path.Combine(AppContext.BaseDirectory, modelPath);
-
-        if (Directory.Exists(rootPath) || !Path.HasExtension(rootPath))
-        {
-            return Path.Combine(rootPath, defaultFileName);
-        }
-
-        return rootPath;
     }
 
     /// <summary>

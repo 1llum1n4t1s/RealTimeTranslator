@@ -16,11 +16,32 @@ public partial class OverlayWindow : Window
     private const int WS_EX_LAYERED = 0x00080000;
     private const int GWL_EXSTYLE = -20;
 
-    [DllImport("user32.dll")]
-    private static extern int GetWindowLong(IntPtr hwnd, int index);
+    // 32bit/64bit互換性のためのAPI呼び出し
+    [DllImport("user32.dll", EntryPoint = "GetWindowLongPtr", SetLastError = true)]
+    private static extern IntPtr GetWindowLongPtr64(IntPtr hWnd, int nIndex);
 
-    [DllImport("user32.dll")]
-    private static extern int SetWindowLong(IntPtr hwnd, int index, int newStyle);
+    [DllImport("user32.dll", EntryPoint = "GetWindowLong", SetLastError = true)]
+    private static extern IntPtr GetWindowLongPtr32(IntPtr hWnd, int nIndex);
+
+    [DllImport("user32.dll", EntryPoint = "SetWindowLongPtr", SetLastError = true)]
+    private static extern IntPtr SetWindowLongPtr64(IntPtr hWnd, int nIndex, IntPtr dwNewLong);
+
+    [DllImport("user32.dll", EntryPoint = "SetWindowLong", SetLastError = true)]
+    private static extern IntPtr SetWindowLongPtr32(IntPtr hWnd, int nIndex, IntPtr dwNewLong);
+
+    private static IntPtr GetWindowLongPtr(IntPtr hWnd, int nIndex)
+    {
+        return IntPtr.Size == 8
+            ? GetWindowLongPtr64(hWnd, nIndex)
+            : GetWindowLongPtr32(hWnd, nIndex);
+    }
+
+    private static IntPtr SetWindowLongPtr(IntPtr hWnd, int nIndex, IntPtr dwNewLong)
+    {
+        return IntPtr.Size == 8
+            ? SetWindowLongPtr64(hWnd, nIndex, dwNewLong)
+            : SetWindowLongPtr32(hWnd, nIndex, dwNewLong);
+    }
 
     public OverlayWindow()
     {
@@ -45,8 +66,8 @@ public partial class OverlayWindow : Window
     private void SetClickThrough()
     {
         var hwnd = new WindowInteropHelper(this).Handle;
-        int extendedStyle = GetWindowLong(hwnd, GWL_EXSTYLE);
-        SetWindowLong(hwnd, GWL_EXSTYLE, extendedStyle | WS_EX_TRANSPARENT | WS_EX_LAYERED);
+        var extendedStyle = GetWindowLongPtr(hwnd, GWL_EXSTYLE).ToInt32();
+        SetWindowLongPtr(hwnd, GWL_EXSTYLE, new IntPtr(extendedStyle | WS_EX_TRANSPARENT | WS_EX_LAYERED));
     }
 
     /// <summary>
@@ -55,8 +76,8 @@ public partial class OverlayWindow : Window
     public void DisableClickThrough()
     {
         var hwnd = new WindowInteropHelper(this).Handle;
-        int extendedStyle = GetWindowLong(hwnd, GWL_EXSTYLE);
-        SetWindowLong(hwnd, GWL_EXSTYLE, extendedStyle & ~WS_EX_TRANSPARENT);
+        var extendedStyle = GetWindowLongPtr(hwnd, GWL_EXSTYLE).ToInt32();
+        SetWindowLongPtr(hwnd, GWL_EXSTYLE, new IntPtr(extendedStyle & ~WS_EX_TRANSPARENT));
     }
 
     /// <summary>

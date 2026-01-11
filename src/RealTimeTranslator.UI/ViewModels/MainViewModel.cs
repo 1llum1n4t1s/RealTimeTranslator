@@ -20,8 +20,9 @@ namespace RealTimeTranslator.UI.ViewModels;
 /// <summary>
 /// メインウィンドウのViewModel
 /// </summary>
-public partial class MainViewModel : ObservableObject
+public partial class MainViewModel : ObservableObject, IDisposable
 {
+    private bool _disposed;
     private const int MaxAccurateParallelism = 2; // 高精度ASRの最大並列処理数
     private const int MaxLogLines = 1000; // ログの最大行数
 
@@ -110,7 +111,7 @@ public partial class MainViewModel : ObservableObject
         Log("アプリケーションを起動しました");
     }
 
-    private void OnSettingsSaved(object? sender, SettingsSavedEventArgs e)
+    private async void OnSettingsSaved(object? sender, SettingsSavedEventArgs e)
     {
         _audioCaptureService.ApplySettings(e.Settings.AudioCapture);
         _vadService.ApplySettings(e.Settings.AudioCapture);
@@ -120,7 +121,7 @@ public partial class MainViewModel : ObservableObject
 
         if (IsRunning)
         {
-            Stop();
+            await StopAsync();
             StatusText = "設定変更のため停止しました。再開時に新しい設定が反映されます。";
             StatusColor = Brushes.Orange;
             Log($"設定変更を検知したため停止しました。再開時に新しい設定が反映されます。翻訳言語: {sourceLanguage}→{targetLanguage}");
@@ -269,22 +270,13 @@ public partial class MainViewModel : ObservableObject
         if (SelectedProcess == null)
             return;
 
-        void HandleInitializationFailure(string serviceName, Exception ex)
-        {
-            IsRunning = false;
-            var formattedMessage = FormatExceptionMessage(ex);
-            StatusText = $"{serviceName}初期化失敗: {formattedMessage}";
-            StatusColor = Brushes.Red;
-            Log($"{serviceName}初期化エラー: {ex}");
-        }
-
         try
         {
             _processingCancellation?.Cancel();
             _processingCancellation?.Dispose();
             _processingCancellation = new CancellationTokenSource();
             IsRunning = true;
-            StatusText = "初期化中...";
+            StatusText = "起動中...";
             StatusColor = Brushes.Orange;
 
             // ゲームプロファイルを適用
@@ -301,46 +293,26 @@ public partial class MainViewModel : ObservableObject
                 Log($"プロファイル '{profile.Name}' を適用しました");
             }
 
-            StatusText = "ASR初期化中...";
-            Log("ASRの初期化を開始しました");
-            try
-            {
-                await _asrService.InitializeAsync();
-                Log("ASRの初期化が完了しました");
-            }
-            catch (Exception ex)
-            {
-                HandleInitializationFailure("ASR", ex);
-                return;
-            }
-
+            // モデルのロード状態を確認（アプリ起動時に初期化済み）
             if (!_asrService.IsModelLoaded)
             {
                 IsRunning = false;
                 StatusText = "ASRモデル未ロード: 音声認識を開始できません。";
                 StatusColor = Brushes.Red;
-                Log("ASRモデル未ロードのため音声認識を停止しました。");
+                Log("ASRモデル未ロードのため音声認識を停止しました。モデルのダウンロードが完了するまでお待ちください。");
                 return;
             }
 
-            StatusText = "翻訳初期化中...";
             var sourceLanguage = _settings.Translation.SourceLanguage;
             var targetLanguage = _settings.Translation.TargetLanguage;
-            Log($"翻訳の初期化を開始しました ({sourceLanguage}→{targetLanguage})");
-            try
-            {
-                await _translationService.InitializeAsync();
-                Log($"翻訳の初期化が完了しました ({sourceLanguage}→{targetLanguage})");
-            }
-            catch (Exception ex)
-            {
-                HandleInitializationFailure("翻訳", ex);
-                return;
-            }
 
             if (!_translationService.IsModelLoaded)
             {
-                Log("翻訳モデル未ロードのためタグ付け翻訳にフォールバックします。");
+                Log($"翻訳モデル未ロードのためタグ付け翻訳にフォールバックします ({sourceLanguage}→{targetLanguage})。");
+            }
+            else
+            {
+                Log($"翻訳モデルが準備完了しました ({sourceLanguage}→{targetLanguage})。");
             }
 
             StartProcessingPipelines(_processingCancellation.Token);
@@ -362,12 +334,12 @@ public partial class MainViewModel : ObservableObject
     }
 
     [RelayCommand]
-    private void Stop()
+    private async Task StopAsync()
     {
         _processingCancellation?.Cancel();
         _processingCancellation?.Dispose();
         _processingCancellation = null;
-        StopProcessingPipelines();
+        await StopProcessingPipelinesAsync();
         var pendingSegment = _vadService.FlushPendingSegment();
         if (pendingSegment != null)
         {
@@ -395,12 +367,11 @@ public partial class MainViewModel : ObservableObject
     {
         try
         {
-            if (!IsRunning || _processingCancellation == null || _processingCancellation.IsCancellationRequested)
-            {
-                return;
-            }
+            // 状態とチャネルを一度に取得してTOCTOUバグを回避
+            var cancellation = _processingCancellation;
+            var channel = _segmentChannel;
 
-            if (_segmentChannel == null)
+            if (!IsRunning || cancellation == null || cancellation.IsCancellationRequested || channel == null)
             {
                 return;
             }
@@ -410,7 +381,8 @@ public partial class MainViewModel : ObservableObject
 
             foreach (var segment in segments)
             {
-                if (!IsRunning || _processingCancellation.IsCancellationRequested || _segmentChannel == null)
+                // 再度状態確認（ループ中に変更される可能性があるため）
+                if (!IsRunning || cancellation.IsCancellationRequested || channel == null)
                 {
                     return;
                 }
@@ -418,7 +390,7 @@ public partial class MainViewModel : ObservableObject
                 var sequence = Interlocked.Increment(ref _segmentSequence);
                 var workItem = new SpeechSegmentWorkItem(sequence, segment);
 
-                if (!_segmentChannel.Writer.TryWrite(workItem))
+                if (!channel.Writer.TryWrite(workItem))
                 {
                     Log($"音声セグメントをキューに追加できないため破棄しました (ID: {segment.Id})");
                 }
@@ -450,10 +422,38 @@ public partial class MainViewModel : ObservableObject
         _accurateProcessingTask = Task.Run(() => ProcessAccurateQueueAsync(_accurateChannel.Reader, token), token);
     }
 
-    private void StopProcessingPipelines()
+    private async Task StopProcessingPipelinesAsync()
     {
         _segmentChannel?.Writer.TryComplete();
         _accurateChannel?.Writer.TryComplete();
+
+        // タスクの完了を待機（タイムアウト付き）
+        var tasks = new List<Task>();
+        if (_fastProcessingTask != null)
+        {
+            tasks.Add(_fastProcessingTask);
+        }
+        if (_accurateProcessingTask != null)
+        {
+            tasks.Add(_accurateProcessingTask);
+        }
+
+        if (tasks.Count > 0)
+        {
+            try
+            {
+                await Task.WhenAll(tasks).WaitAsync(TimeSpan.FromSeconds(5));
+            }
+            catch (TimeoutException)
+            {
+                Log("処理パイプラインの停止がタイムアウトしました");
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                Log($"処理パイプライン停止エラー: {ex.Message}");
+            }
+        }
+
         _segmentChannel = null;
         _accurateChannel = null;
         _fastProcessingTask = null;
@@ -766,15 +766,17 @@ public partial class MainViewModel : ObservableObject
                         }
                     }
                 }
-                catch
+                catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
                 {
                     // 個別のセッション取得に失敗しても続行
+                    System.Diagnostics.Debug.WriteLine($"Failed to get audio session info: {ex.Message}");
                 }
             }
         }
-        catch
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
         {
             // AudioSessionの取得に失敗した場合は空のセットを返す
+            System.Diagnostics.Debug.WriteLine($"Failed to enumerate audio sessions: {ex.Message}");
         }
 
         return processIds;
@@ -787,6 +789,32 @@ public partial class MainViewModel : ObservableObject
         SubtitleItem? Subtitle,
         string? LogMessage,
         double? TranslationLatencyMs);
+
+    public void Dispose()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        // イベントハンドラの登録解除
+        _audioCaptureService.AudioDataAvailable -= OnAudioDataAvailable;
+        _settingsViewModel.SettingsSaved -= OnSettingsSaved;
+        _asrService.ModelDownloadProgress -= OnModelDownloadProgress;
+        _asrService.ModelStatusChanged -= OnModelStatusChanged;
+        _translationService.ModelDownloadProgress -= OnModelDownloadProgress;
+        _translationService.ModelStatusChanged -= OnModelStatusChanged;
+        _updateService.StatusChanged -= OnUpdateStatusChanged;
+        _updateService.UpdateAvailable -= OnUpdateAvailable;
+        _updateService.UpdateReady -= OnUpdateReady;
+
+        // 処理パイプラインの停止
+        _processingCancellation?.Cancel();
+        _processingCancellation?.Dispose();
+
+        _disposed = true;
+        GC.SuppressFinalize(this);
+    }
 }
 
 /// <summary>
