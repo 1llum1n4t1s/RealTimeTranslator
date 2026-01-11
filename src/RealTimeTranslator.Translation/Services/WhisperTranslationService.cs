@@ -146,15 +146,16 @@ public class WhisperTranslationService : ITranslationService
             var preprocessedText = ApplyPreTranslation(text);
             LogDebug($"[TranslateAsync] 翻訳開始: Text={preprocessedText}, Source={sourceLanguage}, Target={targetLanguage}");
 
-            // テキスト翻訳: 音声データがないため、元のテキストを返す
-            // 実際の翻訳は TranslateAudioAsync で音声データを処理する際に実行される
+            // 注：Whisper.net は音声認識のみで、テキスト翻訳機能がありません
+            // 翻訳は TranslateAudioAsync 内で別途実装する必要があります
+            // ここではユーザー定義の翻訳辞書のみを適用
             var translatedText = preprocessedText;
-
             translatedText = ApplyPostTranslation(translatedText);
 
             AddToCache(cacheKey, translatedText);
 
             sw.Stop();
+            LoggerService.LogWarning($"[TranslateAsync] テキスト翻訳：外部翻訳サービスが設定されていません。辞書ベースのみ");
             LogDebug($"[TranslateAsync] テキスト翻訳完了: Result={translatedText}, Time={sw.ElapsedMilliseconds}ms");
 
             return new TranslationResult
@@ -174,8 +175,8 @@ public class WhisperTranslationService : ITranslationService
     }
 
     /// <summary>
-    /// 音声データを直接翻訳（Whisper.net のネイティブ機能）
-    /// キャッシュに保存し、後でテキスト翻訳として取得可能
+    /// 音声データを認識して翻訳（2段階：Whisper ASR → 翻訳）
+    /// Whisper で音声を英語に認識し、その後翻訳サービスで目標言語に翻訳
     /// </summary>
     public async Task<string> TranslateAudioAsync(float[] audioData, string sourceLanguage = "en", string targetLanguage = "ja")
     {
@@ -191,16 +192,35 @@ public class WhisperTranslationService : ITranslationService
             {
                 LogDebug($"[TranslateAudioAsync] 音声翻訳開始: Source={sourceLanguage}, Target={targetLanguage}, AudioLength={audioData.Length}");
 
-                var translationSegments = new List<string>();
+                // ステップ1: Whisper で音声を認識（常に英語）
+                var recognizedSegments = new List<string>();
                 await foreach (var segment in _processor.ProcessAsync(audioData))
                 {
-                    translationSegments.Add(segment.Text.Trim());
-                    LogDebug($"[TranslateAudioAsync] セグメント: {segment.Text}");
+                    recognizedSegments.Add(segment.Text.Trim());
+                    LogDebug($"[TranslateAudioAsync] 認識セグメント: {segment.Text}");
                 }
 
-                var translatedText = string.Join(" ", translationSegments);
-                LogDebug($"[TranslateAudioAsync] 音声翻訳完了: {translatedText}");
+                var recognizedText = string.Join(" ", recognizedSegments);
+                if (string.IsNullOrWhiteSpace(recognizedText))
+                {
+                    LogDebug($"[TranslateAudioAsync] 音声から認識されたテキストがありません");
+                    return string.Empty;
+                }
 
+                LogDebug($"[TranslateAudioAsync] 認識完了: {recognizedText}");
+
+                // ステップ2: 認識したテキストを翻訳（英語→目標言語）
+                if (targetLanguage.Equals("en", StringComparison.OrdinalIgnoreCase))
+                {
+                    // ターゲットが英語の場合はそのまま返す
+                    LogDebug($"[TranslateAudioAsync] ターゲットが英語のため翻訳をスキップ");
+                    return recognizedText;
+                }
+
+                var translationResult = await TranslateAsync(recognizedText, "en", targetLanguage);
+                var translatedText = translationResult.TranslatedText;
+
+                LogDebug($"[TranslateAudioAsync] 翻訳完了: {translatedText}");
                 return translatedText;
             }
             catch (Exception ex)
@@ -301,11 +321,11 @@ public class WhisperTranslationService : ITranslationService
                 "WhisperProcessor を作成中..."));
 
             var builder = _factory.CreateBuilder()
-                .WithLanguage("en")
-                .WithThreads(Environment.ProcessorCount)
-                .WithTranslate();
+                .WithThreads(Environment.ProcessorCount);
 
             _processor = builder.Build();
+            
+            LoggerService.LogDebug("Whisper Processor created (ASR mode, no translation)");
 
             _isModelLoaded = true;
             LoggerService.LogInfo("Whisper翻訳モデルの読み込みが完了しました");
