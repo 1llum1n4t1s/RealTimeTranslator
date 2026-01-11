@@ -368,10 +368,11 @@ public partial class MainViewModel : ObservableObject, IDisposable
         try
         {
             // 状態とチャネルを一度に取得してTOCTOUバグを回避
+            var isRunning = IsRunning;
             var cancellation = _processingCancellation;
             var channel = _segmentChannel;
 
-            if (!IsRunning || cancellation == null || cancellation.IsCancellationRequested || channel == null)
+            if (!isRunning || cancellation == null || cancellation.IsCancellationRequested || channel == null)
             {
                 return;
             }
@@ -381,8 +382,8 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
             foreach (var segment in segments)
             {
-                // 再度状態確認（ループ中に変更される可能性があるため）
-                if (!IsRunning || cancellation.IsCancellationRequested || channel == null)
+                // キャンセル要求を確認（channelは既にnullチェック済み）
+                if (cancellation.IsCancellationRequested)
                 {
                     return;
                 }
@@ -398,7 +399,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
         }
         catch (Exception ex)
         {
-            Log($"処理エラー: {ex.Message}");
+            Log($"処理エラー: {ex.Message}\nスタックトレース: {ex.StackTrace}");
         }
     }
 
@@ -654,7 +655,13 @@ public partial class MainViewModel : ObservableObject, IDisposable
             _logLines.Dequeue();
         }
 
-        LogText = string.Join(Environment.NewLine, _logLines);
+        // StringBuilderを使用して効率的に文字列を構築
+        var sb = new StringBuilder(_logLines.Count * 50); // 概算容量を事前確保
+        foreach (var line in _logLines)
+        {
+            sb.AppendLine(line);
+        }
+        LogText = sb.ToString();
     }
 
     private void OnModelDownloadProgress(object? sender, ModelDownloadProgressEventArgs e)

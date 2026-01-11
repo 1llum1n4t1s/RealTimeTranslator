@@ -525,37 +525,53 @@ public class WhisperASRService : IASRService
 
     private static bool TryInvokeBuilder(object builder, string methodName, object argument)
     {
-        var method = builder.GetType()
-            .GetMethods()
-            .FirstOrDefault(info =>
-                string.Equals(info.Name, methodName, StringComparison.Ordinal)
-                && info.GetParameters().Length == 1
-                && info.GetParameters()[0].ParameterType.IsAssignableFrom(argument.GetType()));
-
-        if (method == null)
+        try
         {
+            var method = builder.GetType()
+                .GetMethods()
+                .FirstOrDefault(info =>
+                    string.Equals(info.Name, methodName, StringComparison.Ordinal)
+                    && info.GetParameters().Length == 1
+                    && info.GetParameters()[0].ParameterType.IsAssignableFrom(argument.GetType()));
+
+            if (method == null)
+            {
+                return false;
+            }
+
+            method.Invoke(builder, new[] { argument });
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"Failed to invoke {methodName}: {ex.Message}");
             return false;
         }
-
-        method.Invoke(builder, new[] { argument });
-        return true;
     }
 
     private static bool TryInvokeBuilder(object builder, string methodName)
     {
-        var method = builder.GetType()
-            .GetMethods()
-            .FirstOrDefault(info =>
-                string.Equals(info.Name, methodName, StringComparison.Ordinal)
-                && info.GetParameters().Length == 0);
-
-        if (method == null)
+        try
         {
+            var method = builder.GetType()
+                .GetMethods()
+                .FirstOrDefault(info =>
+                    string.Equals(info.Name, methodName, StringComparison.Ordinal)
+                    && info.GetParameters().Length == 0);
+
+            if (method == null)
+            {
+                return false;
+            }
+
+            method.Invoke(builder, Array.Empty<object>());
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"Failed to invoke {methodName}: {ex.Message}");
             return false;
         }
-
-        method.Invoke(builder, Array.Empty<object>());
-        return true;
     }
 
     /// <summary>

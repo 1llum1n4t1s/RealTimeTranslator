@@ -83,39 +83,33 @@ public partial class SettingsViewModel : ObservableObject
         SelectedGameProfile.Hotwords = ParseHotwords(value);
     }
 
-    // Note: These partial methods for property change callbacks have been commented out
-    // as they conflict with the CommunityToolkit.Mvvm code generation.
-    // The MVVM Toolkit automatically generates these callbacks for ObservableProperty fields.
-    // If you need to handle property changes, override them in the generated partial methods
-    // or use the PropertyChanged event instead.
-    
-    //partial void OnASRCorrectionDictionaryTextChanged(string value)
-    //{
-    //    if (SelectedGameProfile is null)
-    //        return;
-    //    SelectedGameProfile.ASRCorrectionDictionary = ParseDictionary(value);
-    //}
+    partial void OnAsrCorrectionDictionaryTextChanged(string value)
+    {
+        if (SelectedGameProfile is null)
+            return;
+        SelectedGameProfile.ASRCorrectionDictionary = ParseDictionary(value);
+    }
 
-    //partial void OnPreTranslationDictionaryTextChanged(string value)
-    //{
-    //    if (SelectedGameProfile is null)
-    //        return;
-    //    SelectedGameProfile.PreTranslationDictionary = ParseDictionary(value);
-    //}
+    partial void OnPreTranslationDictionaryTextChanged(string value)
+    {
+        if (SelectedGameProfile is null)
+            return;
+        SelectedGameProfile.PreTranslationDictionary = ParseDictionary(value);
+    }
 
-    //partial void OnPostTranslationDictionaryTextChanged(string value)
-    //{
-    //    if (SelectedGameProfile is null)
-    //        return;
-    //    SelectedGameProfile.PostTranslationDictionary = ParseDictionary(value);
-    //}
+    partial void OnPostTranslationDictionaryTextChanged(string value)
+    {
+        if (SelectedGameProfile is null)
+            return;
+        SelectedGameProfile.PostTranslationDictionary = ParseDictionary(value);
+    }
 
-    //partial void OnInitialPromptTextChanged(string value)
-    //{
-    //    if (SelectedGameProfile is null)
-    //        return;
-    //    SelectedGameProfile.InitialPrompt = value;
-    //}
+    partial void OnInitialPromptTextChanged(string value)
+    {
+        if (SelectedGameProfile is null)
+            return;
+        SelectedGameProfile.InitialPrompt = value;
+    }
 
     [RelayCommand]
     private void AddProfile()

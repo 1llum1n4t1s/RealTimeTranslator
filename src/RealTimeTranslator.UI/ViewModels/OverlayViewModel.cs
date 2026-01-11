@@ -12,7 +12,7 @@ namespace RealTimeTranslator.UI.ViewModels;
 /// </summary>
 public partial class OverlayViewModel : ObservableObject, IDisposable
 {
-    private const int CleanupIntervalMs = 100; // クリーンアップ間隔（ミリ秒）
+    private const int CleanupIntervalMs = 500; // クリーンアップ間隔（ミリ秒）
 
     private readonly OverlaySettings _settings;
     private readonly DispatcherTimer _cleanupTimer;

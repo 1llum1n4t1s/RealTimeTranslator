@@ -159,8 +159,9 @@ public class AudioCaptureService : IAudioCaptureService
         _isCapturing = false;
         if (e.Exception != null)
         {
-            // エラーログ
-            Console.WriteLine($"Recording stopped with error: {e.Exception.Message}");
+            // エラーログ（WPFアプリではDebug出力を使用）
+            System.Diagnostics.Debug.WriteLine($"Recording stopped with error: {e.Exception.Message}");
+            System.Diagnostics.Debug.WriteLine($"Stack trace: {e.Exception.StackTrace}");
         }
     }
 

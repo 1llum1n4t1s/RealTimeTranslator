@@ -131,6 +131,11 @@ public class VADService : IVADService
     /// </summary>
     public IEnumerable<SpeechSegment> DetectSpeech(float[] audioData)
     {
+        if (audioData == null || audioData.Length == 0)
+        {
+            return Enumerable.Empty<SpeechSegment>();
+        }
+
         lock (_stateLock)
         {
             var segments = new List<SpeechSegment>();
