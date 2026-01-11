@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using NAudio.Wave;
@@ -467,7 +468,9 @@ public class AudioCaptureService : IAudioCaptureService
             var samplesPerChunk = targetSampleRate * AudioChunkDurationMs / 1000;
             while (_audioBuffer.Count >= samplesPerChunk)
             {
-                var chunk = _audioBuffer.Take(samplesPerChunk).ToArray();
+                // Take().ToArray() + RemoveRange() の代わりに、直接配列にコピーして削除
+                var chunk = new float[samplesPerChunk];
+                _audioBuffer.CopyTo(0, chunk, 0, samplesPerChunk);
                 _audioBuffer.RemoveRange(0, samplesPerChunk);
 
                 AudioDataAvailable?.Invoke(this, new AudioDataEventArgs(chunk, DateTime.Now));
@@ -539,25 +542,36 @@ public class AudioCaptureService : IAudioCaptureService
 
         double ratio = (double)targetSampleRate / sourceSampleRate;
         int newLength = (int)(samples.Length * ratio);
-        var resampled = new float[newLength];
 
-        for (int i = 0; i < newLength; i++)
+        // ArrayPool を使用してメモリ割り当てを最適化
+        var rentedArray = ArrayPool<float>.Shared.Rent(newLength);
+        try
         {
-            double sourceIndex = i / ratio;
-            int index = (int)sourceIndex;
-            double fraction = sourceIndex - index;
+            for (int i = 0; i < newLength; i++)
+            {
+                double sourceIndex = i / ratio;
+                int index = (int)sourceIndex;
+                double fraction = sourceIndex - index;
 
-            if (index + 1 < samples.Length)
-            {
-                resampled[i] = (float)(samples[index] * (1 - fraction) + samples[index + 1] * fraction);
+                if (index + 1 < samples.Length)
+                {
+                    rentedArray[i] = (float)(samples[index] * (1 - fraction) + samples[index + 1] * fraction);
+                }
+                else if (index < samples.Length)
+                {
+                    rentedArray[i] = samples[index];
+                }
             }
-            else if (index < samples.Length)
-            {
-                resampled[i] = samples[index];
-            }
+
+            // 必要なサイズだけコピーして返す
+            var result = new float[newLength];
+            Array.Copy(rentedArray, result, newLength);
+            return result;
         }
-
-        return resampled;
+        finally
+        {
+            ArrayPool<float>.Shared.Return(rentedArray);
+        }
     }
 
     private float[] ConvertToMono(float[] samples, int channels)
@@ -566,19 +580,30 @@ public class AudioCaptureService : IAudioCaptureService
             return samples;
 
         int monoLength = samples.Length / channels;
-        var mono = new float[monoLength];
 
-        for (int i = 0; i < monoLength; i++)
+        // ArrayPool を使用してメモリ割り当てを最適化
+        var rentedArray = ArrayPool<float>.Shared.Rent(monoLength);
+        try
         {
-            float sum = 0;
-            for (int ch = 0; ch < channels; ch++)
+            for (int i = 0; i < monoLength; i++)
             {
-                sum += samples[i * channels + ch];
+                float sum = 0;
+                for (int ch = 0; ch < channels; ch++)
+                {
+                    sum += samples[i * channels + ch];
+                }
+                rentedArray[i] = sum / channels;
             }
-            mono[i] = sum / channels;
-        }
 
-        return mono;
+            // 必要なサイズだけコピーして返す
+            var result = new float[monoLength];
+            Array.Copy(rentedArray, result, monoLength);
+            return result;
+        }
+        finally
+        {
+            ArrayPool<float>.Shared.Return(rentedArray);
+        }
     }
 
     public void Dispose()

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text.Json;
 using RealTimeTranslator.Core.Interfaces;
 using RealTimeTranslator.Core.Models;
 using RealTimeTranslator.Core.Services;
@@ -25,6 +26,8 @@ public class WhisperTranslationService : ITranslationService
     private readonly HttpClient _httpClient;
     private readonly Dictionary<string, string> _cache = new();
     private readonly LinkedList<string> _cacheOrder = new();
+    // キャッシュキーから LinkedListNode へのマッピング（O(1) 検索のため）
+    private readonly Dictionary<string, LinkedListNode<string>> _cacheNodeMap = new();
     private readonly object _cacheLock = new();
 
     private bool _isModelLoaded = false;
@@ -80,7 +83,7 @@ public class WhisperTranslationService : ITranslationService
                 defaultModelFileName,
                 downloadUrl,
                 ServiceName,
-                ModelLabel);
+                ModelLabel).ConfigureAwait(false);
 
             if (string.IsNullOrWhiteSpace(modelFilePath))
             {
@@ -88,7 +91,7 @@ public class WhisperTranslationService : ITranslationService
             }
 
             // モデルをロード
-            await Task.Run(() => LoadModelFromPath(modelFilePath));
+            await Task.Run(() => LoadModelFromPath(modelFilePath)).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -142,7 +145,7 @@ public class WhisperTranslationService : ITranslationService
             };
         }
 
-        await _translateLock.WaitAsync();
+        await _translateLock.WaitAsync().ConfigureAwait(false);
         try
         {
             var preprocessedText = ApplyPreTranslation(text);
@@ -156,7 +159,7 @@ public class WhisperTranslationService : ITranslationService
             }
             else
             {
-                translatedText = await TranslateWithMyMemoryAsync(preprocessedText, sourceLanguage, targetLanguage);
+                translatedText = await TranslateWithMyMemoryAsync(preprocessedText, sourceLanguage, targetLanguage).ConfigureAwait(false);
             }
 
             translatedText = ApplyPostTranslation(translatedText);
@@ -201,7 +204,7 @@ public class WhisperTranslationService : ITranslationService
 
                 // ステップ1: Whisper で音声を認識（常に英語）
                 var recognizedSegments = new List<string>();
-                await foreach (var segment in _processor.ProcessAsync(audioData))
+                await foreach (var segment in _processor.ProcessAsync(audioData).ConfigureAwait(false))
                 {
                     recognizedSegments.Add(segment.Text.Trim());
                     LogDebug($"[TranslateAudioAsync] 認識セグメント: {segment.Text}");
@@ -224,7 +227,7 @@ public class WhisperTranslationService : ITranslationService
                     return recognizedText;
                 }
 
-                var translationResult = await TranslateAsync(recognizedText, "en", targetLanguage);
+                var translationResult = await TranslateAsync(recognizedText, "en", targetLanguage).ConfigureAwait(false);
                 var translatedText = translationResult.TranslatedText;
 
                 LogDebug($"[TranslateAudioAsync] 翻訳完了: {translatedText}");
@@ -246,19 +249,24 @@ public class WhisperTranslationService : ITranslationService
     {
         lock (_cacheLock)
         {
-            if (_cache.ContainsKey(key))
+            if (_cacheNodeMap.TryGetValue(key, out var existingNode))
             {
-                _cacheOrder.Remove(_cacheOrder.Find(key)!);
+                // 既存のノードを削除して再追加（パフォーマンス最適化：Find() を避ける）
+                _cacheOrder.Remove(existingNode);
+                _cacheNodeMap.Remove(key);
             }
 
             _cache[key] = value;
-            _cacheOrder.AddLast(key);
+            var newNode = _cacheOrder.AddLast(key);
+            _cacheNodeMap[key] = newNode;
 
             if (_cacheOrder.Count > MaxCacheSize)
             {
-                var oldestKey = _cacheOrder.First!.Value;
+                var oldestNode = _cacheOrder.First!;
+                var oldestKey = oldestNode.Value;
                 _cacheOrder.RemoveFirst();
                 _cache.Remove(oldestKey);
+                _cacheNodeMap.Remove(oldestKey);
             }
         }
     }
@@ -272,8 +280,13 @@ public class WhisperTranslationService : ITranslationService
         {
             if (_cache.TryGetValue(key, out var cachedValue))
             {
-                _cacheOrder.Remove(_cacheOrder.Find(key)!);
-                _cacheOrder.AddLast(key);
+                // ノードマップを使用して O(1) で取得（パフォーマンス最適化：Find() を避ける）
+                if (_cacheNodeMap.TryGetValue(key, out var node))
+                {
+                    _cacheOrder.Remove(node);
+                    var newNode = _cacheOrder.AddLast(key);
+                    _cacheNodeMap[key] = newNode;
+                }
                 value = cachedValue;
                 return true;
             }
@@ -381,32 +394,37 @@ public class WhisperTranslationService : ITranslationService
             var targetLang = targetLanguage.Split('-')[0].ToLower();
             
             var url = $"{baseUrl}?q={Uri.EscapeDataString(text)}&langpair={sourceLang}|{targetLang}";
-            
+
             LogDebug($"[TranslateWithMyMemoryAsync] MyMemory API呼び出し: {sourceLang}→{targetLang}");
-            
-            var response = await _httpClient.GetAsync(url);
+
+            var response = await _httpClient.GetAsync(url).ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
             {
                 LogError($"[TranslateWithMyMemoryAsync] MyMemory API エラー: {response.StatusCode}");
                 return text; // 失敗時は元のテキストを返す
             }
 
-            var jsonContent = await response.Content.ReadAsStringAsync();
+            var jsonContent = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
             LogDebug($"[TranslateWithMyMemoryAsync] API応答: {jsonContent}");
-            
-            // JSON をパース（簡易的な方法）
-            if (jsonContent.Contains("\"translatedText\":"))
+
+            // System.Text.Json を使用して適切に JSON をパース（パフォーマンス最適化）
+            try
             {
-                var startIdx = jsonContent.IndexOf("\"translatedText\":\"") + "\"translatedText\":\"".Length;
-                var endIdx = jsonContent.IndexOf("\"", startIdx);
-                if (startIdx > 0 && endIdx > startIdx)
+                using var document = JsonDocument.Parse(jsonContent);
+                if (document.RootElement.TryGetProperty("responseData", out var responseData) &&
+                    responseData.TryGetProperty("translatedText", out var translatedTextElement))
                 {
-                    var translated = jsonContent.Substring(startIdx, endIdx - startIdx);
-                    // JSON エスケープを解除
-                    translated = translated.Replace("\\\"", "\"").Replace("\\\\", "\\").Replace("\\/", "/");
-                    LogDebug($"[TranslateWithMyMemoryAsync] 翻訳結果: {translated}");
-                    return translated;
+                    var translated = translatedTextElement.GetString();
+                    if (!string.IsNullOrEmpty(translated))
+                    {
+                        LogDebug($"[TranslateWithMyMemoryAsync] 翻訳結果: {translated}");
+                        return translated;
+                    }
                 }
+            }
+            catch (JsonException jsonEx)
+            {
+                LogWarning($"[TranslateWithMyMemoryAsync] JSON パースエラー: {jsonEx.Message}");
             }
 
             LogWarning($"[TranslateWithMyMemoryAsync] 翻訳結果をパースできません");
@@ -435,6 +453,7 @@ public class WhisperTranslationService : ITranslationService
         {
             _cache.Clear();
             _cacheOrder.Clear();
+            _cacheNodeMap.Clear();
         }
     }
 

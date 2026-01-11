@@ -38,6 +38,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
     private readonly SettingsFilePath _settingsFilePath;
     private readonly SettingsViewModel _settingsViewModel;
     private readonly Queue<string> _logLines = new();
+    private readonly object _logLock = new();
     private string? _lastLogMessage;
     private CancellationTokenSource? _processingCancellation;
     private Channel<SpeechSegmentWorkItem>? _translationChannel;
@@ -585,22 +586,25 @@ public partial class MainViewModel : ObservableObject, IDisposable
         var timestamp = DateTime.Now.ToString("HH:mm:ss");
         var logLine = $"[{timestamp}] {message}";
 
-        _logLines.Enqueue(logLine);
-
-        // 最新MaxLogLines行のみ保持
-        while (_logLines.Count > MaxLogLines)
+        lock (_logLock)
         {
-            _logLines.Dequeue();
-        }
+            _logLines.Enqueue(logLine);
 
-        // StringBuilderを使用して効率的に文字列を構築
-        var sb = new StringBuilder(_logLines.Count * 50); // 概算容量を事前確保
-        // ToArray()でスナップショットを作成し、列挙中のコレクション変更エラーを回避
-        foreach (var line in _logLines.ToArray())
-        {
-            sb.AppendLine(line);
+            // 最新MaxLogLines行のみ保持
+            while (_logLines.Count > MaxLogLines)
+            {
+                _logLines.Dequeue();
+            }
+
+            // StringBuilderを使用して効率的に文字列を構築
+            // ロック内で直接列挙（ToArray()を避けてパフォーマンス最適化）
+            var sb = new StringBuilder(_logLines.Count * 50);
+            foreach (var line in _logLines)
+            {
+                sb.AppendLine(line);
+            }
+            LogText = sb.ToString();
         }
-        LogText = sb.ToString();
     }
 
     /// <summary>

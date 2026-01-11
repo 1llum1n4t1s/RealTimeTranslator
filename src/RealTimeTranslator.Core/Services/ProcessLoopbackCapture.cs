@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Runtime.InteropServices;
 using NAudio.CoreAudioApi;
 using NAudio.Wave;
@@ -276,6 +277,9 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
         try
         {
             var frameSize = WaveFormat.BlockAlign;
+            byte[]? rentedBuffer = null;
+            int rentedSize = 0;
+
             while (_isCapturing)
             {
                 ThrowOnError(_captureClient.GetNextPacketSize(out var packetFrames));
@@ -283,23 +287,43 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
                 {
                     ThrowOnError(_captureClient.GetBuffer(out var dataPointer, out var numFrames, out var flags, out _, out _));
                     var bytesToRead = (int)(numFrames * (uint)frameSize);
-                    var buffer = new byte[bytesToRead];
+
+                    // ArrayPool を使用してバッファを再利用（パフォーマンス最適化）
+                    if (rentedBuffer == null || rentedSize < bytesToRead)
+                    {
+                        if (rentedBuffer != null)
+                        {
+                            ArrayPool<byte>.Shared.Return(rentedBuffer);
+                        }
+                        rentedBuffer = ArrayPool<byte>.Shared.Rent(bytesToRead);
+                        rentedSize = rentedBuffer.Length;
+                    }
 
                     if ((flags & AudioClientBufferFlags.Silent) != 0)
                     {
-                        Array.Clear(buffer, 0, buffer.Length);
+                        Array.Clear(rentedBuffer, 0, bytesToRead);
                     }
                     else
                     {
-                        Marshal.Copy(dataPointer, buffer, 0, bytesToRead);
+                        Marshal.Copy(dataPointer, rentedBuffer, 0, bytesToRead);
                     }
 
+                    // WaveInEventArgsは配列をそのまま保持するため、コピーして渡す必要がある
+                    var buffer = new byte[bytesToRead];
+                    Array.Copy(rentedBuffer, buffer, bytesToRead);
                     DataAvailable?.Invoke(this, new WaveInEventArgs(buffer, bytesToRead));
+
                     ThrowOnError(_captureClient.ReleaseBuffer(numFrames));
                     ThrowOnError(_captureClient.GetNextPacketSize(out packetFrames));
                 }
 
                 Thread.Sleep(CaptureThreadSleepMs);
+            }
+
+            // 終了時にバッファを返却
+            if (rentedBuffer != null)
+            {
+                ArrayPool<byte>.Shared.Return(rentedBuffer);
             }
         }
         catch (Exception ex)

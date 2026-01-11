@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Text;
 
@@ -48,12 +49,118 @@ public static class LoggerService
     private static Action<string>? _uiLogCallback;
 
     /// <summary>
+    /// ログバッファ（非同期書き込み用）
+    /// </summary>
+    private static readonly ConcurrentQueue<string> _logBuffer = new();
+
+    /// <summary>
+    /// ログフラッシュタスク
+    /// </summary>
+    private static Task? _flushTask;
+
+    /// <summary>
+    /// キャンセルトークンソース
+    /// </summary>
+    private static CancellationTokenSource? _cancellationTokenSource;
+
+    /// <summary>
+    /// ログ出力カウンター（トリム実行頻度制御用）
+    /// </summary>
+    private static int _logCounter = 0;
+
+    /// <summary>
+    /// トリム実行間隔（この回数ごとにログファイルトリムを実行）
+    /// </summary>
+    private const int TrimInterval = 100;
+
+    /// <summary>
+    /// ロックオブジェクト
+    /// </summary>
+    private static readonly object _lock = new();
+
+    /// <summary>
     /// UI ログコールバックを設定
     /// </summary>
     /// <param name="callback">ログメッセージを受け取るコールバック</param>
     public static void SetUILogCallback(Action<string> callback)
     {
         _uiLogCallback = callback;
+        EnsureFlushTaskRunning();
+    }
+
+    /// <summary>
+    /// バックグラウンドフラッシュタスクが実行されていることを確認
+    /// </summary>
+    private static void EnsureFlushTaskRunning()
+    {
+        lock (_lock)
+        {
+            if (_flushTask == null || _flushTask.IsCompleted)
+            {
+                _cancellationTokenSource?.Cancel();
+                _cancellationTokenSource = new CancellationTokenSource();
+                _flushTask = Task.Run(() => FlushLoopAsync(_cancellationTokenSource.Token));
+            }
+        }
+    }
+
+    /// <summary>
+    /// ログバッファを定期的にフラッシュするループ
+    /// </summary>
+    private static async Task FlushLoopAsync(CancellationToken cancellationToken)
+    {
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            try
+            {
+                await Task.Delay(500, cancellationToken).ConfigureAwait(false);
+                FlushBuffer();
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"ログフラッシュエラー: {ex.Message}");
+            }
+        }
+    }
+
+    /// <summary>
+    /// バッファをファイルにフラッシュ
+    /// </summary>
+    private static void FlushBuffer()
+    {
+        if (_logBuffer.IsEmpty)
+            return;
+
+        try
+        {
+            var linesToWrite = new List<string>();
+            while (_logBuffer.TryDequeue(out var line))
+            {
+                linesToWrite.Add(line);
+            }
+
+            if (linesToWrite.Count > 0)
+            {
+                File.AppendAllLines(LogFilePath, linesToWrite, Encoding.UTF8);
+            }
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"ログフラッシュエラー: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// アプリケーション終了時に呼び出してログをフラッシュ
+    /// </summary>
+    public static void Shutdown()
+    {
+        _cancellationTokenSource?.Cancel();
+        FlushBuffer();
     }
 
     /// <summary>
@@ -72,9 +179,15 @@ public static class LoggerService
             var timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff");
             var formattedMessage = $"[{timestamp}] [{level}] {message}";
 
-            // ファイルに出力
-            File.AppendAllText(LogFilePath, formattedMessage + Environment.NewLine, Encoding.UTF8);
-            TrimLogFile();
+            // ログバッファに追加（非同期でファイルに書き込まれる）
+            _logBuffer.Enqueue(formattedMessage);
+            EnsureFlushTaskRunning();
+
+            // 定期的にログファイルをトリム（パフォーマンス改善のため頻度を下げる）
+            if (Interlocked.Increment(ref _logCounter) % TrimInterval == 0)
+            {
+                TrimLogFile();
+            }
 
             // UI ログに出力（時刻は含めない：UI 側で管理）
             var uiMessage = $"[{level}] {message}";
@@ -99,11 +212,20 @@ public static class LoggerService
         try
         {
             var timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff");
-            var logLines = messages.Select(message => $"[{timestamp}] [{level}] {message}").ToArray();
 
-            // ファイルに出力
-            File.AppendAllLines(LogFilePath, logLines, Encoding.UTF8);
-            TrimLogFile();
+            // ログバッファに追加（非同期でファイルに書き込まれる）
+            foreach (var message in messages)
+            {
+                var formattedMessage = $"[{timestamp}] [{level}] {message}";
+                _logBuffer.Enqueue(formattedMessage);
+            }
+            EnsureFlushTaskRunning();
+
+            // 定期的にログファイルをトリム
+            if (Interlocked.Add(ref _logCounter, messages.Length) % TrimInterval == 0)
+            {
+                TrimLogFile();
+            }
 
             // UI ログに出力
             foreach (var message in messages)
@@ -128,23 +250,32 @@ public static class LoggerService
         try
         {
             var timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff");
-            var logMessage = new StringBuilder();
-            logMessage.AppendLine($"[{timestamp}] [Error] {message}");
-            logMessage.AppendLine($"例外: {exception.GetType().Name} - {exception.Message}");
-            logMessage.AppendLine($"スタックトレース: {exception.StackTrace}");
+
+            // ログバッファに追加（複数行分）
+            _logBuffer.Enqueue($"[{timestamp}] [Error] {message}");
+            _logBuffer.Enqueue($"例外: {exception.GetType().Name} - {exception.Message}");
+            if (!string.IsNullOrEmpty(exception.StackTrace))
+            {
+                _logBuffer.Enqueue($"スタックトレース: {exception.StackTrace}");
+            }
 
             // InnerExceptionも記録
             if (exception.InnerException != null)
             {
-                logMessage.AppendLine($"InnerException: {exception.InnerException.GetType().Name} - {exception.InnerException.Message}");
-                logMessage.AppendLine($"InnerStackTrace: {exception.InnerException.StackTrace}");
+                _logBuffer.Enqueue($"InnerException: {exception.InnerException.GetType().Name} - {exception.InnerException.Message}");
+                if (!string.IsNullOrEmpty(exception.InnerException.StackTrace))
+                {
+                    _logBuffer.Enqueue($"InnerStackTrace: {exception.InnerException.StackTrace}");
+                }
             }
 
-            var content = logMessage.ToString();
+            EnsureFlushTaskRunning();
 
-            // ファイルに出力
-            File.AppendAllText(LogFilePath, content, Encoding.UTF8);
-            TrimLogFile();
+            // 定期的にログファイルをトリム
+            if (Interlocked.Increment(ref _logCounter) % TrimInterval == 0)
+            {
+                TrimLogFile();
+            }
 
             // UI ログに出力
             _uiLogCallback?.Invoke($"[Error] {message}: {exception.Message}");

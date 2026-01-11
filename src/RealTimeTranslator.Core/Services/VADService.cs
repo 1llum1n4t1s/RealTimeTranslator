@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using RealTimeTranslator.Core.Interfaces;
 using RealTimeTranslator.Core.Models;
 
@@ -173,14 +174,16 @@ public class VADService : IVADService
                         _silenceDuration = 0;
                     }
 
-                    _currentSpeechBuffer.AddRange(frame.ToArray());
+                    // Span to Array 変換を避けて直接追加（パフォーマンス最適化）
+                    AddSpanToList(_currentSpeechBuffer, frame);
                     _silenceDuration = 0;
                 }
                 else if (_isSpeaking)
                 {
                     // 発話中の無音
                     _silenceDuration += frameDuration;
-                    _currentSpeechBuffer.AddRange(frame.ToArray());
+                    // Span to Array 変換を避けて直接追加（パフォーマンス最適化）
+                    AddSpanToList(_currentSpeechBuffer, frame);
 
                     // 無音が閾値を超えたら発話終了
                     if (_silenceDuration >= silenceThreshold)
@@ -279,6 +282,31 @@ public class VADService : IVADService
             sensitivity = _sensitivity;
         }
         return BaseEnergyThreshold + (MaxEnergyThreshold - BaseEnergyThreshold) * (1 - sensitivity);
+    }
+
+    /// <summary>
+    /// ReadOnlySpan をリストに効率的に追加（ToArray() を避ける）
+    /// </summary>
+    private static void AddSpanToList(List<float> list, ReadOnlySpan<float> span)
+    {
+        if (span.Length == 0)
+            return;
+
+        // CollectionsMarshal を使用して List の内部バッファに直接アクセス
+        int currentCount = list.Count;
+        int requiredCapacity = currentCount + span.Length;
+
+        // 必要に応じて容量を拡張
+        if (list.Capacity < requiredCapacity)
+        {
+            list.Capacity = requiredCapacity;
+        }
+
+        // List のサイズを拡張
+        CollectionsMarshal.SetCount(list, requiredCapacity);
+
+        // List の内部バッファに直接コピー
+        span.CopyTo(CollectionsMarshal.AsSpan(list).Slice(currentCount));
     }
 
     /// <summary>

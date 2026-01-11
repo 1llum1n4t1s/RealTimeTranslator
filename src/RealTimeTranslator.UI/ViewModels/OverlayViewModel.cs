@@ -106,13 +106,15 @@ public partial class OverlayViewModel : ObservableObject, IDisposable
             lock (_subtitlesLock)
             {
                 var now = DateTime.Now;
-                var toRemove = Subtitles
-                    .Where(s => s.ShouldRemove(now))
-                    .ToList();
 
-                foreach (var item in toRemove)
+                // 逆順でインデックスベースの削除を使用（パフォーマンス最適化）
+                // Remove() は O(n) だが、RemoveAt() は O(n-i) でより効率的
+                for (int i = Subtitles.Count - 1; i >= 0; i--)
                 {
-                    Subtitles.Remove(item);
+                    if (Subtitles[i].ShouldRemove(now))
+                    {
+                        Subtitles.RemoveAt(i);
+                    }
                 }
             }
         });
