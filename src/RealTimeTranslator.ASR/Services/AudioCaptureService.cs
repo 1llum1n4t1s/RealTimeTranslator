@@ -140,7 +140,9 @@ public class AudioCaptureService : IAudioCaptureService
             var samplesPerChunk = targetSampleRate * AudioChunkDurationMs / 1000;
             while (_audioBuffer.Count >= samplesPerChunk)
             {
-                var chunk = _audioBuffer.Take(samplesPerChunk).ToArray();
+                // 直接配列にコピーして効率化
+                var chunk = new float[samplesPerChunk];
+                _audioBuffer.CopyTo(0, chunk, 0, samplesPerChunk);
                 _audioBuffer.RemoveRange(0, samplesPerChunk);
 
                 AudioDataAvailable?.Invoke(this, new AudioDataEventArgs(chunk, DateTime.Now));
