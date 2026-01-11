@@ -336,6 +336,7 @@ public class OnnxTranslationService : ITranslationService
                 var output = results.FirstOrDefault()?.AsTensor<float>();
                 if (output == null)
                 {
+                    LogDebug("[PerformTranslationAsync] 出力がnull、フォールバック");
                     return $"[{targetLanguage}] {text}";
                 }
 
@@ -360,11 +361,13 @@ public class OnnxTranslationService : ITranslationService
 
                 // トークンをテキストにデコード
                 var translatedText = _tokenizer.Decode(translatedTokenIds.ToArray());
+                LogDebug($"[PerformTranslationAsync] 翻訳完了: Result={translatedText}");
                 return string.IsNullOrWhiteSpace(translatedText) ? $"[{targetLanguage}] {text}" : translatedText;
             }
             catch (Exception ex)
             {
-                LoggerService.LogError($"Translation error: {ex.Message}");
+                LoggerService.LogError($"[PerformTranslationAsync] Translation error: {ex.GetType().Name} - {ex.Message}");
+                LoggerService.LogDebug($"[PerformTranslationAsync] StackTrace: {ex.StackTrace}");
                 return $"[{targetLanguage}] {text}";
             }
         });

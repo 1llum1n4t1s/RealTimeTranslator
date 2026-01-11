@@ -638,7 +638,9 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
                 var sourceLanguage = _settings.Translation.SourceLanguage;
                 var targetLanguage = _settings.Translation.TargetLanguage;
+                LoggerService.LogDebug($"[AccurateProcessingAsync] 翻訳開始: Text={accurateResult.Text}");
                 var translationResult = await _translationService.TranslateAsync(accurateResult.Text, sourceLanguage, targetLanguage);
+                LoggerService.LogDebug($"[AccurateProcessingAsync] 翻訳完了: Original={accurateResult.Text}, Translated={translationResult.TranslatedText}, FromCache={translationResult.FromCache}, Time={translationResult.ProcessingTimeMs}ms");
                 if (token.IsCancellationRequested || !IsRunning)
                 {
                     EnqueueOutput(new AccurateOutput(item.Sequence, null, null, null));
@@ -653,6 +655,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
                     IsFinal = true
                 };
                 var logMessage = $"[確定] ({sourceLanguage}→{targetLanguage}) {accurateResult.Text} → {translationResult.TranslatedText}";
+                LoggerService.LogInfo(logMessage);
                 EnqueueOutput(new AccurateOutput(item.Sequence, finalSubtitle, logMessage, translationResult.ProcessingTimeMs));
             }
             catch (Exception ex)
