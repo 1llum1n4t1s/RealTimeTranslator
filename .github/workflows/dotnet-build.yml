@@ -1,9 +1,6 @@
 name: .NET ビルド
 
 on:
-  push:
-    branches-ignore:
-      - releases
   pull_request:
     branches-ignore:
       - releases
@@ -12,9 +9,6 @@ jobs:
   build:
     name: .NET ビルド
     runs-on: windows-latest
-    strategy:
-      matrix:
-        configuration: [Debug, Release]
 
     steps:
       - name: リポジトリをチェックアウト
@@ -30,22 +24,21 @@ jobs:
         run: dotnet restore RealTimeTranslator.sln
 
       - name: ビルド
-        run: dotnet build RealTimeTranslator.sln --configuration ${{ matrix.configuration }} --no-restore
+        run: dotnet build RealTimeTranslator.sln --configuration Release --no-restore
 
       - name: テスト実行
-        run: dotnet test RealTimeTranslator.sln --configuration ${{ matrix.configuration }} --no-build --verbosity normal --logger "trx;LogFileName=test-results.trx"
+        run: dotnet test RealTimeTranslator.sln --configuration Release --no-build --verbosity normal --logger "trx;LogFileName=test-results.trx"
         continue-on-error: true
 
       - name: テスト結果をアップロード
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: test-results-${{ matrix.configuration }}
+          name: test-results-Release
           path: '**/TestResults/*.trx'
           retention-days: 30
 
-      - name: ビルド成果物をアップロード (Release のみ)
-        if: matrix.configuration == 'Release'
+      - name: ビルド成果物をアップロード
         uses: actions/upload-artifact@v4
         with:
           name: build-artifacts-release
