@@ -6,9 +6,14 @@ namespace RealTimeTranslator.ASR.Services;
 
 /// <summary>
 /// AudioClientActivationParams を用いたプロセス単位のループバックキャプチャ
+/// Windows 10 Build 20348以降で利用可能
 /// </summary>
 internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
 {
+    /// <summary>
+    /// Process Loopback 用の仮想オーディオデバイスID
+    /// </summary>
+    private const string VirtualAudioDeviceProcessLoopback = "{2eef81be-33fa-4800-9670-1cd474972c3f}";
     private const int AudioBufferDurationMs = 100; // オーディオバッファの長さ（ミリ秒）
     private const int CaptureThreadSleepMs = 5; // キャプチャスレッドのスリープ時間（ミリ秒）
     private const long HundredNanosecondsPerSecond = 10000000L; // 1秒あたりの100ナノ秒単位数
@@ -30,6 +35,10 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
         set;
     }
 
+    /// <summary>
+    /// プロセス単位のループバックキャプチャを初期化
+    /// </summary>
+    /// <param name="targetProcessId">キャプチャ対象のプロセスID</param>
     public ProcessLoopbackCapture(int targetProcessId)
     {
         _targetProcessId = targetProcessId;
@@ -41,7 +50,8 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
         try
         {
             device = GetDefaultRenderDevice();
-            audioClient = ActivateProcessAudioClient(device, targetProcessId);
+            System.Diagnostics.Debug.WriteLine($"ProcessLoopbackCapture: TargetProcessId={targetProcessId}, DefaultDevice={device.FriendlyName}");
+            audioClient = ActivateProcessAudioClient(targetProcessId);
             _audioClient = audioClient;
 
             try
@@ -138,13 +148,16 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
         return enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
     }
 
-    private static IAudioClient3 ActivateProcessAudioClient(MMDevice device, int targetProcessId)
+    /// <summary>
+    /// プロセス単位のオーディオクライアントをアクティベート
+    /// </summary>
+    private static IAudioClient3 ActivateProcessAudioClient(int targetProcessId)
     {
         var activationParams = new AudioClientActivationParams
         {
             ActivationType = AudioClientActivationType.ProcessLoopback,
-            ProcessLoopbackMode = ProcessLoopbackMode.IncludeTargetProcessTree,
-            TargetProcessId = (uint)targetProcessId
+            TargetProcessId = (uint)targetProcessId,
+            ProcessLoopbackMode = ProcessLoopbackMode.IncludeTargetProcessTree
         };
 
         var paramsSize = Marshal.SizeOf<AudioClientActivationParams>();
@@ -160,7 +173,8 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
             };
 
             var iid = typeof(IAudioClient3).GUID;
-            ActivateAudioInterface(device, ref iid, activationParamsPtr, out var audioClient);
+            // Process Loopback では仮想オーディオデバイスIDを使用する必要がある
+            ActivateAudioInterface(VirtualAudioDeviceProcessLoopback, ref iid, activationParamsPtr, out var audioClient);
             return audioClient;
         }
         finally
@@ -169,12 +183,16 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
         }
     }
 
-    private static void ActivateAudioInterface(MMDevice device, ref Guid iid, PropVariant activationParams, out IAudioClient3 audioClient)
+    /// <summary>
+    /// オーディオインターフェースを非同期でアクティベート
+    /// </summary>
+    private static void ActivateAudioInterface(string deviceInterfacePath, ref Guid iid, PropVariant activationParams, out IAudioClient3 audioClient)
     {
         var completionHandler = new ActivateCompletionHandler();
         try
         {
-            var hr = ActivateAudioInterfaceAsync(device.ID, ref iid, activationParams, completionHandler, out var result);
+            System.Diagnostics.Debug.WriteLine($"ActivateAudioInterfaceAsync: deviceInterfacePath={deviceInterfacePath}");
+            var hr = ActivateAudioInterfaceAsync(deviceInterfacePath, ref iid, activationParams, completionHandler, out var result);
             if (hr != 0)
             {
                 System.Diagnostics.Debug.WriteLine($"ActivateAudioInterfaceAsync failed: HRESULT={hr:X8}");
@@ -184,6 +202,7 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
             completionHandler.WaitForCompletion();
             audioClient = completionHandler.GetActivatedInterface();
             Marshal.ReleaseComObject(result);
+            System.Diagnostics.Debug.WriteLine("ActivateAudioInterfaceAsync: Success");
         }
         catch (TimeoutException tex)
         {
@@ -333,12 +352,27 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
         int GetNextPacketSize(out uint numFramesInNextPacket);
     }
 
+    /// <summary>
+    /// AUDIOCLIENT_ACTIVATION_PARAMS 構造体
+    /// Windows API仕様に準拠したレイアウト
+    /// </summary>
     [StructLayout(LayoutKind.Sequential)]
     private struct AudioClientActivationParams
     {
+        /// <summary>
+        /// アクティベーションタイプ（ProcessLoopback = 1）
+        /// </summary>
         public AudioClientActivationType ActivationType;
-        public ProcessLoopbackMode ProcessLoopbackMode;
+
+        /// <summary>
+        /// ターゲットプロセスID（ProcessLoopbackParams.TargetProcessId）
+        /// </summary>
         public uint TargetProcessId;
+
+        /// <summary>
+        /// ループバックモード（ProcessLoopbackParams.ProcessLoopbackMode）
+        /// </summary>
+        public ProcessLoopbackMode ProcessLoopbackMode;
     }
 
     private enum AudioClientActivationType
