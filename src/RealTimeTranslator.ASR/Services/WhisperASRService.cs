@@ -58,25 +58,31 @@ public class WhisperASRService : IASRService
     /// </summary>
     public async Task InitializeAsync()
     {
-        OnModelStatusChanged(new ModelStatusChangedEventArgs(
-            ServiceName,
-            "ASR",
-            ModelStatusType.Info,
-            "ASRモデルの初期化を開始しました。"));
-
-        var fastModelPath = await EnsureModelAsync(
-            _settings.FastModelPath,
-            DefaultFastModelFileName,
-            DefaultFastModelDownloadUrl,
-            FastModelLabel);
-        var accurateModelPath = await EnsureModelAsync(
-            _settings.AccurateModelPath,
-            DefaultAccurateModelFileName,
-            DefaultAccurateModelDownloadUrl,
-            AccurateModelLabel);
-
-        await Task.Run(() =>
+        try
         {
+            OnModelStatusChanged(new ModelStatusChangedEventArgs(
+                ServiceName,
+                "ASR",
+                ModelStatusType.Info,
+                "ASRモデルの初期化を開始しました。"));
+
+            Debug.WriteLine("InitializeAsync: モデル確認開始");
+            var fastModelPath = await EnsureModelAsync(
+                _settings.FastModelPath,
+                DefaultFastModelFileName,
+                DefaultFastModelDownloadUrl,
+                FastModelLabel);
+            Debug.WriteLine($"InitializeAsync: 高速モデルパス={fastModelPath}");
+
+            var accurateModelPath = await EnsureModelAsync(
+                _settings.AccurateModelPath,
+                DefaultAccurateModelFileName,
+                DefaultAccurateModelDownloadUrl,
+                AccurateModelLabel);
+            Debug.WriteLine($"InitializeAsync: 高精度モデルパス={accurateModelPath}");
+
+            await Task.Run(() =>
+            {
             // GPUランタイムの初期化条件:
             // - AMD Vulkan: Whisper.net.Runtime.Vulkan が必要。Vulkan対応ドライバと ggml 系モデルが必須。
             // - NVIDIA CUDA: Whisper.net.Runtime.Cublas が必要。CUDA対応ドライバが必須。
@@ -87,17 +93,30 @@ public class WhisperASRService : IASRService
             // 低遅延モデル（small/medium）の初期化
             if (!string.IsNullOrWhiteSpace(fastModelPath) && File.Exists(fastModelPath))
             {
-                _fastFactory = WhisperFactory.FromPath(fastModelPath);
-                var fastBuilder = _fastFactory.CreateBuilder()
-                    .WithLanguage(_settings.Language)
-                    .WithThreads(4);
-                ConfigurePromptAndHotwords(fastBuilder);
-                _fastProcessor = fastBuilder.Build();
-                OnModelStatusChanged(new ModelStatusChangedEventArgs(
-                    ServiceName,
-                    FastModelLabel,
-                    ModelStatusType.LoadSucceeded,
-                    "高速ASRモデルの読み込みが完了しました。"));
+                try
+                {
+                    _fastFactory = WhisperFactory.FromPath(fastModelPath);
+                    var fastBuilder = _fastFactory.CreateBuilder()
+                        .WithLanguage(_settings.Language)
+                        .WithThreads(4);
+                    ConfigurePromptAndHotwords(fastBuilder);
+                    _fastProcessor = fastBuilder.Build();
+                    OnModelStatusChanged(new ModelStatusChangedEventArgs(
+                        ServiceName,
+                        FastModelLabel,
+                        ModelStatusType.LoadSucceeded,
+                        "高速ASRモデルの読み込みが完了しました。"));
+                }
+                catch (Exception ex)
+                {
+                    OnModelStatusChanged(new ModelStatusChangedEventArgs(
+                        ServiceName,
+                        FastModelLabel,
+                        ModelStatusType.LoadFailed,
+                        $"高速ASRモデルの読み込みに失敗しました: {ex.Message}",
+                        ex));
+                    Debug.WriteLine($"Failed to load fast ASR model: {ex}");
+                }
             }
             else
             {
@@ -105,26 +124,39 @@ public class WhisperASRService : IASRService
                     ServiceName,
                     FastModelLabel,
                     ModelStatusType.LoadFailed,
-                    "高速ASRモデルが見つからないため読み込みをスキップしました。"));
+                    "高速ASRモデルが見つかりません: " + fastModelPath));
             }
 
             // 高精度モデル（large系）の初期化
             if (!string.IsNullOrWhiteSpace(accurateModelPath) && File.Exists(accurateModelPath))
             {
-                _accurateFactory = WhisperFactory.FromPath(accurateModelPath);
-                var builder = _accurateFactory.CreateBuilder()
-                    .WithLanguage(_settings.Language)
-                    .WithThreads(4);
+                try
+                {
+                    _accurateFactory = WhisperFactory.FromPath(accurateModelPath);
+                    var builder = _accurateFactory.CreateBuilder()
+                        .WithLanguage(_settings.Language)
+                        .WithThreads(4);
 
-                ApplyBeamSearchSettings(builder);
+                    ApplyBeamSearchSettings(builder);
 
-                ConfigurePromptAndHotwords(builder);
-                _accurateProcessor = builder.Build();
-                OnModelStatusChanged(new ModelStatusChangedEventArgs(
-                    ServiceName,
-                    AccurateModelLabel,
-                    ModelStatusType.LoadSucceeded,
-                    "高精度ASRモデルの読み込みが完了しました。"));
+                    ConfigurePromptAndHotwords(builder);
+                    _accurateProcessor = builder.Build();
+                    OnModelStatusChanged(new ModelStatusChangedEventArgs(
+                        ServiceName,
+                        AccurateModelLabel,
+                        ModelStatusType.LoadSucceeded,
+                        "高精度ASRモデルの読み込みが完了しました。"));
+                }
+                catch (Exception ex)
+                {
+                    OnModelStatusChanged(new ModelStatusChangedEventArgs(
+                        ServiceName,
+                        AccurateModelLabel,
+                        ModelStatusType.LoadFailed,
+                        $"高精度ASRモデルの読み込みに失敗しました: {ex.Message}",
+                        ex));
+                    Debug.WriteLine($"Failed to load accurate ASR model: {ex}");
+                }
             }
             else
             {
@@ -132,19 +164,31 @@ public class WhisperASRService : IASRService
                     ServiceName,
                     AccurateModelLabel,
                     ModelStatusType.LoadFailed,
-                    "高精度ASRモデルが見つからないため読み込みをスキップしました。"));
+                    "高精度ASRモデルが見つかりません: " + accurateModelPath));
             }
 
             _isModelLoaded = _fastProcessor != null || _accurateProcessor != null;
         });
 
-        if (!_isModelLoaded)
+            if (!_isModelLoaded)
+            {
+                OnModelStatusChanged(new ModelStatusChangedEventArgs(
+                    ServiceName,
+                    "ASR",
+                    ModelStatusType.Fallback,
+                    "ASRモデルが未ロードのため音声認識は実行できません。"));
+            }
+        }
+        catch (Exception ex)
         {
             OnModelStatusChanged(new ModelStatusChangedEventArgs(
                 ServiceName,
                 "ASR",
-                ModelStatusType.Fallback,
-                "ASRモデルが未ロードのため音声認識は実行できません。"));
+                ModelStatusType.LoadFailed,
+                $"ASR初期化エラー: {ex.Message}",
+                ex));
+            Debug.WriteLine($"InitializeAsync error: {ex}");
+            _isModelLoaded = false;
         }
     }
 

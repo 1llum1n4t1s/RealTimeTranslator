@@ -315,7 +315,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 Log($"翻訳モデルが準備完了しました ({sourceLanguage}→{targetLanguage})。");
             }
 
-            StartProcessingPipelines(_processingCancellation.Token);
+            await StartProcessingPipelinesAsync(_processingCancellation.Token);
 
             // キャプチャ開始
             _audioCaptureService.StartCapture(SelectedProcess.Id);
@@ -403,9 +403,9 @@ public partial class MainViewModel : ObservableObject, IDisposable
         }
     }
 
-    private void StartProcessingPipelines(CancellationToken token)
+    private async Task StartProcessingPipelinesAsync(CancellationToken token)
     {
-        StopProcessingPipelines();
+        await StopProcessingPipelinesAsync();
 
         _segmentSequence = 0;
         _segmentChannel = Channel.CreateUnbounded<SpeechSegmentWorkItem>(new UnboundedChannelOptions

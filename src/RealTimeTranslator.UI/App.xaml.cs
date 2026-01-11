@@ -26,57 +26,78 @@ public partial class App : Application
     private OverlayWindow? _overlayWindow;
     private CancellationTokenSource? _updateCancellation;
 
-    protected override async void OnStartup(StartupEventArgs e)
+    protected override void OnStartup(StartupEventArgs e)
     {
-        VelopackApp.Build().Run();
-        base.OnStartup(e);
-
-        // 設定を読み込み
-        var settingsPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "settings.json");
-        var settings = AppSettings.Load(settingsPath);
-
-        // DIコンテナを構築
-        var services = new ServiceCollection();
-        ConfigureServices(services, settings, settingsPath);
-        _serviceProvider = services.BuildServiceProvider();
-
-        // モデルをアプリ起動時に初期化（バックグラウンドで実行）
-        _ = Task.Run(async () =>
+        try
         {
-            try
+            System.Diagnostics.Debug.WriteLine("OnStartup: 起動開始");
+            VelopackApp.Build().Run();
+            System.Diagnostics.Debug.WriteLine("OnStartup: Velopack初期化完了");
+            base.OnStartup(e);
+            System.Diagnostics.Debug.WriteLine("OnStartup: base.OnStartup完了");
+
+            // 設定を読み込み
+            var settingsPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "settings.json");
+            System.Diagnostics.Debug.WriteLine($"OnStartup: settingsPath={settingsPath}");
+            var settings = AppSettings.Load(settingsPath);
+            System.Diagnostics.Debug.WriteLine("OnStartup: 設定読み込み完了");
+
+            // DIコンテナを構築
+            var services = new ServiceCollection();
+            ConfigureServices(services, settings, settingsPath);
+            _serviceProvider = services.BuildServiceProvider();
+            System.Diagnostics.Debug.WriteLine("OnStartup: DI構築完了");
+
+            // モデルをアプリ起動時に初期化（バックグラウンドで実行）
+            _ = Task.Run(async () =>
             {
-                var asrService = _serviceProvider.GetRequiredService<IASRService>();
-                var translationService = _serviceProvider.GetRequiredService<ITranslationService>();
+                try
+                {
+                    System.Diagnostics.Debug.WriteLine("OnStartup: モデル初期化開始");
+                    var asrService = _serviceProvider.GetRequiredService<IASRService>();
+                    var translationService = _serviceProvider.GetRequiredService<ITranslationService>();
 
-                // 並列で初期化
-                await Task.WhenAll(
-                    asrService.InitializeAsync(),
-                    translationService.InitializeAsync()
-                );
-            }
-            catch (Exception ex)
-            {
-                // エラーをログに記録（UIには表示しない）
-                System.Diagnostics.Debug.WriteLine($"モデル初期化エラー: {ex}");
-            }
-        });
+                    // 並列で初期化
+                    await Task.WhenAll(
+                        asrService.InitializeAsync(),
+                        translationService.InitializeAsync()
+                    );
+                    System.Diagnostics.Debug.WriteLine("OnStartup: モデル初期化完了");
+                }
+                catch (Exception ex)
+                {
+                    // エラーをログに記録（UIには表示しない）
+                    System.Diagnostics.Debug.WriteLine($"モデル初期化エラー: {ex}");
+                }
+            });
 
-        var updateService = _serviceProvider.GetRequiredService<IUpdateService>();
-        updateService.UpdateSettings(settings.Update);
-        _updateCancellation = new CancellationTokenSource();
-        _ = updateService.StartAsync(_updateCancellation.Token);
+            var updateService = _serviceProvider.GetRequiredService<IUpdateService>();
+            updateService.UpdateSettings(settings.Update);
+            _updateCancellation = new CancellationTokenSource();
+            _ = updateService.StartAsync(_updateCancellation.Token);
+            System.Diagnostics.Debug.WriteLine("OnStartup: 更新サービス開始");
 
-        // オーバーレイウィンドウを表示
-        var overlayViewModel = _serviceProvider.GetRequiredService<OverlayViewModel>();
-        _overlayWindow = new OverlayWindow(overlayViewModel);
-        _overlayWindow.Show();
+            // オーバーレイウィンドウを表示
+            var overlayViewModel = _serviceProvider.GetRequiredService<OverlayViewModel>();
+            _overlayWindow = new OverlayWindow(overlayViewModel);
+            _overlayWindow.Show();
+            System.Diagnostics.Debug.WriteLine("OnStartup: オーバーレイウィンドウ表示");
 
-        // メインウィンドウを表示
-        var mainViewModel = _serviceProvider.GetRequiredService<MainViewModel>();
-        var mainWindow = new MainWindow(mainViewModel);
-        mainWindow.Show();
+            // メインウィンドウを表示
+            var mainViewModel = _serviceProvider.GetRequiredService<MainViewModel>();
+            var mainWindow = new MainWindow(mainViewModel);
+            mainWindow.Show();
+            System.Diagnostics.Debug.WriteLine("OnStartup: メインウィンドウ表示");
 
-        MainWindow = mainWindow;
+            MainWindow = mainWindow;
+            System.Diagnostics.Debug.WriteLine("OnStartup: 起動完了");
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"アプリケーション起動エラー: {ex}");
+            MessageBox.Show($"アプリケーション起動に失敗しました:\n\n{ex.Message}\n\n{ex.StackTrace}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+            Current.Shutdown(1);
+        }
     }
 
     private void ConfigureServices(IServiceCollection services, AppSettings settings, string settingsPath)
