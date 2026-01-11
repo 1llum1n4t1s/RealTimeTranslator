@@ -269,30 +269,20 @@ public class WhisperTranslationService : ITranslationService
                 ModelStatusType.Info,
                 "Whisper翻訳モデルを初期化中..."));
 
-            // 翻訳用モデルのパスを取得（高精度モデルを使用）
-            // パスの各要素を処理してスラッシュ/バックスラッシュの混在を避ける
+            // 翻訳用モデルのパスを取得（large-v3を使用）
             var baseModelPath = Path.IsPathRooted(_settings.ModelPath)
                 ? _settings.ModelPath
                 : Path.Combine(AppContext.BaseDirectory, _settings.ModelPath);
 
-            baseModelPath = Path.GetFullPath(baseModelPath);  // 正規化
+            baseModelPath = Path.GetFullPath(baseModelPath);
 
-            // ggml-large-v3.bin を試す（高精度）
+            // ggml-large-v3.bin のみを使用（最高精度）
             var modelPath = Path.Combine(baseModelPath, "ggml-large-v3.bin");
 
             if (!File.Exists(modelPath))
             {
-                LoggerService.LogWarning($"ggml-large-v3.bin が見つかりません: {modelPath}");
-                LoggerService.LogWarning($"ggml-small.bin を試します");
-
-                // ggml-small.bin にフォールバック（速度重視）
-                modelPath = Path.Combine(baseModelPath, "ggml-small.bin");
-
-                if (!File.Exists(modelPath))
-                {
-                    LoggerService.LogError($"どちらのモデルも見つかりません");
-                    throw new FileNotFoundException($"Translation model not found. Tried: {Path.Combine(baseModelPath, "ggml-large-v3.bin")}, {modelPath}");
-                }
+                LoggerService.LogError($"ggml-large-v3.bin が見つかりません: {modelPath}");
+                throw new FileNotFoundException($"Translation model not found: {modelPath}");
             }
 
             OnModelStatusChanged(new ModelStatusChangedEventArgs(
