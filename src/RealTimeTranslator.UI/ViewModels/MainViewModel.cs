@@ -26,6 +26,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
     private bool _disposed;
     private const int MaxAccurateParallelism = 2; // 高精度ASRの最大並列処理数
     private const int MaxLogLines = 1000; // ログの最大行数
+    private const int ChannelCapacity = 100; // チャネルバッファサイズ
 
     private readonly IAudioCaptureService _audioCaptureService;
     private readonly IVADService _vadService;
@@ -466,15 +467,18 @@ public partial class MainViewModel : ObservableObject, IDisposable
         await StopProcessingPipelinesAsync();
 
         _segmentSequence = 0;
-        _segmentChannel = Channel.CreateUnbounded<SpeechSegmentWorkItem>(new UnboundedChannelOptions
+        // バウンデッドチャネルを使用してメモリ使用量を制限
+        _segmentChannel = Channel.CreateBounded<SpeechSegmentWorkItem>(new BoundedChannelOptions(ChannelCapacity)
         {
             SingleReader = true,
-            SingleWriter = false
+            SingleWriter = false,
+            FullMode = BoundedChannelFullMode.DropOldest // バッファが満杯時は最古のアイテムを削除
         });
-        _accurateChannel = Channel.CreateUnbounded<SpeechSegmentWorkItem>(new UnboundedChannelOptions
+        _accurateChannel = Channel.CreateBounded<SpeechSegmentWorkItem>(new BoundedChannelOptions(ChannelCapacity)
         {
             SingleReader = true,
-            SingleWriter = true
+            SingleWriter = true,
+            FullMode = BoundedChannelFullMode.Wait // バッファが満杯時はライターが待機
         });
 
         _fastProcessingTask = Task.Run(() => ProcessFastQueueAsync(_segmentChannel.Reader, _accurateChannel.Writer, token), token);
