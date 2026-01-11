@@ -52,7 +52,18 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
         {
             device = GetDefaultRenderDevice();
             LoggerService.LogDebug($"ProcessLoopbackCapture: TargetProcessId={targetProcessId}, DefaultDevice={device.FriendlyName}");
-            audioClient = ActivateProcessAudioClient(targetProcessId);
+
+            try
+            {
+                audioClient = ActivateProcessAudioClient(targetProcessId);
+            }
+            catch (Exception activationEx)
+            {
+                LoggerService.LogError($"ProcessLoopbackCapture: Audio client activation failed for process {targetProcessId}: {activationEx.GetType().Name} - {activationEx.Message}");
+                LoggerService.LogDebug($"ProcessLoopbackCapture: System information - ProcessLoopback may require Windows 10 Build 20348+");
+                throw;
+            }
+
             _audioClient = audioClient;
 
             try
@@ -76,7 +87,6 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
         }
         catch
         {
-            // 初期化失敗時にリソースをクリーンアップ
             if (captureClient != null)
             {
                 Marshal.ReleaseComObject(captureClient);
@@ -146,7 +156,9 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
     private static MMDevice GetDefaultRenderDevice()
     {
         using var enumerator = new MMDeviceEnumerator();
-        return enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
+        var device = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
+        LoggerService.LogDebug($"GetDefaultRenderDevice: Device ID={device.ID}, State={device.State}, FriendlyName={device.FriendlyName}");
+        return device;
     }
 
     /// <summary>
@@ -162,6 +174,13 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
         };
 
         var paramsSize = Marshal.SizeOf<AudioClientActivationParams>();
+        LoggerService.LogDebug($"ActivateProcessAudioClient: paramsSize={paramsSize}, expected 12");
+
+        if (paramsSize != 12)
+        {
+            LoggerService.LogError($"ActivateProcessAudioClient: AudioClientActivationParams has invalid size {paramsSize}, expected 12");
+        }
+
         var paramsPtr = Marshal.AllocHGlobal(paramsSize);
         try
         {
@@ -173,8 +192,9 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
                 pointerValue = paramsPtr
             };
 
+            LoggerService.LogDebug($"ActivateProcessAudioClient: PropVariant size={Marshal.SizeOf<PropVariant>()}, vt={activationParamsPtr.vt}, blobSize={activationParamsPtr.blobSize}");
+
             var iid = typeof(IAudioClient3).GUID;
-            // Process Loopback では仮想オーディオデバイスIDを使用する必要がある
             ActivateAudioInterface(VirtualAudioDeviceProcessLoopback, ref iid, activationParamsPtr, out var audioClient);
             return audioClient;
         }
@@ -192,11 +212,26 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
         var completionHandler = new ActivateCompletionHandler();
         try
         {
-            LoggerService.LogDebug($"ActivateAudioInterfaceAsync: deviceInterfacePath={deviceInterfacePath}");
+            var paramsSize = Marshal.SizeOf<AudioClientActivationParams>();
+            LoggerService.LogDebug($"ActivateAudioInterfaceAsync: deviceInterfacePath={deviceInterfacePath}, ParamsSize={paramsSize}, ParamsPtrSize={Marshal.SizeOf<PropVariant>()}");
+
             var hr = ActivateAudioInterfaceAsync(deviceInterfacePath, ref iid, activationParams, completionHandler, out var result);
             if (hr != 0)
             {
-                LoggerService.LogError($"ActivateAudioInterfaceAsync failed: HRESULT={hr:X8}");
+                var errorMessage = $"ActivateAudioInterfaceAsync failed: HRESULT=0x{hr:X8}";
+                if (hr == unchecked((int)0x80070057)) // E_INVALIDARG
+                {
+                    errorMessage += " (E_INVALIDARG: Invalid arguments)";
+                }
+                else if (hr == unchecked((int)0x80004005)) // E_FAIL
+                {
+                    errorMessage += " (E_FAIL: Unspecified failure)";
+                }
+                else if (hr == unchecked((int)0x80070005)) // E_ACCESSDENIED
+                {
+                    errorMessage += " (E_ACCESSDENIED: Access denied)";
+                }
+                LoggerService.LogError(errorMessage);
                 Marshal.ThrowExceptionForHR(hr);
             }
 
@@ -207,7 +242,7 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
         }
         catch (TimeoutException tex)
         {
-            System.Diagnostics.Debug.WriteLine($"Audio client activation timeout: {tex.Message}");
+            LoggerService.LogError($"Audio client activation timeout: {tex.Message}");
             throw;
         }
         catch (Exception ex)
@@ -305,7 +340,7 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
         return new WaveFormat((int)format.SampleRate, format.BitsPerSample, format.Channels);
     }
 
-    [DllImport("Mmdevapi.dll", CharSet = CharSet.Unicode)]
+    [DllImport("Mmdevapi.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern int ActivateAudioInterfaceAsync(
         string deviceInterfacePath,
         ref Guid riid,
@@ -360,7 +395,7 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
 
     /// <summary>
     /// AUDIOCLIENT_ACTIVATION_PARAMS 構造体
-    /// Windows API仕様に準拠したレイアウト
+    /// Windows API仕様に準拠したレイアウト：ActivationType(4) + TargetProcessId(4) + ProcessLoopbackMode(4) = 12バイト
     /// </summary>
     [StructLayout(LayoutKind.Sequential)]
     private struct AudioClientActivationParams
@@ -371,12 +406,12 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
         public AudioClientActivationType ActivationType;
 
         /// <summary>
-        /// ターゲットプロセスID（ProcessLoopbackParams.TargetProcessId）
+        /// ターゲットプロセスID
         /// </summary>
         public uint TargetProcessId;
 
         /// <summary>
-        /// ループバックモード（ProcessLoopbackParams.ProcessLoopbackMode）
+        /// ループバックモード
         /// </summary>
         public ProcessLoopbackMode ProcessLoopbackMode;
     }
@@ -416,34 +451,44 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
 
     /// <summary>
     /// PROPVARIANT 構造体（VT_BLOB用）
-    /// 64ビット環境ではポインタが8バイトアラインされるため、明示的なレイアウトが必要
+    /// Windows APIの標準レイアウトに完全に準拠
+    /// sizeof(PROPVARIANT) = 16バイト（32ビット）、24バイト（64ビット）
     /// </summary>
-    [StructLayout(LayoutKind.Explicit)]
+    [StructLayout(LayoutKind.Explicit, Size = 24)]
     private struct PropVariant
     {
         /// <summary>
-        /// バリアント型（VT_BLOB = 0x41 = 65）
+        /// Variant Type: VT_BLOB = 0x41 = 65
         /// </summary>
         [FieldOffset(0)]
         public ushort vt;
 
+        /// <summary>
+        /// Reserved field 1
+        /// </summary>
         [FieldOffset(2)]
         public ushort wReserved1;
 
+        /// <summary>
+        /// Reserved field 2
+        /// </summary>
         [FieldOffset(4)]
         public ushort wReserved2;
 
+        /// <summary>
+        /// Reserved field 3
+        /// </summary>
         [FieldOffset(6)]
         public ushort wReserved3;
 
         /// <summary>
-        /// BLOB データサイズ（offset 8）
+        /// BLOB size in bytes (4バイト、offset 8)
         /// </summary>
         [FieldOffset(8)]
         public uint blobSize;
 
         /// <summary>
-        /// BLOB データへのポインタ（offset 16、8バイトアライン）
+        /// Pointer to BLOB data (8バイト、offset 16、アラインメント重要)
         /// </summary>
         [FieldOffset(16)]
         public IntPtr pointerValue;
@@ -503,6 +548,10 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
                     Marshal.ReleaseComObject(activatedInterface);
                 }
             }
+            catch (Exception ex)
+            {
+                LoggerService.LogError($"ActivateCompleted: Exception during GetActivateResult: {ex.GetType().Name} - {ex.Message}");
+            }
             finally
             {
                 _completedEvent.Set();
@@ -521,7 +570,35 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
 
             if (_activateResult != 0)
             {
-                Marshal.ThrowExceptionForHR(_activateResult);
+                var errorMessage = $"Audio client activation result: HRESULT=0x{_activateResult:X8}";
+                if (_activateResult == unchecked((int)0x80070057)) // E_INVALIDARG
+                {
+                    errorMessage += " (E_INVALIDARG: Invalid arguments)";
+                }
+                else if (_activateResult == unchecked((int)0x80004005)) // E_FAIL
+                {
+                    errorMessage += " (E_FAIL: Unspecified failure)";
+                }
+                else if (_activateResult == unchecked((int)0x80070005)) // E_ACCESSDENIED
+                {
+                    errorMessage += " (E_ACCESSDENIED: Access denied)";
+                }
+                else if (_activateResult == unchecked((int)0x88890001)) // AUDCLNT_E_NOT_INITIALIZED
+                {
+                    errorMessage += " (AUDCLNT_E_NOT_INITIALIZED: Audio client not initialized)";
+                }
+                LoggerService.LogError(errorMessage);
+
+                try
+                {
+                    Marshal.ThrowExceptionForHR(_activateResult);
+                }
+                catch (ArgumentException aex)
+                {
+                    // Marshal.ThrowExceptionForHRが無効なHRESULTで ArgumentExceptionを発生させた場合
+                    LoggerService.LogError($"Marshal.ThrowExceptionForHR threw ArgumentException: {aex.Message}");
+                    throw new COMException($"Audio client activation failed with HRESULT 0x{_activateResult:X8}", _activateResult);
+                }
             }
         }
 

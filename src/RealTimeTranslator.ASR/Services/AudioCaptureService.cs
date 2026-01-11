@@ -170,7 +170,7 @@ public class AudioCaptureService : IAudioCaptureService
                 }
                 catch (Exception ex)
                 {
-                    // その他のエラー
+                    LoggerService.LogError($"StartCaptureWithRetryAsync: Error for process {currentProcessId} - {ex.GetType().Name}: {ex.Message}");
                     Debug.WriteLine($"StartCaptureWithRetryAsync: Error for process {currentProcessId} - {ex.GetType().Name}: {ex.Message}");
                     CleanupCapture();
                     // 次のプロセスを試す

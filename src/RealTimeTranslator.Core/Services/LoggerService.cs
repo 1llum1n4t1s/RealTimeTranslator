@@ -76,9 +76,6 @@ public static class LoggerService
             File.AppendAllText(LogFilePath, formattedMessage + Environment.NewLine, Encoding.UTF8);
             TrimLogFile();
 
-            // デバッグ出力ウィンドウに出力
-            Debug.WriteLine(formattedMessage);
-
             // UI ログに出力（時刻は含めない：UI 側で管理）
             var uiMessage = $"[{level}] {message}";
             _uiLogCallback?.Invoke(uiMessage);
@@ -107,12 +104,6 @@ public static class LoggerService
             // ファイルに出力
             File.AppendAllLines(LogFilePath, logLines, Encoding.UTF8);
             TrimLogFile();
-
-            // デバッグ出力ウィンドウに出力
-            foreach (var line in logLines)
-            {
-                Debug.WriteLine(line);
-            }
 
             // UI ログに出力
             foreach (var message in messages)
@@ -154,9 +145,6 @@ public static class LoggerService
             // ファイルに出力
             File.AppendAllText(LogFilePath, content, Encoding.UTF8);
             TrimLogFile();
-
-            // デバッグ出力ウィンドウに出力
-            Debug.WriteLine(content);
 
             // UI ログに出力
             _uiLogCallback?.Invoke($"[Error] {message}: {exception.Message}");
@@ -222,6 +210,7 @@ public static class LoggerService
         }
         catch (Exception ex)
         {
+            // ログファイル整理エラーの場合はデバッグ出力ウィンドウに最終手段として出力
             Debug.WriteLine($"ログファイル整理エラー: {ex.Message}");
         }
     }
@@ -240,6 +229,7 @@ public static class LoggerService
         }
         catch (Exception ex)
         {
+            // ログファイル削除エラーの場合はデバッグ出力ウィンドウに最終手段として出力
             Debug.WriteLine($"ログファイル削除エラー: {ex.Message}");
         }
     }
