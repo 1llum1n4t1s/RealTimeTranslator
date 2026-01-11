@@ -44,6 +44,11 @@ public class LocalTranslationService : ITranslationService
         _downloadService.StatusChanged += (sender, e) => ModelStatusChanged?.Invoke(this, e);
     }
 
+    protected virtual void OnModelStatusChanged(ModelStatusChangedEventArgs e)
+    {
+        ModelStatusChanged?.Invoke(this, e);
+    }
+
     /// <summary>
     /// 翻訳エンジンを初期化
     /// </summary>
