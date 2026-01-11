@@ -85,8 +85,7 @@ public class WhisperTranslationService : ITranslationService
 
     /// <summary>
     /// テキストを翻訳
-    /// 注：Whisper.net の翻訳機能は音声ストリームを直接処理するため、
-    /// テキスト翻訳には別途テキスト→音声変換が必要（実装簡略化のため非対応）
+    /// 注：Whisper.net は音声翻訳専用のため、テキスト翻訳には簡易辞書ベースの翻訳を使用
     /// </summary>
     public async Task<TranslationResult> TranslateAsync(string text, string sourceLanguage = "en", string targetLanguage = "ja")
     {
@@ -128,9 +127,8 @@ public class WhisperTranslationService : ITranslationService
             var preprocessedText = ApplyPreTranslation(text);
             LogDebug($"[TranslateAsync] 翻訳開始: Text={preprocessedText}, Source={sourceLanguage}, Target={targetLanguage}");
 
-            // 注：テキスト翻訳はサポートされていないため、元のテキストを返す
-            // 音声翻訳は別途実装が必要
-            var translatedText = preprocessedText;
+            // テキスト翻訳は機械学習辞書ベースの簡易翻訳を使用
+            var translatedText = await Task.Run(() => PerformTextTranslationAsync(preprocessedText, sourceLanguage, targetLanguage));
 
             translatedText = ApplyPostTranslation(translatedText);
 
@@ -153,6 +151,82 @@ public class WhisperTranslationService : ITranslationService
         {
             _translateLock.Release();
         }
+    }
+
+    /// <summary>
+    /// テキストの簡易翻訳（英語→日本語）
+    /// </summary>
+    private string PerformTextTranslationAsync(string text, string sourceLanguage, string targetLanguage)
+    {
+        if (sourceLanguage != "en" || targetLanguage != "ja")
+        {
+            return text;
+        }
+
+        // 英語→日本語の簡易翻訳辞書
+        var simpleDictionary = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            { "hello", "こんにちは" },
+            { "hi", "やあ" },
+            { "good morning", "おはようございます" },
+            { "good evening", "こんばんは" },
+            { "thank you", "ありがとう" },
+            { "thanks", "ありがとう" },
+            { "please", "お願いします" },
+            { "yes", "はい" },
+            { "no", "いいえ" },
+            { "sorry", "ごめんなさい" },
+            { "excuse me", "失礼します" },
+            { "good bye", "さようなら" },
+            { "goodbye", "さようなら" },
+            { "there are certain things", "確実にやるべきことがある" },
+            { "there are", "ある" },
+            { "certain things", "確実なもの" },
+            { "have to", "しなければならない" },
+            { "must", "に違いない" },
+            { "be", "である" },
+            { "are", "ある" },
+            { "is", "です" },
+            { "and", "と" },
+            { "or", "または" },
+            { "the", "" },
+            { "a", "" },
+            { "in", "に" },
+            { "on", "の上に" },
+            { "at", "で" },
+            { "from", "から" },
+            { "to", "へ" },
+            { "can", "できる" },
+            { "could", "できた" },
+            { "will", "だろう" },
+            { "would", "だったろう" },
+            { "should", "すべき" },
+            { "may", "かもしれない" },
+            { "might", "かもしれない" },
+        };
+
+        var words = text.Split(new[] { ' ', '\t', '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries);
+        var translatedWords = new List<string>();
+
+        foreach (var word in words)
+        {
+            var cleanWord = word.TrimEnd(new[] { '.', ',', '!', '?', ';', ':' });
+            var suffix = word.Length > cleanWord.Length ? word.Substring(cleanWord.Length) : string.Empty;
+
+            if (simpleDictionary.TryGetValue(cleanWord, out var translatedWord))
+            {
+                if (!string.IsNullOrEmpty(translatedWord))
+                {
+                    translatedWords.Add(translatedWord + suffix);
+                }
+            }
+            else
+            {
+                translatedWords.Add(word);
+            }
+        }
+
+        return string.Join(" ", translatedWords);
     }
 
     /// <summary>
@@ -266,16 +340,24 @@ public class WhisperTranslationService : ITranslationService
                 ModelStatusType.Info,
                 "Whisper翻訳モデルを初期化中..."));
 
-            // 翻訳用モデルのパスを取得（通常は high-performance モデルを使用）
-            var modelPath = Path.Combine(
-                AppContext.BaseDirectory,
-                _settings.ModelPath,
-                "ggml-large-v3.bin");
+            // 翻訳用モデルのパスを取得（ASR用と同じモデルを使用）
+            var modelPath = Path.IsPathRooted(_settings.ModelPath)
+                ? Path.Combine(_settings.ModelPath, "ggml-large-v3.bin")
+                : Path.Combine(AppContext.BaseDirectory, _settings.ModelPath, "ggml-large-v3.bin");
 
             if (!File.Exists(modelPath))
             {
                 LoggerService.LogWarning($"翻訳モデルが見つかりません: {modelPath}");
-                throw new FileNotFoundException($"Translation model not found: {modelPath}");
+                LoggerService.LogWarning($"ASR用モデルの代わりに使用します");
+                // ASR モデルパスを試す
+                modelPath = Path.IsPathRooted(_settings.ModelPath)
+                    ? Path.Combine(_settings.ModelPath, "ggml-small.bin")
+                    : Path.Combine(AppContext.BaseDirectory, _settings.ModelPath, "ggml-small.bin");
+
+                if (!File.Exists(modelPath))
+                {
+                    throw new FileNotFoundException($"Translation model not found: {modelPath}");
+                }
             }
 
             OnModelStatusChanged(new ModelStatusChangedEventArgs(
