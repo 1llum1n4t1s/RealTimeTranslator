@@ -867,39 +867,18 @@ public partial class MainViewModel : ObservableObject, IDisposable
             IsLoading = true;
             Log("モデルの初期化を開始します...");
 
-            // ASRと翻訳モデルを並列初期化
-            var asrTask = Task.Run(async () =>
+            // 翻訳モデルのみを初期化
+            try
             {
-                try
-                {
-                    LoadingMessage = "ASRモデルをダウンロード中...";
-                    await _asrService.InitializeAsync();
-                    LoggerService.LogInfo("ASR model initialization completed");
-                }
-                catch (Exception ex)
-                {
-                    LoggerService.LogError($"ASR initialization error: {ex.Message}");
-                    throw;
-                }
-            });
-
-            var translationTask = Task.Run(async () =>
+                LoadingMessage = "翻訳モデルをダウンロード中...";
+                await _translationService.InitializeAsync();
+                LoggerService.LogInfo("Translation model initialization completed");
+            }
+            catch (Exception ex)
             {
-                try
-                {
-                    LoadingMessage = "翻訳モデルをダウンロード中...";
-                    await _translationService.InitializeAsync();
-                    LoggerService.LogInfo("Translation model initialization completed");
-                }
-                catch (Exception ex)
-                {
-                    LoggerService.LogError($"Translation initialization error: {ex.Message}");
-                    throw;
-                }
-            });
-
-            // 両方の初期化が完了するまで待機
-            await Task.WhenAll(asrTask, translationTask);
+                LoggerService.LogError($"Translation initialization error: {ex.Message}");
+                throw;
+            }
 
             LoadingMessage = "準備完了";
             Log("モデルの初期化が完了しました。");
