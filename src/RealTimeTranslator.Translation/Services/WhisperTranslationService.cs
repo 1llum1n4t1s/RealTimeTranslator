@@ -269,23 +269,29 @@ public class WhisperTranslationService : ITranslationService
                 ModelStatusType.Info,
                 "Whisper翻訳モデルを初期化中..."));
 
-            // 翻訳用モデルのパスを取得（ASR用と同じモデルを使用）
-            var modelPath = Path.IsPathRooted(_settings.ModelPath)
-                ? Path.Combine(_settings.ModelPath, "ggml-large-v3.bin")
-                : Path.Combine(AppContext.BaseDirectory, _settings.ModelPath, "ggml-large-v3.bin");
+            // 翻訳用モデルのパスを取得（高精度モデルを使用）
+            // パスの各要素を処理してスラッシュ/バックスラッシュの混在を避ける
+            var baseModelPath = Path.IsPathRooted(_settings.ModelPath)
+                ? _settings.ModelPath
+                : Path.Combine(AppContext.BaseDirectory, _settings.ModelPath);
+
+            baseModelPath = Path.GetFullPath(baseModelPath);  // 正規化
+
+            // ggml-large-v3.bin を試す（高精度）
+            var modelPath = Path.Combine(baseModelPath, "ggml-large-v3.bin");
 
             if (!File.Exists(modelPath))
             {
-                LoggerService.LogWarning($"翻訳モデルが見つかりません: {modelPath}");
-                LoggerService.LogWarning($"ASR用モデルの代わりに使用します");
-                // ASR モデルパスを試す
-                modelPath = Path.IsPathRooted(_settings.ModelPath)
-                    ? Path.Combine(_settings.ModelPath, "ggml-small.bin")
-                    : Path.Combine(AppContext.BaseDirectory, _settings.ModelPath, "ggml-small.bin");
+                LoggerService.LogWarning($"ggml-large-v3.bin が見つかりません: {modelPath}");
+                LoggerService.LogWarning($"ggml-small.bin を試します");
+
+                // ggml-small.bin にフォールバック（速度重視）
+                modelPath = Path.Combine(baseModelPath, "ggml-small.bin");
 
                 if (!File.Exists(modelPath))
                 {
-                    throw new FileNotFoundException($"Translation model not found: {modelPath}");
+                    LoggerService.LogError($"どちらのモデルも見つかりません");
+                    throw new FileNotFoundException($"Translation model not found. Tried: {Path.Combine(baseModelPath, "ggml-large-v3.bin")}, {modelPath}");
                 }
             }
 

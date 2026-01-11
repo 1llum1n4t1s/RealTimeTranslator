@@ -642,15 +642,23 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
                 var sourceLanguage = _settings.Translation.SourceLanguage;
                 var targetLanguage = _settings.Translation.TargetLanguage;
-                LoggerService.LogDebug($"[AccurateProcessingAsync] 翻訳開始: Text={accurateResult.Text}");
+                LoggerService.LogDebug($"[AccurateProcessingAsync] ASR結果: Text={accurateResult.Text}");
 
                 // Whisper翻訳サービスを使用する場合は、音声データから直接翻訳
                 string translatedTextFromAudio = string.Empty;
-                if (_translationService is Translation.Services.WhisperTranslationService whisperTranslationService && _translationService.IsModelLoaded)
+                var isWhisperService = _translationService is Translation.Services.WhisperTranslationService;
+                LoggerService.LogDebug($"[AccurateProcessingAsync] 翻訳サービスタイプ: {_translationService.GetType().Name}, IsModelLoaded: {_translationService.IsModelLoaded}");
+
+                if (isWhisperService && _translationService.IsModelLoaded)
                 {
-                    LoggerService.LogDebug($"[AccurateProcessingAsync] 音声データから直接翻訳を開始");
+                    var whisperTranslationService = (Translation.Services.WhisperTranslationService)_translationService;
+                    LoggerService.LogDebug($"[AccurateProcessingAsync] 音声データから直接翻訳を開始: AudioLength={item.Segment.AudioData.Length}");
                     translatedTextFromAudio = await whisperTranslationService.TranslateAudioAsync(item.Segment.AudioData, sourceLanguage, targetLanguage);
-                    LoggerService.LogDebug($"[AccurateProcessingAsync] 音声翻訳結果: {translatedTextFromAudio}");
+                    LoggerService.LogDebug($"[AccurateProcessingAsync] 音声翻訳結果: '{translatedTextFromAudio}'");
+                }
+                else
+                {
+                    LoggerService.LogDebug($"[AccurateProcessingAsync] Whisperサービスでない、またはモデルが未読み込み。テキスト翻訳にフォールバック");
                 }
 
                 // 音声翻訳に失敗した場合はテキスト翻訳にフォールバック
