@@ -7,6 +7,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <LangVersion>latest</LangVersion>
+    <LLamaSharpCpuVariant Condition="'$(LLamaSharpCpuVariant)' == ''">avx2</LLamaSharpCpuVariant>
   </PropertyGroup>
 
   <ItemGroup>
@@ -21,5 +22,15 @@
     <PackageReference Include="Velopack" Version="0.0.1298" />
     <PackageReference Include="Whisper.net.Runtime" Version="1.9.0" />
   </ItemGroup>
+
+  <Target Name="FilterLLamaSharpCpuNativeVariants" AfterTargets="ResolveFilesToPublish">
+    <ItemGroup>
+      <ResolvedFileToPublish Remove="@(ResolvedFileToPublish)"
+                             Condition="'%(ResolvedFileToPublish.OriginalItemSpec)' != ''
+                               and $([System.String]::Copy('%(ResolvedFileToPublish.OriginalItemSpec)').Contains('llamasharp.backend.cpu'))
+                               and $([System.String]::Copy('%(ResolvedFileToPublish.OriginalItemSpec)').Contains('runtimes\\win-x64\\native\\'))
+                               and !$([System.String]::Copy('%(ResolvedFileToPublish.OriginalItemSpec)').Contains('runtimes\\win-x64\\native\\$(LLamaSharpCpuVariant)\\'))" />
+    </ItemGroup>
+  </Target>
 
 </Project>
