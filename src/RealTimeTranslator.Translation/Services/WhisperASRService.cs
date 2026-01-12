@@ -63,9 +63,9 @@ public class WhisperASRService : IASRService
         try
         {
             // モデルファイルをダウンロード/確認
-            // パフォーマンス最適化: medium モデルを使用（large-v3より5-10倍高速、精度も十分）
-            const string defaultModelFileName = "ggml-medium.bin";
-            const string downloadUrl = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.bin";
+            // パフォーマンス最適化: base モデルを使用（mediumより5-10倍高速、リアルタイム翻訳に最適）
+            const string defaultModelFileName = "ggml-base.bin";
+            const string downloadUrl = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin";
 
             var modelPath = Path.Combine(_settings.ModelPath, "asr");
             var modelFilePath = await _downloadService.EnsureModelAsync(
