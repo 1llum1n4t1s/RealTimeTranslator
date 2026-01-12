@@ -50,6 +50,14 @@ public partial class App : Application
             var updateService = _serviceProvider.GetRequiredService<IUpdateService>();
             updateService.UpdateSettings(settings.Update);
             _updateCancellation = new CancellationTokenSource();
+            var updateApplied = updateService.CheckAndApplyStartupAsync(_updateCancellation.Token).GetAwaiter().GetResult();
+            if (updateApplied)
+            {
+                LoggerService.LogInfo("OnStartup: 更新適用のためアプリを再起動します。");
+                Current.Shutdown();
+                return;
+            }
+
             _ = updateService.StartAsync(_updateCancellation.Token);
             LoggerService.LogInfo("OnStartup: 更新サービス開始");
 

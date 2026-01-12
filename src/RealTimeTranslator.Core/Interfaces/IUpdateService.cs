@@ -17,6 +17,8 @@ public interface IUpdateService
 
     Task CheckOnceAsync(CancellationToken cancellationToken);
 
+    Task<bool> CheckAndApplyStartupAsync(CancellationToken cancellationToken);
+
     Task ApplyUpdateAsync(CancellationToken cancellationToken);
 
     void DismissPendingUpdate();

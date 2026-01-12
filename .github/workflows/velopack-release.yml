@@ -3,7 +3,7 @@ name: Velopack リリース作成
 on:
   push:
     branches:
-      - releases
+      - 'release/**'
 
 permissions:
   contents: write
@@ -12,8 +12,6 @@ jobs:
   build-release:
     name: Velopack リリース作成
     runs-on: windows-latest
-    env:
-      RELEASE_VERSION: 0.0.${{ github.run_number }}
     steps:
       - name: リポジトリをチェックアウト
         uses: actions/checkout@v4
@@ -26,6 +24,15 @@ jobs:
 
       - name: 依存関係を復元
         run: dotnet restore RealTimeTranslator.sln
+
+      - name: リリースバージョンを設定
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}" -replace '^release/', ''
+          if ([string]::IsNullOrWhiteSpace($version)) {
+            $version = "0.0.${{ github.run_number }}"
+          }
+          "RELEASE_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: アプリを公開ビルド
         run: >
