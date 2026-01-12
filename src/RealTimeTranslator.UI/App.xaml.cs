@@ -205,7 +205,7 @@ public partial class App : Application
             {
                 if (key != null)
                 {
-                    key.SetValue("DisplayName", "Real-Time Subtitle Translator", Microsoft.Win32.RegistryValueKind.String);
+                    key.SetValue("DisplayName", "RealTimeTranslator", Microsoft.Win32.RegistryValueKind.String);
                     key.SetValue("DisplayVersion", appVersion, Microsoft.Win32.RegistryValueKind.String);
                     key.SetValue("Publisher", "1llum1n4t1s", Microsoft.Win32.RegistryValueKind.String);
                     key.SetValue("InstallLocation", exeDir, Microsoft.Win32.RegistryValueKind.String);
