@@ -900,6 +900,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
     /// <summary>
     /// 現在オーディオセッションを持つプロセスのIDを取得する
     /// アクティブ（再生中）およびインアクティブ（一時停止中・待機中）のセッションを含む
+    /// すべてのオーディオデバイスを列挙して検出する
     /// </summary>
     /// <returns>オーディオセッションを持つプロセスのID一覧</returns>
     private static HashSet<int> GetActiveAudioProcessIds()
@@ -909,73 +910,100 @@ public partial class MainViewModel : ObservableObject, IDisposable
         {
             LoggerService.LogInfo("オーディオセッション列挙を開始");
             using var enumerator = new MMDeviceEnumerator();
-            using var device = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
-            LoggerService.LogInfo($"デフォルトオーディオデバイス: {device.FriendlyName}");
 
-            var sessionManager = device.AudioSessionManager;
-            var sessions = sessionManager.Sessions;
-            LoggerService.LogInfo($"オーディオセッション総数: {sessions.Count}");
+            // すべてのアクティブなオーディオデバイスを列挙
+            var devices = enumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active);
+            LoggerService.LogInfo($"アクティブなオーディオデバイス数: {devices.Count}");
 
-            for (var i = 0; i < sessions.Count; i++)
+            var deviceIndex = 0;
+            foreach (var device in devices)
             {
-                var session = sessions[i];
                 try
                 {
-                    var stateValue = (int)session.State;
-                    LoggerService.LogInfo($"セッション[{i}]: State={stateValue} (0=Inactive, 1=Active, 2=Expired)");
+                    LoggerService.LogInfo($"デバイス[{deviceIndex}]: {device.FriendlyName} (ID: {device.ID})");
 
-                    // State 2 (Expired) は除外、State 0 (Inactive) と 1 (Active) の両方を検出
-                    // これにより、一時停止中やバックグラウンドで待機しているプロセスも検出できる
-                    if (stateValue != 2)
+                    var sessionManager = device.AudioSessionManager;
+                    var sessions = sessionManager.Sessions;
+                    LoggerService.LogInfo($"デバイス[{deviceIndex}] オーディオセッション総数: {sessions.Count}");
+
+                    for (var i = 0; i < sessions.Count; i++)
                     {
-                        uint processId = 0;
-
-                        // NAudio 2.x以降では GetProcessID プロパティ（大文字のID）を使用
+                        var session = sessions[i];
                         try
                         {
-                            processId = session.GetProcessID;
-                            LoggerService.LogInfo($"セッション[{i}]: ProcessID={processId}を取得");
-                        }
-                        catch (InvalidOperationException ex)
-                        {
-                            // IAudioSessionControl2がサポートされていない（古いWindows等）
-                            LoggerService.LogWarning($"セッション[{i}]: ProcessIDの取得失敗（IAudioSessionControl2未サポート）: {ex.Message}");
-                        }
-                        catch (System.Runtime.InteropServices.COMException ex)
-                        {
-                            // COM インターフェースのエラー（セッションが無効等）
-                            LoggerService.LogWarning($"セッション[{i}]: ProcessIDの取得失敗（COMエラー）: HResult=0x{ex.HResult:X}, Message={ex.Message}");
+                            var stateValue = (int)session.State;
+                            LoggerService.LogInfo($"デバイス[{deviceIndex}] セッション[{i}]: State={stateValue} (0=Inactive, 1=Active, 2=Expired)");
+
+                            // State 2 (Expired) は除外、State 0 (Inactive) と 1 (Active) の両方を検出
+                            // これにより、一時停止中やバックグラウンドで待機しているプロセスも検出できる
+                            if (stateValue != 2)
+                            {
+                                uint processId = 0;
+
+                                // NAudio 2.x以降では GetProcessID プロパティ（大文字のID）を使用
+                                try
+                                {
+                                    processId = session.GetProcessID;
+                                    LoggerService.LogInfo($"デバイス[{deviceIndex}] セッション[{i}]: ProcessID={processId}を取得");
+                                }
+                                catch (InvalidOperationException ex)
+                                {
+                                    // IAudioSessionControl2がサポートされていない（古いWindows等）
+                                    LoggerService.LogWarning($"デバイス[{deviceIndex}] セッション[{i}]: ProcessIDの取得失敗（IAudioSessionControl2未サポート）: {ex.Message}");
+                                }
+                                catch (System.Runtime.InteropServices.COMException ex)
+                                {
+                                    // COM インターフェースのエラー（セッションが無効等）
+                                    LoggerService.LogWarning($"デバイス[{deviceIndex}] セッション[{i}]: ProcessIDの取得失敗（COMエラー）: HResult=0x{ex.HResult:X}, Message={ex.Message}");
+                                }
+                                catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+                                {
+                                    LoggerService.LogWarning($"デバイス[{deviceIndex}] セッション[{i}]: ProcessIDの取得失敗: {ex.GetType().Name}: {ex.Message}");
+                                }
+
+                                if (processId > 0)
+                                {
+                                    var stateName = stateValue switch
+                                    {
+                                        0 => "Inactive",
+                                        1 => "Active",
+                                        _ => "Unknown"
+                                    };
+
+                                    // 重複チェック：まだ追加されていないプロセスIDのみ追加
+                                    if (processIds.Add((int)processId))
+                                    {
+                                        LoggerService.LogInfo($"デバイス[{deviceIndex}] セッション[{i}]: ProcessID={processId} (State={stateName}, Device={device.FriendlyName}) を検出");
+                                    }
+                                    else
+                                    {
+                                        LoggerService.LogInfo($"デバイス[{deviceIndex}] セッション[{i}]: ProcessID={processId} (State={stateName}) は既に検出済み");
+                                    }
+                                }
+                                else
+                                {
+                                    LoggerService.LogWarning($"デバイス[{deviceIndex}] セッション[{i}]: ProcessIDが取得できませんでした（State={stateValue}）");
+                                }
+                            }
+                            else
+                            {
+                                LoggerService.LogInfo($"デバイス[{deviceIndex}] セッション[{i}]: Expired状態のため除外");
+                            }
                         }
                         catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
                         {
-                            LoggerService.LogWarning($"セッション[{i}]: ProcessIDの取得失敗: {ex.GetType().Name}: {ex.Message}");
+                            // 個別のセッション取得に失敗しても続行
+                            LoggerService.LogError($"デバイス[{deviceIndex}] セッション[{i}]の情報取得に失敗: {ex.GetType().Name}: {ex.Message}");
                         }
+                    }
 
-                        if (processId > 0)
-                        {
-                            processIds.Add((int)processId);
-                            var stateName = stateValue switch
-                            {
-                                0 => "Inactive",
-                                1 => "Active",
-                                _ => "Unknown"
-                            };
-                            LoggerService.LogInfo($"セッション[{i}]: ProcessID={processId} (State={stateName}) を検出");
-                        }
-                        else
-                        {
-                            LoggerService.LogWarning($"セッション[{i}]: ProcessIDが取得できませんでした（State={stateValue}）");
-                        }
-                    }
-                    else
-                    {
-                        LoggerService.LogInfo($"セッション[{i}]: Expired状態のため除外");
-                    }
+                    deviceIndex++;
                 }
                 catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
                 {
-                    // 個別のセッション取得に失敗しても続行
-                    LoggerService.LogError($"セッション[{i}]の情報取得に失敗: {ex.GetType().Name}: {ex.Message}");
+                    // 個別のデバイス処理に失敗しても続行
+                    LoggerService.LogError($"デバイス[{deviceIndex}]の処理に失敗: {ex.GetType().Name}: {ex.Message}");
+                    deviceIndex++;
                 }
             }
 
