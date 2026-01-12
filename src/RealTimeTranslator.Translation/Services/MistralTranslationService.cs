@@ -183,12 +183,8 @@ public class MistralTranslationService : ITranslationService
             return text;
         }
 
-        LLamaContext? context = null;
         try
         {
-            // 毎回新しいコンテキストを作成してコンテキスト状態をリセット
-            context = _model.CreateContext(_modelParams);
-
             // 言語名を取得
             var sourceLangName = GetLanguageName(sourceLanguage);
             var targetLangName = GetLanguageName(targetLanguage);
@@ -212,9 +208,9 @@ public class MistralTranslationService : ITranslationService
                 }
             };
 
-            // 推論を実行（InstructExecutorを使用）
+            // 推論を実行（StatelessExecutorを使用 - コンテキストは自動管理）
             var sb = new StringBuilder();
-            var executor = new InstructExecutor(context);
+            var executor = new StatelessExecutor(_model, _modelParams);
 
             await foreach (var outputToken in executor.InferAsync(prompt, inferenceParams))
             {
@@ -241,10 +237,6 @@ public class MistralTranslationService : ITranslationService
             LoggerService.LogError($"[MistralTranslation] 翻訳エラー: {ex.Message}");
             LoggerService.LogDebug($"[MistralTranslation] StackTrace: {ex.StackTrace}");
             return text;
-        }
-        finally
-        {
-            context?.Dispose();
         }
     }
 
