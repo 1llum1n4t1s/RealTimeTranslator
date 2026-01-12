@@ -31,6 +31,7 @@ public class MistralTranslationService : ITranslationService
     private bool _isModelLoaded = false;
     private LLamaWeights? _model;
     private ModelParams? _modelParams;
+    private StatelessExecutor? _executor;
 
     private Dictionary<string, string> _preTranslationDict = new();
     private Dictionary<string, string> _postTranslationDict = new();
@@ -189,29 +190,34 @@ public class MistralTranslationService : ITranslationService
             var sourceLangName = GetLanguageName(sourceLanguage);
             var targetLangName = GetLanguageName(targetLanguage);
 
-            // Mistral Instruct形式のプロンプトを作成（シンプルに、ローマ字なし）
-            var prompt = $"<s>[INST] Translate to {targetLangName}: {text} [/INST]";
+            // Mistral Instruct形式のプロンプトを作成（翻訳専用・説明禁止）
+            var prompt =
+                $"<s>[INST] You are a translation engine. Translate the following text from {sourceLangName} to {targetLangName}. " +
+                "Return only the translated text without explanations, notes, or quotes.\n" +
+                $"Text: {text} [/INST]";
 
             LoggerService.LogDebug($"[MistralTranslation] プロンプト: {prompt}");
 
             // 推論パラメータを設定（翻訳タスクに最適化）
             // パフォーマンス最適化: より高速な推論のためパラメータを調整
+            var maxTokens = Math.Clamp(text.Length / 4 + 8, 16, 48);
             var inferenceParams = new InferenceParams
             {
-                MaxTokens = 48,  // 翻訳結果には48トークンで十分（さらに削減でスピードアップ）
-                AntiPrompts = new List<string> { "</s>", "\n" },  // 改行1つで終了
+                MaxTokens = maxTokens,  // 入力長に応じて上限を調整し速度を確保
+                AntiPrompts = new List<string> { "</s>", "\n", "\r", "[INST]" },  // 改行や指示で終了
                 SamplingPipeline = new DefaultSamplingPipeline
                 {
-                    Temperature = 0.01f,  // 極低温度で決定論的かつ高速に
-                    TopP = 0.85f,        // TopPを削減してサンプリング効率化
-                    TopK = 10,           // TopKをさらに削減して高速化
-                    RepeatPenalty = 1.2f // 繰り返しペナルティを強化
+                    Temperature = 0.05f,  // 低温度で決定論的かつ高速に
+                    TopP = 0.7f,         // TopPを削減してサンプリング効率化
+                    TopK = 8,            // TopKをさらに削減して高速化
+                    RepeatPenalty = 1.15f // 繰り返しペナルティを軽めに
                 }
             };
 
             // 推論を実行（StatelessExecutorを使用 - コンテキストは自動管理）
             var sb = new StringBuilder();
-            var executor = new StatelessExecutor(_model, _modelParams);
+            var executor = _executor ?? new StatelessExecutor(_model, _modelParams);
+            _executor ??= executor;
 
             await foreach (var outputToken in executor.InferAsync(prompt, inferenceParams))
             {
@@ -252,6 +258,8 @@ public class MistralTranslationService : ITranslationService
         // 不要なマーカーを削除
         result = result.Replace("</s>", "").Replace("[INST]", "").Replace("[/INST]", "");
 
+        result = ExtractTranslationOnly(result);
+
         // 括弧内のローマ字読み方を削除（例: "(Wareware ga...)"）
         var parenStartIndex = result.IndexOf('(');
         if (parenStartIndex >= 0)
@@ -273,6 +281,78 @@ public class MistralTranslationService : ITranslationService
         }
 
         return result.Trim();
+    }
+
+    private string ExtractTranslationOnly(string result)
+    {
+        if (string.IsNullOrWhiteSpace(result))
+            return result;
+
+        var trimmed = result.Trim();
+
+        // よくある説明文の先頭を除去
+        var prefixes = new[]
+        {
+            "In Japanese", "In Japanese,", "In Japanese:", "Japanese translation", "Japanese:",
+            "日本語訳", "日本語:", "日本語では", "和訳"
+        };
+
+        foreach (var prefix in prefixes)
+        {
+            if (trimmed.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            {
+                var colonIndex = trimmed.IndexOf(':');
+                if (colonIndex >= 0 && colonIndex + 1 < trimmed.Length)
+                {
+                    trimmed = trimmed[(colonIndex + 1)..].Trim();
+                }
+                break;
+            }
+        }
+
+        // 引用符/かぎ括弧の中身を優先
+        var quoted = ExtractQuotedText(trimmed);
+        if (!string.IsNullOrWhiteSpace(quoted))
+        {
+            return quoted.Trim();
+        }
+
+        // 最初の改行以降は削除
+        var newlineIndex = trimmed.IndexOfAny(new[] { '\n', '\r' });
+        if (newlineIndex >= 0)
+        {
+            trimmed = trimmed[..newlineIndex].Trim();
+        }
+
+        return trimmed;
+    }
+
+    private static string? ExtractQuotedText(string text)
+    {
+        var quotePairs = new[]
+        {
+            new[] { "「", "」" },
+            new[] { "『", "』" },
+            new[] { "\"", "\"" },
+            new[] { "“", "”" }
+        };
+
+        foreach (var pair in quotePairs)
+        {
+            var start = text.IndexOf(pair[0], StringComparison.Ordinal);
+            if (start < 0) continue;
+            var end = text.IndexOf(pair[1], start + pair[0].Length, StringComparison.Ordinal);
+            if (end > start)
+            {
+                var extracted = text.Substring(start + pair[0].Length, end - start - pair[0].Length);
+                if (!string.IsNullOrWhiteSpace(extracted))
+                {
+                    return extracted;
+                }
+            }
+        }
+
+        return null;
     }
 
     /// <summary>
@@ -343,6 +423,7 @@ public class MistralTranslationService : ITranslationService
 
             // モデルをロード
             _model = LLamaWeights.LoadFromFile(_modelParams);
+            _executor = new StatelessExecutor(_model, _modelParams);
 
             _isModelLoaded = true;
             LoggerService.LogInfo("Mistral翻訳モデルの読み込みが完了しました");
