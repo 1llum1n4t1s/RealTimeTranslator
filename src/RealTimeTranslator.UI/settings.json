@@ -15,7 +15,8 @@
     "ModelPath": "models/translate-en-ja",
     "SourceLanguage": "en",
     "TargetLanguage": "ja",
-    "CacheSize": 1000
+    "CacheSize": 1000,
+    "ModelType": "Auto"
   },
   "Overlay": {
     "FontFamily": "Yu Gothic UI",
