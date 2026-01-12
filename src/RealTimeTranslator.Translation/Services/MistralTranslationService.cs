@@ -336,7 +336,7 @@ public class MistralTranslationService : ITranslationService
                 ContextSize = 512,   // コンテキストを少し拡張（処理安定性向上）
                 BatchSize = 1024,    // バッチサイズを大幅増加で処理速度向上
                 GpuLayerCount = 35,  // GPU使用（全レイヤーをGPUで実行）
-                Threads = (uint)Math.Max(4, Environment.ProcessorCount / 2)  // CPU並列処理も活用
+                Threads = Math.Max(4, Environment.ProcessorCount / 2)  // CPU並列処理も活用
             };
 
             LoggerService.LogDebug($"Mistral model parameters: ContextSize=512, BatchSize=1024, GpuLayerCount=35, Threads={_modelParams.Threads}");
