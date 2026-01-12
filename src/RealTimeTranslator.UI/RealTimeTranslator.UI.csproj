@@ -8,6 +8,7 @@
     <Nullable>enable</Nullable>
     <LangVersion>latest</LangVersion>
     <LLamaSharpCpuVariant Condition="'$(LLamaSharpCpuVariant)' == ''">avx2</LLamaSharpCpuVariant>
+    <ErrorOnDuplicatePublishOutputFiles>false</ErrorOnDuplicatePublishOutputFiles>
   </PropertyGroup>
 
   <ItemGroup>
@@ -24,22 +25,13 @@
   </ItemGroup>
 
   <Target Name="FilterLLamaSharpCpuNativeVariants" AfterTargets="ResolveFilesToPublish">
-    <PropertyGroup>
-      <_LLamaSharpCpuVariant>$(LLamaSharpCpuVariant)</_LLamaSharpCpuVariant>
-      <_LLamaSharpCpuVariant Condition="'$(_LLamaSharpCpuVariant)' == ''">avx2</_LLamaSharpCpuVariant>
-    </PropertyGroup>
     <ItemGroup>
-      <_FilesToRemove Include="@(ResolvedFileToPublish)"
-                      Condition="'%(ResolvedFileToPublish.OriginalItemSpec)' != ''
-                        and $([System.String]::Copy('%(ResolvedFileToPublish.OriginalItemSpec)').Contains('llamasharp.backend.cpu'))
-                        and $([System.String]::Copy('%(ResolvedFileToPublish.OriginalItemSpec)').Contains('runtimes\win-x64\native\'))
-                        and !$([System.String]::Copy('%(ResolvedFileToPublish.OriginalItemSpec)').Contains('runtimes\win-x64\native\$(_LLamaSharpCpuVariant)\'))" />
+      <ResolvedFileToPublish Remove="@(ResolvedFileToPublish)"
+                             Condition="'%(ResolvedFileToPublish.OriginalItemSpec)' != ''
+                               and $([System.String]::Copy('%(ResolvedFileToPublish.OriginalItemSpec)').Contains('llamasharp.backend.cpu'))
+                               and $([System.String]::Copy('%(ResolvedFileToPublish.OriginalItemSpec)').Contains('runtimes\win-x64\native\'))
+                               and !$([System.String]::Copy('%(ResolvedFileToPublish.OriginalItemSpec)').Contains('runtimes\win-x64\native\$(LLamaSharpCpuVariant)\'))" />
     </ItemGroup>
-    <ItemGroup>
-      <ResolvedFileToPublish Remove="@(_FilesToRemove)" />
-    </ItemGroup>
-    <Message Text="Filtering LLamaSharp CPU variants, keeping only: $(_LLamaSharpCpuVariant)" Importance="normal" />
-    <Message Text="Removing $(@(_FilesToRemove->Count())) files from LLamaSharp CPU variants" Importance="normal" Condition="'@(_FilesToRemove)' != ''" />
   </Target>
 
 </Project>
