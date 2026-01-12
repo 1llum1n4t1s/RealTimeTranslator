@@ -26,6 +26,21 @@ public partial class App : Application
     private OverlayWindow? _overlayWindow;
     private CancellationTokenSource? _updateCancellation;
 
+    public App()
+    {
+        // GPU有効化：アプリケーション起動時に環境変数を設定（ネイティブライブラリ初期化前）
+        // NVIDIA CUDA優先
+        Environment.SetEnvironmentVariable("GGML_USE_CUDA", "1");
+        Environment.SetEnvironmentVariable("GGML_CUDA_NO_PINNED", "1");
+        Environment.SetEnvironmentVariable("CUDA_VISIBLE_DEVICES", "0");
+
+        // AMD RADEON対応（フォールバック）
+        Environment.SetEnvironmentVariable("GGML_USE_VULKAN", "1");
+        Environment.SetEnvironmentVariable("GGML_USE_HIP", "1");
+
+        LoggerService.LogDebug("App constructor: GPU環境変数設定完了");
+    }
+
     protected override void OnStartup(StartupEventArgs e)
     {
         try
@@ -208,7 +223,10 @@ public partial class App : Application
                     key.SetValue("DisplayName", "RealTimeTranslator", Microsoft.Win32.RegistryValueKind.String);
                     key.SetValue("DisplayVersion", appVersion, Microsoft.Win32.RegistryValueKind.String);
                     key.SetValue("Publisher", "1llum1n4t1s", Microsoft.Win32.RegistryValueKind.String);
-                    key.SetValue("InstallLocation", exeDir, Microsoft.Win32.RegistryValueKind.String);
+                    if (exeDir != null)
+                    {
+                        key.SetValue("InstallLocation", exeDir, Microsoft.Win32.RegistryValueKind.String);
+                    }
                     key.SetValue("UninstallString", exePath, Microsoft.Win32.RegistryValueKind.String);
                     key.SetValue("DisplayIcon", exePath, Microsoft.Win32.RegistryValueKind.String);
                     key.SetValue("NoModify", 1, Microsoft.Win32.RegistryValueKind.DWord);

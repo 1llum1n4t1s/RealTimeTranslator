@@ -12,7 +12,7 @@ namespace RealTimeTranslator.Core.Services;
 public class VADService : IVADService
 {
     private const int FramesPerSecond = 100; // 1秒あたりのフレーム数 (10ms/フレーム)
-    private const float BaseEnergyThreshold = 0.01f; // 基本エネルギー閾値
+    private const float BaseEnergyThreshold = 0.008f; // 基本エネルギー閾値（感度向上）
     private const float MaxEnergyThreshold = 0.1f; // 最大エネルギー閾値
 
     private int _sampleRate;

@@ -86,12 +86,17 @@ public class ModelDownloadService : IDisposable
                 serviceName,
                 modelLabel,
                 ModelStatusType.Info,
-                $"モデルファイルを検出しました ({fileInfo.Length} bytes)。検証中..."));
+                $"モデルファイルを検出しました ({fileInfo.Length} bytes)。読み込み中..."));
             System.Diagnostics.Debug.WriteLine($"[{serviceName}] Model file found at: {resolvedPath} (Size: {fileInfo.Length} bytes)");
 
             // ファイルの整合性を検証
             if (await ValidateModelFileAsync(resolvedPath, downloadUrl, serviceName, modelLabel, cancellationToken))
             {
+                OnStatusChanged(new ModelStatusChangedEventArgs(
+                    serviceName,
+                    modelLabel,
+                    ModelStatusType.Info,
+                    $"モデルの読み込みが完了しました。"));
                 return resolvedPath;
             }
 

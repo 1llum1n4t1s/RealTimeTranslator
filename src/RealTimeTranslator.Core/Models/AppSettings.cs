@@ -108,8 +108,8 @@ public class AppSettings
         // 最大発話長の検証
         if (settings.AudioCapture.MaxSpeechDuration <= settings.AudioCapture.MinSpeechDuration)
         {
-            LoggerService.LogWarning($"Invalid MaxSpeechDuration {settings.AudioCapture.MaxSpeechDuration}, using default 2.5");
-            settings.AudioCapture.MaxSpeechDuration = 2.5f;
+            LoggerService.LogWarning($"Invalid MaxSpeechDuration {settings.AudioCapture.MaxSpeechDuration}, using default 6.0");
+            settings.AudioCapture.MaxSpeechDuration = 6.0f;
         }
 
         // フォントサイズの検証
@@ -352,7 +352,7 @@ public class AudioCaptureSettings
     /// <summary>
     /// VAD感度（0.0〜1.0）
     /// </summary>
-    public float VADSensitivity { get; set; } = 0.5f;
+    public float VADSensitivity { get; set; } = 0.6f;
 
     /// <summary>
     /// 最小発話長（秒）
@@ -362,12 +362,12 @@ public class AudioCaptureSettings
     /// <summary>
     /// 最大発話長（秒）
     /// </summary>
-    public float MaxSpeechDuration { get; set; } = 2.5f;
+    public float MaxSpeechDuration { get; set; } = 6.0f;
 
     /// <summary>
     /// 無音判定閾値（秒）
     /// </summary>
-    public float SilenceThreshold { get; set; } = 0.2f;
+    public float SilenceThreshold { get; set; } = 0.5f;
 }
 
 /// <summary>
