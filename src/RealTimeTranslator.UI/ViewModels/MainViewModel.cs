@@ -714,14 +714,14 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
         RunOnUiThread(() =>
         {
-            StatusText = $"{e.ServiceName}: {message}";
+            StatusText = message;
             StatusColor = e.Status == ModelStatusType.DownloadFailed || e.Status == ModelStatusType.LoadFailed
                 ? Brushes.Red
                 : Brushes.Orange;
 
             if (e.Status == ModelStatusType.Info && message.Contains("ダウンロード", StringComparison.Ordinal))
             {
-                DownloadReason = $"{e.ServiceName} {e.ModelName}: {message}";
+                DownloadReason = message;
             }
 
             // ダウンロード完了・失敗時にプログレスバーを非表示
@@ -734,7 +734,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
             }
         });
 
-        Log($"{e.ServiceName} {e.ModelName}: {message}");
+        Log(message);
     }
 
     private void OnCaptureStatusChanged(object? sender, CaptureStatusEventArgs e)
