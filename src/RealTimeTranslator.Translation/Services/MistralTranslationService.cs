@@ -194,31 +194,27 @@ public class MistralTranslationService : ITranslationService
             var targetLangName = GetLanguageName(targetLanguage);
 
             // Mistral Instruct形式のプロンプトを作成
-            var prompt = $@"<s>[INST] Translate the following {sourceLangName} text to {targetLangName}. Only output the translation, nothing else.
-
-{sourceLangName} text: {text}
-
-{targetLangName} translation: [/INST]";
+            var prompt = $"<s>[INST] Translate the following {sourceLangName} text to {targetLangName}. Only output the translation, nothing else.\n\n{sourceLangName} text: {text}\n\n{targetLangName} translation: [/INST] ";
 
             LoggerService.LogDebug($"[MistralTranslation] プロンプト: {prompt}");
 
-            // 推論パラメータを設定
+            // 推論パラメータを設定（翻訳タスクに最適化）
             var inferenceParams = new InferenceParams
             {
-                MaxTokens = 256,
-                AntiPrompts = new List<string> { "</s>", "[INST]", "[/INST]" },
+                MaxTokens = 128,  // 翻訳結果には128トークンで十分
+                AntiPrompts = new List<string> { "</s>", "\n\n" },  // 改行2つで終了
                 SamplingPipeline = new DefaultSamplingPipeline
                 {
-                    Temperature = 0.3f,
-                    TopP = 0.9f,
+                    Temperature = 0.1f,  // 決定論的な翻訳のため低温度
+                    TopP = 0.95f,
                     TopK = 40,
                     RepeatPenalty = 1.1f
                 }
             };
 
-            // 推論を実行
+            // 推論を実行（StatelessExecutorを使用）
             var sb = new StringBuilder();
-            var executor = new InteractiveExecutor(context);
+            var executor = new StatelessExecutor(_model, _modelParams);
 
             await foreach (var outputToken in executor.InferAsync(prompt, inferenceParams))
             {
@@ -329,14 +325,14 @@ public class MistralTranslationService : ITranslationService
                 ModelStatusType.Info,
                 "Mistralモデルを読み込み中..."));
 
-            // モデルパラメータを設定
+            // モデルパラメータを設定（翻訳タスクに最適化）
             _modelParams = new ModelParams(modelPath)
             {
-                ContextSize = 2048,
-                GpuLayerCount = 35 // GPU使用（全レイヤーの一部をGPUで実行）
+                ContextSize = 512,  // 翻訳タスクには512で十分（パフォーマンス向上）
+                GpuLayerCount = 35  // GPU使用（全レイヤーをGPUで実行）
             };
 
-            LoggerService.LogDebug($"Mistral model parameters: ContextSize=2048, GpuLayerCount=35");
+            LoggerService.LogDebug($"Mistral model parameters: ContextSize=512, GpuLayerCount=35");
 
             // モデルをロード
             _model = LLamaWeights.LoadFromFile(_modelParams);

@@ -274,8 +274,10 @@ public class WhisperASRService : IASRService
                 ModelStatusType.Info,
                 "WhisperProcessor を作成中..."));
 
+            // パフォーマンス最適化のため、スレッド数を制限し、言語を事前指定
             var builder = _factory.CreateBuilder()
-                .WithThreads(Environment.ProcessorCount);
+                .WithThreads(Math.Min(8, Environment.ProcessorCount))  // スレッド数を制限（過剰なスレッドは逆効果）
+                .WithLanguage("en");  // 英語を事前指定してパフォーマンス向上
 
             _processor = builder.Build();
 
