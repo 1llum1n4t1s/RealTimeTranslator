@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Text;
 using LLama;
 using LLama.Common;
+using LLama.Sampling;
 using RealTimeTranslator.Core.Interfaces;
 using RealTimeTranslator.Core.Models;
 using RealTimeTranslator.Core.Services;
