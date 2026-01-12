@@ -29,16 +29,28 @@ public partial class App : Application
     public App()
     {
         // GPU有効化：アプリケーション起動時に環境変数を設定（ネイティブライブラリ初期化前）
-        // NVIDIA CUDA優先
+        // 自動検出順序: NVIDIA CUDA > AMD ROCm/HIP > Intel SYCL > Vulkan (汎用) > CPU
+
+        // NVIDIA CUDA（最高性能）
         Environment.SetEnvironmentVariable("GGML_USE_CUDA", "1");
         Environment.SetEnvironmentVariable("GGML_CUDA_NO_PINNED", "1");
         Environment.SetEnvironmentVariable("CUDA_VISIBLE_DEVICES", "0");
 
-        // AMD RADEON対応（フォールバック）
-        Environment.SetEnvironmentVariable("GGML_USE_VULKAN", "1");
+        // AMD RADEON対応（ROCm/HIP）
         Environment.SetEnvironmentVariable("GGML_USE_HIP", "1");
+        Environment.SetEnvironmentVariable("HSA_OVERRIDE_GFX_VERSION", "11.0.0");  // RDNAアーキテクチャ用
 
-        LoggerService.LogDebug("App constructor: GPU環境変数設定完了");
+        // Intel Arc / Intel GPU対応（SYCL/oneAPI）
+        Environment.SetEnvironmentVariable("GGML_USE_SYCL", "1");
+        Environment.SetEnvironmentVariable("SYCL_DEVICE_FILTER", "level_zero:gpu");  // Intel Level Zeroバックエンド優先
+
+        // Vulkan（汎用GPU、NVIDIA/AMD/Intelすべて対応）
+        Environment.SetEnvironmentVariable("GGML_USE_VULKAN", "1");
+
+        // Metal（macOS用、Windowsでは無視される）
+        Environment.SetEnvironmentVariable("GGML_USE_METAL", "1");
+
+        LoggerService.LogDebug("App constructor: GPU環境変数設定完了 (CUDA/HIP/SYCL/Vulkan/Metal)");
     }
 
     protected override void OnStartup(StartupEventArgs e)

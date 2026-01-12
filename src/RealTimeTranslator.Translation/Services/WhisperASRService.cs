@@ -258,18 +258,9 @@ public class WhisperASRService : IASRService
                 throw new FileNotFoundException($"ASR model not found: {modelPath}");
             }
 
-            // GPU を有効にするための環境変数設定（複数オプションをサポート）
-            // NVIDIA CUDA をサポート
-            Environment.SetEnvironmentVariable("GGML_USE_CUDA", "1");
-            LoggerService.LogDebug("GPU (CUDA) support enabled");
-
-            // AMD RADEON をサポート（Vulkan）
-            Environment.SetEnvironmentVariable("GGML_USE_VULKAN", "1");
-            LoggerService.LogDebug("GPU (Vulkan/RADEON) support enabled");
-
-            // AMD RADEON をサポート（HIP/ROCm）
-            Environment.SetEnvironmentVariable("GGML_USE_HIP", "1");
-            LoggerService.LogDebug("GPU (HIP/ROCm/RADEON) support enabled");
+            // GPU環境変数はApp.xaml.csで起動時に設定済み
+            // 対応GPU: NVIDIA CUDA, AMD ROCm/HIP, Intel SYCL, Vulkan (汎用)
+            LoggerService.LogDebug("GPU support: CUDA/HIP/SYCL/Vulkan (環境変数はApp起動時に設定済み)");
 
             OnModelStatusChanged(new ModelStatusChangedEventArgs(
                 ServiceName,
@@ -287,18 +278,18 @@ public class WhisperASRService : IASRService
                 "WhisperProcessor を作成中..."));
 
             // パフォーマンス最適化: スレッド数を増やし、言語を事前指定
-            // CPUコア数の75%を使用（最大8スレッド）
-            var threadCount = Math.Min(8, Math.Max(4, (int)(Environment.ProcessorCount * 0.75)));
+            // CPUコア数の50%を使用（GPU推論時はCPU負荷を軽減）
+            var threadCount = Math.Min(8, Math.Max(2, (int)(Environment.ProcessorCount * 0.5)));
             var builder = _factory.CreateBuilder()
-                .WithThreads(threadCount)  // より多くのスレッドでパフォーマンス向上
+                .WithThreads(threadCount)
                 .WithLanguage("en");  // 英語を事前指定してパフォーマンス向上
 
             LoggerService.LogDebug($"Whisper using {threadCount} threads (ProcessorCount: {Environment.ProcessorCount})");
 
             _processor = builder.Build();
 
-            LoggerService.LogDebug("Whisper Processor created with GPU support (NVIDIA CUDA + AMD RADEON Vulkan/HIP)");
-            LoggerService.LogInfo("WhisperASR GPU support (CUDA/Vulkan/HIP) enabled");
+            LoggerService.LogDebug("Whisper Processor created with GPU acceleration");
+            LoggerService.LogInfo("WhisperASR initialized (GPU: CUDA/HIP/SYCL/Vulkan auto-detect)");
 
             _isModelLoaded = true;
             LoggerService.LogInfo("Whisper音声認識モデルの読み込みが完了しました");

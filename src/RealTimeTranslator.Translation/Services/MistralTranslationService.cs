@@ -10,17 +10,18 @@ using RealTimeTranslator.Core.Services;
 namespace RealTimeTranslator.Translation.Services;
 
 /// <summary>
-/// LlamaSharpとMistral 7B Instruct v0.2を使用した翻訳サービス
-/// ローカルで動作するプライベートな翻訳エンジン
+/// LlamaSharpを使用した翻訳サービス
+/// Phi-3, Gemma, Qwen, Mistralなど複数のモデルをサポート
 /// </summary>
 public class MistralTranslationService : ITranslationService
 {
     private const string ServiceName = "翻訳";
-    private const string ModelLabel = "Mistral翻訳モデル";
-    private const string DefaultModelFileName = "mistral-7b-instruct-v0.2.Q3_K_S.gguf";
-    private const string DefaultModelDownloadUrl = "https://huggingface.co/TheBloke/Mistral-7B-Instruct-v0.2-GGUF/resolve/main/mistral-7b-instruct-v0.2.Q3_K_S.gguf";
     private const int MaxCacheSize = 1000;
-    private const string WarmupPrompt = "Test prompt";
+    private const string WarmupPrompt = "Test";
+
+    // デフォルトモデル: Phi-3 Mini（高速・高品質）
+    private const string DefaultModelFileName = "Phi-3-mini-4k-instruct-q4.gguf";
+    private const string DefaultModelDownloadUrl = "https://huggingface.co/microsoft/Phi-3-mini-4k-instruct-gguf/resolve/main/Phi-3-mini-4k-instruct-q4.gguf";
 
     private readonly TranslationSettings _settings;
     private readonly ModelDownloadService _downloadService;
@@ -34,6 +35,8 @@ public class MistralTranslationService : ITranslationService
     private LLamaWeights? _model;
     private ModelParams? _modelParams;
     private StatelessExecutor? _executor;
+    private TranslationModelType _detectedModelType = TranslationModelType.Auto;
+    private string _modelLabel = "翻訳モデル";
 
     private Dictionary<string, string> _preTranslationDict = new();
     private Dictionary<string, string> _postTranslationDict = new();
@@ -66,9 +69,9 @@ public class MistralTranslationService : ITranslationService
     {
         OnModelStatusChanged(new ModelStatusChangedEventArgs(
             ServiceName,
-            ModelLabel,
+            _modelLabel,
             ModelStatusType.Info,
-            "Mistral翻訳モデルの初期化を開始しました。"));
+            "翻訳モデルの初期化を開始しました。"));
 
         try
         {
@@ -78,12 +81,17 @@ public class MistralTranslationService : ITranslationService
                 DefaultModelFileName,
                 DefaultModelDownloadUrl,
                 ServiceName,
-                ModelLabel).ConfigureAwait(false);
+                _modelLabel).ConfigureAwait(false);
 
             if (string.IsNullOrWhiteSpace(modelFilePath))
             {
                 throw new FileNotFoundException($"Failed to ensure model file for: {_settings.ModelPath}");
             }
+
+            // モデルタイプを検出
+            _detectedModelType = DetectModelType(modelFilePath);
+            _modelLabel = GetModelLabel(_detectedModelType);
+            LoggerService.LogInfo($"翻訳モデルタイプ検出: {_detectedModelType} ({_modelLabel})");
 
             // モデルをロード
             LoadModelFromPath(modelFilePath);
@@ -93,15 +101,64 @@ public class MistralTranslationService : ITranslationService
         }
         catch (Exception ex)
         {
-            LoggerService.LogError($"Mistral translation initialization error: {ex}");
+            LoggerService.LogError($"Translation initialization error: {ex}");
             OnModelStatusChanged(new ModelStatusChangedEventArgs(
                 ServiceName,
-                ModelLabel,
+                _modelLabel,
                 ModelStatusType.LoadFailed,
-                "Mistral翻訳モデルの初期化に失敗しました。",
+                "翻訳モデルの初期化に失敗しました。",
                 ex));
             _isModelLoaded = false;
         }
+    }
+
+    /// <summary>
+    /// モデルファイル名からモデルタイプを検出
+    /// </summary>
+    private TranslationModelType DetectModelType(string modelFilePath)
+    {
+        // 設定で明示的に指定されている場合はそれを使用
+        if (_settings.ModelType != TranslationModelType.Auto)
+        {
+            return _settings.ModelType;
+        }
+
+        var fileName = Path.GetFileName(modelFilePath).ToLowerInvariant();
+
+        if (fileName.Contains("phi-3") || fileName.Contains("phi3"))
+        {
+            return TranslationModelType.Phi3;
+        }
+        if (fileName.Contains("gemma"))
+        {
+            return TranslationModelType.Gemma;
+        }
+        if (fileName.Contains("qwen"))
+        {
+            return TranslationModelType.Qwen;
+        }
+        if (fileName.Contains("mistral"))
+        {
+            return TranslationModelType.Mistral;
+        }
+
+        // デフォルトはPhi-3形式（最も汎用的）
+        return TranslationModelType.Phi3;
+    }
+
+    /// <summary>
+    /// モデルタイプに応じたラベルを取得
+    /// </summary>
+    private static string GetModelLabel(TranslationModelType modelType)
+    {
+        return modelType switch
+        {
+            TranslationModelType.Phi3 => "Phi-3翻訳モデル",
+            TranslationModelType.Gemma => "Gemma翻訳モデル",
+            TranslationModelType.Qwen => "Qwen翻訳モデル",
+            TranslationModelType.Mistral => "Mistral翻訳モデル",
+            _ => "翻訳モデル"
+        };
     }
 
     /// <summary>
@@ -246,13 +303,13 @@ public class MistralTranslationService : ITranslationService
     }
 
     /// <summary>
-    /// Mistral 7B Instruct v0.2を使用して翻訳
+    /// LLMを使用して翻訳
     /// </summary>
     private async Task<string> TranslateWithMistralAsync(string text, string sourceLanguage, string targetLanguage)
     {
         if (!_isModelLoaded || _model == null)
         {
-            LoggerService.LogError("[MistralTranslation] モデルが読み込まれていません");
+            LoggerService.LogError("[Translation] モデルが読み込まれていません");
             return text;
         }
 
@@ -262,38 +319,32 @@ public class MistralTranslationService : ITranslationService
             var sourceLangName = GetLanguageName(sourceLanguage);
             var targetLangName = GetLanguageName(targetLanguage);
 
-            // Mistral Instruct形式のプロンプトを作成（翻訳専用・説明禁止・括弧禁止）
-            var prompt =
-                $"<s>[INST] You are a professional translator. Translate the following text from {sourceLangName} to {targetLangName}. " +
-                "Output ONLY the translation. " +
-                "Do NOT add explanations, notes, parentheses, or any additional text. " +
-                "Do NOT use brackets, parentheses, or footnotes. " +
-                "Provide ONLY the translated text.\n" +
-                $"\"{text}\" [/INST] ";
+            // モデルタイプに応じたプロンプトを作成
+            var prompt = BuildPrompt(text, sourceLangName, targetLangName);
+            var antiPrompts = GetAntiPrompts();
 
-            LoggerService.LogDebug($"[MistralTranslation] プロンプト: {prompt}");
+            LoggerService.LogDebug($"[Translation] プロンプト: {prompt}");
 
             // 推論パラメータを設定（翻訳タスクに最適化）
-            // パフォーマンス最適化: より高速な推論のためパラメータを調整
             // 日本語翻訳では英語よりトークン数が2-3倍必要（文字ごとにトークン化）
-            var maxTokens = Math.Clamp(text.Length / 2 + 32, 64, 256);  // トークン数を増加（品質向上）
-            LoggerService.LogDebug($"[MistralTranslation] 推論パラメータ: MaxTokens={maxTokens}, Temp=0.05, TopP=0.7, TopK=8");
+            var maxTokens = Math.Clamp(text.Length + 32, 48, 200);  // リアルタイム翻訳用に最適化
+            LoggerService.LogDebug($"[Translation] 推論パラメータ: MaxTokens={maxTokens}, Temp=0.1, TopP=0.9, TopK=40");
 
             var inferenceParams = new InferenceParams
             {
-                MaxTokens = maxTokens,  // 日本語翻訳に十分なトークン数（拡張）
-                AntiPrompts = new List<string> { "</s>", "[INST]", "Note:", "Explanation:", "The translation is:", "In Japanese:" },  // 説明文を避ける
+                MaxTokens = maxTokens,
+                AntiPrompts = antiPrompts,
                 SamplingPipeline = new DefaultSamplingPipeline
                 {
-                    Temperature = 0.05f,  // 低温度で確定的な翻訳（精度重視）
-                    TopP = 0.7f,          // TopPを下げ（多様性を制限、正確性向上）
-                    TopK = 8,             // TopKを下げ（最高確率のトークンに集中）
-                    RepeatPenalty = 1.15f // 繰り返しペナルティ（適度な値）
+                    Temperature = 0.1f,   // 低温度で確定的な翻訳
+                    TopP = 0.9f,          // TopP（品質と多様性のバランス）
+                    TopK = 40,            // TopK
+                    RepeatPenalty = 1.1f  // 繰り返しペナルティ（軽め）
                 }
             };
 
-            // 推論を実行（StatelessExecutorを使用 - コンテキストは自動管理）
-            LoggerService.LogDebug($"[MistralTranslation] InferAsync 開始");
+            // 推論を実行
+            LoggerService.LogDebug($"[Translation] InferAsync 開始");
             var inferenceStartTime = Stopwatch.GetTimestamp();
 
             var sb = new StringBuilder();
@@ -319,14 +370,21 @@ public class MistralTranslationService : ITranslationService
                 tokenTimes.Add(tokenDuration);
                 lastTokenTime = currentTime;
 
-                // 5トークンごと、または500ms経過ごとにログ出力
+                // 10トークンごと、または1000ms経過ごとにログ出力（ログ削減）
                 var timeSinceLastLog = (currentTime - lastLogTime) * 1000.0 / Stopwatch.Frequency;
-                if (tokenCount % 5 == 0 || timeSinceLastLog >= 500)
+                if (tokenCount % 10 == 0 || timeSinceLastLog >= 1000)
                 {
                     var elapsedMs = (currentTime - inferenceStartTime) * 1000.0 / Stopwatch.Frequency;
                     var loggingAvgTokenTime = tokenTimes.Count > 0 ? tokenTimes.Average() : 0;
-                    LoggerService.LogDebug($"[MistralTranslation] トークン生成中: {tokenCount}トークン, {elapsedMs:F0}ms経過, 平均={loggingAvgTokenTime:F0}ms/token");
+                    LoggerService.LogDebug($"[Translation] トークン生成中: {tokenCount}トークン, {elapsedMs:F0}ms経過, 平均={loggingAvgTokenTime:F0}ms/token");
                     lastLogTime = currentTime;
+                }
+
+                // 早期終了判定（日本語の句点を検出）
+                var currentText = sb.ToString();
+                if (ShouldStopGeneration(currentText, targetLanguage))
+                {
+                    break;
                 }
             }
 
@@ -335,37 +393,127 @@ public class MistralTranslationService : ITranslationService
             var tokensPerSec = tokenCount > 0 ? tokenCount * 1000.0 / inferenceDuration : 0;
             var finalAvgTokenTime = tokenTimes.Count > 0 ? tokenTimes.Average() : 0;
             var firstTokenTime = tokenTimes.Count > 0 ? tokenTimes[0] : 0;
-            LoggerService.LogDebug($"[MistralTranslation] InferAsync 完了: {tokenCount}トークン生成, {inferenceDuration:F0}ms");
-            LoggerService.LogDebug($"[MistralTranslation] 速度統計: {tokensPerSec:F2} tokens/sec, 平均={finalAvgTokenTime:F0}ms/token, 初回={firstTokenTime:F0}ms");
+            LoggerService.LogDebug($"[Translation] InferAsync 完了: {tokenCount}トークン生成, {inferenceDuration:F0}ms");
+            LoggerService.LogDebug($"[Translation] 速度統計: {tokensPerSec:F2} tokens/sec, 平均={finalAvgTokenTime:F0}ms/token, 初回={firstTokenTime:F0}ms");
 
             var result = sb.ToString().Trim();
 
             // 結果のクリーンアップ
             result = CleanupTranslationResult(result);
 
-            LoggerService.LogDebug($"[MistralTranslation] 生成結果: {result}");
+            LoggerService.LogDebug($"[Translation] 生成結果: {result}");
 
             if (string.IsNullOrWhiteSpace(result))
             {
-                LoggerService.LogWarning("[MistralTranslation] 空の翻訳結果");
+                LoggerService.LogWarning("[Translation] 空の翻訳結果");
                 return text;
             }
 
-            // 英語が返されている場合は再翻訳（APIが説明文を返した可能性）
-            if (IsEnglishText(result) && !IsEnglishText(text))
+            // 英語が返されている場合は元のテキストを返す
+            if (IsEnglishText(result) && targetLanguage == "ja")
             {
-                LoggerService.LogWarning($"[MistralTranslation] 英語テキストが返されました。再翻訳を実行: {result}");
-                return text;  // 元のテキストを返す（翻訳失敗を避ける）
+                LoggerService.LogWarning($"[Translation] 英語テキストが返されました: {result}");
+                return text;
             }
 
             return result;
         }
         catch (Exception ex)
         {
-            LoggerService.LogError($"[MistralTranslation] 翻訳エラー: {ex.Message}");
-            LoggerService.LogDebug($"[MistralTranslation] StackTrace: {ex.StackTrace}");
+            LoggerService.LogError($"[Translation] 翻訳エラー: {ex.Message}");
+            LoggerService.LogDebug($"[Translation] StackTrace: {ex.StackTrace}");
             return text;
         }
+    }
+
+    /// <summary>
+    /// モデルタイプに応じたプロンプトを生成
+    /// </summary>
+    private string BuildPrompt(string text, string sourceLangName, string targetLangName)
+    {
+        return _detectedModelType switch
+        {
+            TranslationModelType.Phi3 => BuildPhi3Prompt(text, sourceLangName, targetLangName),
+            TranslationModelType.Gemma => BuildGemmaPrompt(text, sourceLangName, targetLangName),
+            TranslationModelType.Qwen => BuildQwenPrompt(text, sourceLangName, targetLangName),
+            TranslationModelType.Mistral => BuildMistralPrompt(text, sourceLangName, targetLangName),
+            _ => BuildPhi3Prompt(text, sourceLangName, targetLangName)
+        };
+    }
+
+    /// <summary>
+    /// Phi-3形式のプロンプト（シンプルで高品質）
+    /// </summary>
+    private static string BuildPhi3Prompt(string text, string sourceLangName, string targetLangName)
+    {
+        return $"<|user|>\nTranslate this {sourceLangName} text to {targetLangName}. Reply with ONLY the translation, no explanations.\n\n{text}<|end|>\n<|assistant|>\n";
+    }
+
+    /// <summary>
+    /// Gemma形式のプロンプト
+    /// </summary>
+    private static string BuildGemmaPrompt(string text, string sourceLangName, string targetLangName)
+    {
+        return $"<start_of_turn>user\nTranslate this {sourceLangName} text to {targetLangName}. Reply with ONLY the translation.\n\n{text}<end_of_turn>\n<start_of_turn>model\n";
+    }
+
+    /// <summary>
+    /// Qwen形式のプロンプト
+    /// </summary>
+    private static string BuildQwenPrompt(string text, string sourceLangName, string targetLangName)
+    {
+        return $"<|im_start|>user\nTranslate this {sourceLangName} text to {targetLangName}. Reply with ONLY the translation.\n\n{text}<|im_end|>\n<|im_start|>assistant\n";
+    }
+
+    /// <summary>
+    /// Mistral形式のプロンプト
+    /// </summary>
+    private static string BuildMistralPrompt(string text, string sourceLangName, string targetLangName)
+    {
+        return $"<s>[INST] Translate this {sourceLangName} text to {targetLangName}. Reply with ONLY the translation, no explanations or notes.\n\n{text} [/INST] ";
+    }
+
+    /// <summary>
+    /// モデルタイプに応じたアンチプロンプト（早期終了用）を取得
+    /// </summary>
+    private List<string> GetAntiPrompts()
+    {
+        var common = new List<string> { "\n\n", "Note:", "Explanation:", "Translation:", "Original:" };
+
+        return _detectedModelType switch
+        {
+            TranslationModelType.Phi3 => new List<string>(common) { "<|end|>", "<|user|>", "<|assistant|>" },
+            TranslationModelType.Gemma => new List<string>(common) { "<end_of_turn>", "<start_of_turn>" },
+            TranslationModelType.Qwen => new List<string>(common) { "<|im_end|>", "<|im_start|>" },
+            TranslationModelType.Mistral => new List<string>(common) { "</s>", "[INST]", "[/INST]" },
+            _ => new List<string>(common) { "<|end|>", "</s>" }
+        };
+    }
+
+    /// <summary>
+    /// 生成を早期終了すべきか判定
+    /// </summary>
+    private static bool ShouldStopGeneration(string currentText, string targetLanguage)
+    {
+        if (string.IsNullOrEmpty(currentText)) return false;
+
+        // 日本語の場合、句点で終了判定
+        if (targetLanguage == "ja")
+        {
+            // 句点（。）、感嘆符、疑問符で終わった場合
+            if (currentText.EndsWith("。") || currentText.EndsWith("！") || currentText.EndsWith("？"))
+            {
+                return true;
+            }
+        }
+
+        // 改行が2回連続した場合
+        if (currentText.Contains("\n\n"))
+        {
+            return true;
+        }
+
+        return false;
     }
 
     /// <summary>
@@ -376,25 +524,14 @@ public class MistralTranslationService : ITranslationService
         if (string.IsNullOrWhiteSpace(result))
             return result;
 
-        // 不要なマーカーを削除
-        result = result.Replace("</s>", "").Replace("[INST]", "").Replace("[/INST]", "");
+        // モデル固有のトークンを削除
+        result = RemoveModelTokens(result);
 
         result = ExtractTranslationOnly(result);
 
-        // 括弧内の全てを削除（英語説明やローマ字が入っていることが多い）
-        // （例: "(Wareware ga...)", "(Katakana: ...)", "(近鉄)", etc.）
-        while (true)
-        {
-            var parenStartIndex = result.IndexOf('(');
-            if (parenStartIndex < 0)
-                break;
-
-            var parenEndIndex = result.IndexOf(')', parenStartIndex);
-            if (parenEndIndex <= parenStartIndex)
-                break;
-
-            result = (result[..parenStartIndex] + result[(parenEndIndex + 1)..]).Trim();
-        }
+        // 英語の括弧内を削除（ローマ字や説明が入っていることが多い）
+        // ただし日本語の括弧は保持
+        result = RemoveEnglishParentheses(result);
 
         // 改行を削除（1行の翻訳結果を期待）
         result = result.Replace("\n", " ").Replace("\r", "");
@@ -412,6 +549,71 @@ public class MistralTranslationService : ITranslationService
         }
 
         return result.Trim();
+    }
+
+    /// <summary>
+    /// モデル固有のトークンを削除
+    /// </summary>
+    private static string RemoveModelTokens(string result)
+    {
+        // 共通のトークン
+        result = result.Replace("</s>", "")
+                       .Replace("<s>", "")
+                       .Replace("<unk>", "")
+                       .Replace("<pad>", "");
+
+        // Phi-3トークン
+        result = result.Replace("<|end|>", "")
+                       .Replace("<|user|>", "")
+                       .Replace("<|assistant|>", "")
+                       .Replace("<|system|>", "");
+
+        // Gemmaトークン
+        result = result.Replace("<start_of_turn>", "")
+                       .Replace("<end_of_turn>", "");
+
+        // Qwenトークン
+        result = result.Replace("<|im_start|>", "")
+                       .Replace("<|im_end|>", "");
+
+        // Mistralトークン
+        result = result.Replace("[INST]", "")
+                       .Replace("[/INST]", "");
+
+        return result;
+    }
+
+    /// <summary>
+    /// 英語の括弧内を削除（日本語の括弧は保持）
+    /// </summary>
+    private static string RemoveEnglishParentheses(string result)
+    {
+        // 英語の丸括弧内に英字が含まれている場合のみ削除
+        while (true)
+        {
+            var parenStartIndex = result.IndexOf('(');
+            if (parenStartIndex < 0)
+                break;
+
+            var parenEndIndex = result.IndexOf(')', parenStartIndex);
+            if (parenEndIndex <= parenStartIndex)
+                break;
+
+            var content = result.Substring(parenStartIndex + 1, parenEndIndex - parenStartIndex - 1);
+
+            // 括弧内に英字が多く含まれている場合は削除
+            var englishCount = content.Count(c => (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'));
+            if (englishCount > content.Length * 0.5)
+            {
+                result = (result[..parenStartIndex] + result[(parenEndIndex + 1)..]).Trim();
+            }
+            else
+            {
+                // 日本語の括弧は保持するためbreakして次へ
+                break;
+            }
+        }
+        return result;
     }
 
     private string ExtractTranslationOnly(string result)
@@ -544,63 +746,81 @@ public class MistralTranslationService : ITranslationService
     {
         try
         {
-            LoggerService.LogDebug($"Mistral翻訳モデルの読み込み開始: {modelPath}");
+            LoggerService.LogDebug($"{_modelLabel}の読み込み開始: {modelPath}");
 
             if (!File.Exists(modelPath))
             {
                 throw new FileNotFoundException($"Translation model not found: {modelPath}");
             }
 
-            // GPU環境変数はApp起動時に設定済み（ここではログのみ）
-            LoggerService.LogDebug("GPU (CUDA) support enabled");
-            LoggerService.LogDebug("GPU (Vulkan/RADEON) support enabled");
-            LoggerService.LogDebug("GPU (HIP/ROCm/RADEON) support enabled");
-            LoggerService.LogDebug("CUDA device selection: GPU 0");
+            // GPU環境変数はApp.xaml.csで起動時に設定済み
+            // 対応GPU: NVIDIA CUDA, AMD ROCm/HIP, Intel SYCL, Vulkan (汎用)
+            LoggerService.LogDebug("GPU support: CUDA/HIP/SYCL/Vulkan (環境変数はApp起動時に設定済み)");
 
             OnModelStatusChanged(new ModelStatusChangedEventArgs(
                 ServiceName,
-                ModelLabel,
+                _modelLabel,
                 ModelStatusType.Info,
-                "Mistralモデルを読み込み中..."));
+                $"{_modelLabel}を読み込み中..."));
 
-            // モデルパラメータを設定（GPU優先での高速翻訳）
-            // パフォーマンス最適化: GPU最優先、CPU処理をほぼなし
-            var gpuLayerCount = 41;  // 全レイヤーをGPUで実行（Mistral 7B = 32層 + 余裕）
+            // モデルタイプに応じたパラメータを設定
+            var (contextSize, batchSize, gpuLayerCount) = GetModelParameters();
+
             _modelParams = new ModelParams(modelPath)
             {
-                ContextSize = 512,   // コンテキストサイズ大幅削減（翻訳タスク最適化、GPU VRAM大幅節約）
-                BatchSize = 64,      // バッチサイズ最適化（GPU効率最大化）
-                GpuLayerCount = gpuLayerCount,  // 完全GPU処理（CPU処理ゼロ）
+                ContextSize = contextSize,
+                BatchSize = batchSize,
+                GpuLayerCount = gpuLayerCount,
                 Threads = 1  // CPUスレッド最小化（GPU推論中はCPUアイドル）
             };
 
-            LoggerService.LogDebug($"Mistral model parameters: ContextSize=512, BatchSize=64, GpuLayerCount={gpuLayerCount}, Threads=1 (完全GPU実行)");
+            LoggerService.LogDebug($"{_modelLabel} parameters: ContextSize={contextSize}, BatchSize={batchSize}, GpuLayerCount={gpuLayerCount}, Threads=1 (完全GPU実行)");
 
             // モデルをロード
             _model = LLamaWeights.LoadFromFile(_modelParams);
             _executor = new StatelessExecutor(_model, _modelParams);
 
             _isModelLoaded = true;
-            LoggerService.LogInfo("Mistral翻訳モデルの読み込みが完了しました");
-            LoggerService.LogInfo($"Mistral GPU support (CUDA/Vulkan/HIP) enabled with GpuLayerCount={gpuLayerCount} (完全GPU実行)");
+            LoggerService.LogInfo($"{_modelLabel}の読み込みが完了しました");
+            LoggerService.LogInfo($"{_modelLabel} initialized (GPU: CUDA/HIP/SYCL/Vulkan auto-detect, GpuLayerCount={gpuLayerCount})");
 
             OnModelStatusChanged(new ModelStatusChangedEventArgs(
                 ServiceName,
-                ModelLabel,
+                _modelLabel,
                 ModelStatusType.LoadSucceeded,
-                "Mistral翻訳モデルの読み込みが完了しました。"));
+                $"{_modelLabel}の読み込みが完了しました。"));
         }
         catch (Exception ex)
         {
-            LoggerService.LogError($"Mistral翻訳モデル読み込みに失敗: {ex}");
+            LoggerService.LogError($"{_modelLabel}読み込みに失敗: {ex}");
             OnModelStatusChanged(new ModelStatusChangedEventArgs(
                 ServiceName,
-                ModelLabel,
+                _modelLabel,
                 ModelStatusType.LoadFailed,
                 "翻訳モデルの読み込みに失敗しました。",
                 ex));
             _isModelLoaded = false;
         }
+    }
+
+    /// <summary>
+    /// モデルタイプに応じた最適パラメータを取得
+    /// </summary>
+    private (uint contextSize, uint batchSize, int gpuLayerCount) GetModelParameters()
+    {
+        return _detectedModelType switch
+        {
+            // Phi-3 Mini: 32層、小コンテキストで高速
+            TranslationModelType.Phi3 => (512u, 64u, 35),
+            // Gemma 2B: 18層、軽量高速
+            TranslationModelType.Gemma => (512u, 64u, 20),
+            // Qwen: 24層程度
+            TranslationModelType.Qwen => (512u, 64u, 28),
+            // Mistral 7B: 32層
+            TranslationModelType.Mistral => (512u, 64u, 35),
+            // デフォルト
+            _ => (512u, 64u, 35)
+        };
     }
 
     /// <summary>

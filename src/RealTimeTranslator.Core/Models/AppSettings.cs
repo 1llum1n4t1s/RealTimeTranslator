@@ -286,6 +286,39 @@ public class TranslationSettings
     /// キャッシュサイズ（エントリ数）
     /// </summary>
     public int CacheSize { get; set; } = 1000;
+
+    /// <summary>
+    /// 翻訳モデルタイプ（自動検出またはMistral/Phi3/Gemma/Qwen指定）
+    /// </summary>
+    [JsonConverter(typeof(JsonStringEnumConverter))]
+    public TranslationModelType ModelType { get; set; } = TranslationModelType.Auto;
+}
+
+/// <summary>
+/// 翻訳モデルタイプ
+/// </summary>
+public enum TranslationModelType
+{
+    /// <summary>
+    /// モデルファイル名から自動検出
+    /// </summary>
+    Auto,
+    /// <summary>
+    /// Mistral Instruct形式
+    /// </summary>
+    Mistral,
+    /// <summary>
+    /// Phi-3 形式
+    /// </summary>
+    Phi3,
+    /// <summary>
+    /// Gemma形式
+    /// </summary>
+    Gemma,
+    /// <summary>
+    /// Qwen形式
+    /// </summary>
+    Qwen
 }
 
 /// <summary>
