@@ -278,8 +278,7 @@ public class WhisperASRService : IASRService
             var builder = _factory.CreateBuilder()
                 .WithThreads(Math.Min(4, Environment.ProcessorCount))  // スレッド数をさらに制限（4が最適）
                 .WithLanguage("en")  // 英語を事前指定してパフォーマンス向上
-                .WithSingleSegment(false)  // セグメント分割を有効化
-                .WithSpeedup(true);  // 高速化モードを有効化
+                .WithSpeedup(true);  // 高速化モードを有効化（セグメント分割はデフォルトで有効）
 
             _processor = builder.Build();
 
