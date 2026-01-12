@@ -30,7 +30,6 @@ public class MistralTranslationService : ITranslationService
 
     private bool _isModelLoaded = false;
     private LLamaWeights? _model;
-    private LLamaContext? _context;
     private ModelParams? _modelParams;
 
     private Dictionary<string, string> _preTranslationDict = new();
@@ -178,14 +177,18 @@ public class MistralTranslationService : ITranslationService
     /// </summary>
     private async Task<string> TranslateWithMistralAsync(string text, string sourceLanguage, string targetLanguage)
     {
-        if (!_isModelLoaded || _model == null || _context == null)
+        if (!_isModelLoaded || _model == null)
         {
             LoggerService.LogError("[MistralTranslation] モデルが読み込まれていません");
             return text;
         }
 
+        LLamaContext? context = null;
         try
         {
+            // 毎回新しいコンテキストを作成してコンテキスト状態をリセット
+            context = _model.CreateContext(_modelParams);
+
             // 言語名を取得
             var sourceLangName = GetLanguageName(sourceLanguage);
             var targetLangName = GetLanguageName(targetLanguage);
@@ -215,7 +218,7 @@ public class MistralTranslationService : ITranslationService
 
             // 推論を実行
             var sb = new StringBuilder();
-            var executor = new InteractiveExecutor(_context);
+            var executor = new InteractiveExecutor(context);
 
             await foreach (var outputToken in executor.InferAsync(prompt, inferenceParams))
             {
@@ -242,6 +245,10 @@ public class MistralTranslationService : ITranslationService
             LoggerService.LogError($"[MistralTranslation] 翻訳エラー: {ex.Message}");
             LoggerService.LogDebug($"[MistralTranslation] StackTrace: {ex.StackTrace}");
             return text;
+        }
+        finally
+        {
+            context?.Dispose();
         }
     }
 
@@ -333,7 +340,6 @@ public class MistralTranslationService : ITranslationService
 
             // モデルをロード
             _model = LLamaWeights.LoadFromFile(_modelParams);
-            _context = _model.CreateContext(_modelParams);
 
             _isModelLoaded = true;
             LoggerService.LogInfo("Mistral翻訳モデルの読み込みが完了しました");
@@ -450,7 +456,6 @@ public class MistralTranslationService : ITranslationService
 
     public void Dispose()
     {
-        _context?.Dispose();
         _model?.Dispose();
         _translateLock.Dispose();
     }
