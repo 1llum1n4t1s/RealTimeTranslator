@@ -650,6 +650,12 @@ public partial class MainViewModel : ObservableObject, IDisposable
         // UI スレッドで実行
         RunOnUiThread(() =>
         {
+            // ローディング中はオーバーレイに表示させるため、メイン画面側は更新しない
+            if (IsLoading)
+            {
+                return;
+            }
+
             IsDownloading = true;
             DownloadProgress = e.ProgressPercentage ?? 0;
 
