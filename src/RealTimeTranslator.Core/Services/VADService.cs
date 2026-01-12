@@ -1,6 +1,7 @@
 using System.Runtime.InteropServices;
 using RealTimeTranslator.Core.Interfaces;
 using RealTimeTranslator.Core.Models;
+using static RealTimeTranslator.Core.Services.LoggerService;
 
 namespace RealTimeTranslator.Core.Services;
 
@@ -172,6 +173,7 @@ public class VADService : IVADService
                         _speechStartTime = _currentTime;
                         _currentSpeechBuffer.Clear();
                         _silenceDuration = 0;
+                        LogDebug($"[VAD] 発話開始: StartTime={_currentTime:F2}秒, Energy={energy:F4}");
                     }
 
                     // Span to Array 変換を避けて直接追加（パフォーマンス最適化）
@@ -191,6 +193,8 @@ public class VADService : IVADService
                         var segment = CreateSegment();
                         if (segment != null)
                         {
+                            var duration = segment.EndTime - segment.StartTime;
+                            LogDebug($"[VAD] 発話終了（無音検出）: Duration={duration:F2}秒, AudioLength={segment.AudioData.Length} samples, SilenceDuration={_silenceDuration:F2}秒");
                             segments.Add(segment);
                         }
                         _isSpeaking = false;
@@ -205,6 +209,8 @@ public class VADService : IVADService
                     var segment = CreateSegment();
                     if (segment != null)
                     {
+                        var duration = segment.EndTime - segment.StartTime;
+                        LogDebug($"[VAD] 発話終了（最大長到達）: Duration={duration:F2}秒, AudioLength={segment.AudioData.Length} samples, MaxDuration={maxSpeechDuration:F2}秒");
                         segments.Add(segment);
                     }
                     _isSpeaking = false;
@@ -249,7 +255,12 @@ public class VADService : IVADService
         }
 
         if (duration < minSpeechDuration)
+        {
+            LogDebug($"[VAD] セグメント破棄（最小長未満）: Duration={duration:F2}秒 < MinDuration={minSpeechDuration:F2}秒");
             return null;
+        }
+
+        LogDebug($"[VAD] セグメント作成: Duration={duration:F2}秒, AudioLength={_currentSpeechBuffer.Count} samples");
 
         return new SpeechSegment
         {

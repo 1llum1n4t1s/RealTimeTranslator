@@ -201,6 +201,8 @@ public class MistralTranslationService : ITranslationService
             // 推論パラメータを設定（翻訳タスクに最適化）
             // パフォーマンス最適化: より高速な推論のためパラメータを調整
             var maxTokens = Math.Clamp(text.Length / 4 + 8, 16, 48);
+            LoggerService.LogDebug($"[MistralTranslation] 推論パラメータ: MaxTokens={maxTokens}, Temp=0.05, TopP=0.7, TopK=8");
+
             var inferenceParams = new InferenceParams
             {
                 MaxTokens = maxTokens,  // 入力長に応じて上限を調整し速度を確保
@@ -215,14 +217,34 @@ public class MistralTranslationService : ITranslationService
             };
 
             // 推論を実行（StatelessExecutorを使用 - コンテキストは自動管理）
+            LoggerService.LogDebug($"[MistralTranslation] InferAsync 開始");
+            var inferenceStartTime = Stopwatch.GetTimestamp();
+
             var sb = new StringBuilder();
             var executor = _executor ?? new StatelessExecutor(_model, _modelParams);
             _executor ??= executor;
 
+            var tokenCount = 0;
+            var lastLogTime = inferenceStartTime;
             await foreach (var outputToken in executor.InferAsync(prompt, inferenceParams))
             {
                 sb.Append(outputToken);
+                tokenCount++;
+
+                // 5トークンごと、または500ms経過ごとにログ出力
+                var currentTime = Stopwatch.GetTimestamp();
+                var timeSinceLastLog = (currentTime - lastLogTime) * 1000.0 / Stopwatch.Frequency;
+                if (tokenCount % 5 == 0 || timeSinceLastLog >= 500)
+                {
+                    var elapsedMs = (currentTime - inferenceStartTime) * 1000.0 / Stopwatch.Frequency;
+                    LoggerService.LogDebug($"[MistralTranslation] トークン生成中: {tokenCount}トークン, {elapsedMs:F0}ms経過");
+                    lastLogTime = currentTime;
+                }
             }
+
+            var inferenceEndTime = Stopwatch.GetTimestamp();
+            var inferenceDuration = (inferenceEndTime - inferenceStartTime) * 1000.0 / Stopwatch.Frequency;
+            LoggerService.LogDebug($"[MistralTranslation] InferAsync 完了: {tokenCount}トークン生成, {inferenceDuration:F0}ms");
 
             var result = sb.ToString().Trim();
 
