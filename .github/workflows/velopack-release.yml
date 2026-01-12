@@ -30,10 +30,20 @@ jobs:
           # csproj からバージョンを読み取る
           $csprojPath = "src/RealTimeTranslator.UI/RealTimeTranslator.UI.csproj"
           [xml]$xml = Get-Content -Path $csprojPath
-          $version = $xml.Project.PropertyGroup.Version
+
+          # すべての PropertyGroup から Version を検索
+          $version = $null
+          foreach ($propertyGroup in $xml.Project.PropertyGroup) {
+            if ($propertyGroup.Version) {
+              $version = $propertyGroup.Version
+              break
+            }
+          }
 
           if ([string]::IsNullOrWhiteSpace($version)) {
-            Write-Error "Version not found in csproj"
+            Write-Error "Version not found in csproj at: $csprojPath"
+            Write-Host "csproj content:"
+            Get-Content -Path $csprojPath | Select-Object -First 30
             exit 1
           }
 
