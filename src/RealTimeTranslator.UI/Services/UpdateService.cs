@@ -113,6 +113,69 @@ public class UpdateService : IUpdateService
         }
     }
 
+    public async Task<bool> CheckAndApplyStartupAsync(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        UpdateSettings snapshot;
+        lock (_syncLock)
+        {
+            snapshot = new UpdateSettings
+            {
+                Enabled = _settings.Enabled,
+                FeedUrl = _settings.FeedUrl,
+                AutoApply = _settings.AutoApply
+            };
+        }
+
+        if (!snapshot.Enabled || string.IsNullOrWhiteSpace(snapshot.FeedUrl))
+        {
+            OnStatusChanged(UpdateStatus.Disabled, "更新チェックは無効です。");
+            return false;
+        }
+
+        OnStatusChanged(UpdateStatus.Checking, "更新を確認しています...");
+
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var source = new SimpleWebSource(new Uri(snapshot.FeedUrl));
+            var manager = new UpdateManager(source);
+            var updateInfo = await manager.CheckForUpdatesAsync();
+            if (updateInfo is null)
+            {
+                OnStatusChanged(UpdateStatus.Idle, "利用可能な更新はありません。");
+                return false;
+            }
+
+            lock (_syncLock)
+            {
+                _pendingUpdateInfo = updateInfo;
+                _pendingFeedUrl = snapshot.FeedUrl;
+            }
+
+            UpdateAvailable?.Invoke(this, new UpdateAvailableEventArgs("更新を検出しました。ダウンロードを開始します。"));
+            OnStatusChanged(UpdateStatus.UpdateAvailable, "更新を検出しました。");
+
+            cancellationToken.ThrowIfCancellationRequested();
+            await manager.DownloadUpdatesAsync(updateInfo);
+
+            UpdateReady?.Invoke(this, new UpdateReadyEventArgs("更新のダウンロードが完了しました。"));
+            OnStatusChanged(UpdateStatus.ReadyToApply, "更新のダウンロードが完了しました。");
+
+            manager.ApplyUpdatesAndRestart(updateInfo);
+            return true;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            OnStatusChanged(UpdateStatus.Failed, $"更新チェックに失敗しました: {ex.Message}");
+            return false;
+        }
+    }
+
     public Task ApplyUpdateAsync(CancellationToken cancellationToken)
     {
         UpdateInfo? updateInfo;
