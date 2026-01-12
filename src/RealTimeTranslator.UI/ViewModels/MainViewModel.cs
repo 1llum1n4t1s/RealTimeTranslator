@@ -244,8 +244,6 @@ public partial class MainViewModel : ObservableObject, IDisposable
     [RelayCommand]
     private void RefreshProcesses()
     {
-        Processes.Clear();
-
         var activeProcessIds = GetActiveAudioProcessIds();
         var currentProcessId = Environment.ProcessId;
         IEnumerable<ProcessInfo> processes;
@@ -320,12 +318,17 @@ public partial class MainViewModel : ObservableObject, IDisposable
             });
         }
 
-        foreach (var process in processes)
+        // UIスレッドでObservableCollectionを更新
+        Application.Current.Dispatcher.Invoke(() =>
         {
-            Processes.Add(process);
-        }
+            Processes.Clear();
+            foreach (var process in processes)
+            {
+                Processes.Add(process);
+            }
+            RestoreLastSelectedProcess();
+        });
 
-        RestoreLastSelectedProcess();
         LoggerService.LogInfo($"RefreshProcesses: プロセス一覧を更新しました（{Processes.Count}件）");
         Log($"プロセス一覧を更新しました（{Processes.Count}件）");
     }
