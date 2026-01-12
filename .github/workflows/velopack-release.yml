@@ -59,8 +59,12 @@ jobs:
           --outputDir artifacts
 
       - name: GitHub Releases にアップロード
-        run: >
-          vpk upload github
-          --repo ${{ github.repository }}
-          --token ${{ secrets.GITHUB_TOKEN }}
-          --releaseDir artifacts
+        shell: pwsh
+        run: |
+          vpk upload github `
+            --repoUrl "https://github.com/${{ github.repository }}" `
+            --token "${{ secrets.GITHUB_TOKEN }}" `
+            --outputDir artifacts `
+            --publish `
+            --releaseName "Real-Time Subtitle Translator ${{ env.RELEASE_VERSION }}" `
+            --tag "v${{ env.RELEASE_VERSION }}"
