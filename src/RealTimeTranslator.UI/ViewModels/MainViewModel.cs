@@ -930,41 +930,25 @@ public partial class MainViewModel : ObservableObject, IDisposable
                     {
                         uint processId = 0;
 
-                        // 方法1: GetProcessId メソッドを試す（NAudio 2.x以降）
+                        // NAudio 2.x以降では GetProcessID プロパティ（大文字のID）を使用
                         try
                         {
-                            var getProcessIdMethod = session.GetType().GetMethod("GetProcessId");
-                            if (getProcessIdMethod != null)
-                            {
-                                var result = getProcessIdMethod.Invoke(session, null);
-                                if (result is uint pid)
-                                {
-                                    processId = pid;
-                                    LoggerService.LogInfo($"セッション[{i}]: GetProcessIdメソッドでProcessID={processId}を取得");
-                                }
-                            }
+                            processId = session.GetProcessID;
+                            LoggerService.LogInfo($"セッション[{i}]: ProcessID={processId}を取得");
+                        }
+                        catch (InvalidOperationException ex)
+                        {
+                            // IAudioSessionControl2がサポートされていない（古いWindows等）
+                            LoggerService.LogWarning($"セッション[{i}]: ProcessIDの取得失敗（IAudioSessionControl2未サポート）: {ex.Message}");
+                        }
+                        catch (System.Runtime.InteropServices.COMException ex)
+                        {
+                            // COM インターフェースのエラー（セッションが無効等）
+                            LoggerService.LogWarning($"セッション[{i}]: ProcessIDの取得失敗（COMエラー）: HResult=0x{ex.HResult:X}, Message={ex.Message}");
                         }
                         catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
                         {
-                            LoggerService.LogDebug($"セッション[{i}]: GetProcessIdメソッドでの取得失敗: {ex.Message}");
-                        }
-
-                        // 方法2: ProcessID プロパティを試す（フォールバック）
-                        if (processId == 0)
-                        {
-                            try
-                            {
-                                var processIdProp = session.GetType().GetProperty("ProcessID");
-                                if (processIdProp != null && processIdProp.GetValue(session) is uint pid)
-                                {
-                                    processId = pid;
-                                    LoggerService.LogInfo($"セッション[{i}]: ProcessIDプロパティでProcessID={processId}を取得");
-                                }
-                            }
-                            catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
-                            {
-                                LoggerService.LogDebug($"セッション[{i}]: ProcessIDプロパティでの取得失敗: {ex.Message}");
-                            }
+                            LoggerService.LogWarning($"セッション[{i}]: ProcessIDの取得失敗: {ex.GetType().Name}: {ex.Message}");
                         }
 
                         if (processId > 0)
@@ -980,7 +964,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
                         }
                         else
                         {
-                            LoggerService.LogInfo($"セッション[{i}]: ProcessIDが取得できませんでした（State={stateValue}）");
+                            LoggerService.LogWarning($"セッション[{i}]: ProcessIDが取得できませんでした（State={stateValue}）");
                         }
                     }
                     else
