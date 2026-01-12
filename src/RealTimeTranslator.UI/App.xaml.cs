@@ -103,7 +103,7 @@ public partial class App : Application
         // サービス
         services.AddSingleton<IAudioCaptureService, AudioCaptureService>();
         services.AddSingleton<IVADService, VADService>();
-        services.AddSingleton<ITranslationService, WhisperTranslationService>();
+        services.AddSingleton<ITranslationService, MistralTranslationService>();
         services.AddSingleton<IUpdateService, UpdateService>();
 
         // ViewModels
