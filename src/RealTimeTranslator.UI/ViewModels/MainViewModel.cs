@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
@@ -81,6 +82,9 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
     [ObservableProperty]
     private string _downloadStatus = string.Empty;
+
+    [ObservableProperty]
+    private string _downloadReason = string.Empty;
 
     [ObservableProperty]
     private bool _isDownloading;
@@ -715,12 +719,18 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 ? Brushes.Red
                 : Brushes.Orange;
 
+            if (e.Status == ModelStatusType.Info && message.Contains("ダウンロード", StringComparison.Ordinal))
+            {
+                DownloadReason = $"{e.ServiceName} {e.ModelName}: {message}";
+            }
+
             // ダウンロード完了・失敗時にプログレスバーを非表示
             if (e.Status == ModelStatusType.DownloadCompleted || e.Status == ModelStatusType.DownloadFailed)
             {
                 IsDownloading = false;
                 DownloadProgress = 0;
                 DownloadStatus = string.Empty;
+                DownloadReason = string.Empty;
             }
         });
 
