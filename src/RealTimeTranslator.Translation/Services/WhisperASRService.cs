@@ -63,9 +63,9 @@ public class WhisperASRService : IASRService
         try
         {
             // モデルファイルをダウンロード/確認
-            // パフォーマンス最適化: medium モデルを使用（large-v3より5-10倍高速、精度も十分）
-            const string defaultModelFileName = "ggml-medium.bin";
-            const string downloadUrl = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.bin";
+            // パフォーマンス最適化: base モデルを使用（mediumより5-10倍高速、リアルタイム翻訳に最適）
+            const string defaultModelFileName = "ggml-base.bin";
+            const string downloadUrl = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin";
 
             var modelPath = Path.Combine(_settings.ModelPath, "asr");
             var modelFilePath = await _downloadService.EnsureModelAsync(
@@ -144,17 +144,28 @@ public class WhisperASRService : IASRService
         try
         {
             var sw = Stopwatch.StartNew();
+            var audioLengthSeconds = segment.AudioData.Length / 16000.0;
 
-            LogDebug($"[TranscribeInternalAsync] 音声認識開始: SegmentId={segment.Id}, AudioLength={segment.AudioData.Length}, Mode={(isFast ? "Fast" : "Accurate")}");
+            LogDebug($"[TranscribeInternalAsync] 音声認識開始: SegmentId={segment.Id}, AudioLength={segment.AudioData.Length} samples ({audioLengthSeconds:F2}秒), Mode={(isFast ? "Fast" : "Accurate")}");
 
             // Whisper で音声を認識
+            LogDebug($"[TranscribeInternalAsync] Whisper ProcessAsync 呼び出し開始");
+            var processAsyncStartTime = sw.ElapsedMilliseconds;
+
             var recognizedSegments = new List<string>();
+            var segmentCount = 0;
             await foreach (var whisperSegment in _processor!.ProcessAsync(segment.AudioData).ConfigureAwait(false))
             {
+                segmentCount++;
+                var segmentTime = sw.ElapsedMilliseconds;
                 var text = whisperSegment.Text.Trim();
                 recognizedSegments.Add(text);
-                LogDebug($"[TranscribeInternalAsync] 認識セグメント: {text}");
+                LogDebug($"[TranscribeInternalAsync] 認識セグメント[{segmentCount}] ({segmentTime}ms): {text}");
             }
+
+            var processAsyncEndTime = sw.ElapsedMilliseconds;
+            var processAsyncDuration = processAsyncEndTime - processAsyncStartTime;
+            LogDebug($"[TranscribeInternalAsync] Whisper ProcessAsync 完了: {processAsyncDuration}ms, セグメント数={segmentCount}");
 
             var recognizedText = string.Join(" ", recognizedSegments);
             if (string.IsNullOrWhiteSpace(recognizedText))

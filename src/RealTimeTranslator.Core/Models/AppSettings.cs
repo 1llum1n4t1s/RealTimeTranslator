@@ -101,15 +101,15 @@ public class AppSettings
         // 最小発話長の検証
         if (settings.AudioCapture.MinSpeechDuration < 0)
         {
-            LoggerService.LogWarning($"Invalid MinSpeechDuration {settings.AudioCapture.MinSpeechDuration}, using default 0.5");
-            settings.AudioCapture.MinSpeechDuration = 0.5f;
+            LoggerService.LogWarning($"Invalid MinSpeechDuration {settings.AudioCapture.MinSpeechDuration}, using default 0.3");
+            settings.AudioCapture.MinSpeechDuration = 0.3f;
         }
 
         // 最大発話長の検証
         if (settings.AudioCapture.MaxSpeechDuration <= settings.AudioCapture.MinSpeechDuration)
         {
-            LoggerService.LogWarning($"Invalid MaxSpeechDuration {settings.AudioCapture.MaxSpeechDuration}, using default 6.0");
-            settings.AudioCapture.MaxSpeechDuration = 6.0f;
+            LoggerService.LogWarning($"Invalid MaxSpeechDuration {settings.AudioCapture.MaxSpeechDuration}, using default 2.5");
+            settings.AudioCapture.MaxSpeechDuration = 2.5f;
         }
 
         // フォントサイズの検証
@@ -357,17 +357,17 @@ public class AudioCaptureSettings
     /// <summary>
     /// 最小発話長（秒）
     /// </summary>
-    public float MinSpeechDuration { get; set; } = 0.5f;
+    public float MinSpeechDuration { get; set; } = 0.3f;
 
     /// <summary>
     /// 最大発話長（秒）
     /// </summary>
-    public float MaxSpeechDuration { get; set; } = 6.0f;
+    public float MaxSpeechDuration { get; set; } = 2.5f;
 
     /// <summary>
     /// 無音判定閾値（秒）
     /// </summary>
-    public float SilenceThreshold { get; set; } = 0.3f;
+    public float SilenceThreshold { get; set; } = 0.2f;
 }
 
 /// <summary>
