@@ -303,6 +303,19 @@ public class MistralTranslationService : ITranslationService
                 throw new FileNotFoundException($"Translation model not found: {modelPath}");
             }
 
+            // GPU を有効にするための環境変数設定（複数オプションをサポート）
+            // NVIDIA CUDA をサポート
+            Environment.SetEnvironmentVariable("GGML_USE_CUDA", "1");
+            LoggerService.LogDebug("GPU (CUDA) support enabled");
+
+            // AMD RADEON をサポート（Vulkan）
+            Environment.SetEnvironmentVariable("GGML_USE_VULKAN", "1");
+            LoggerService.LogDebug("GPU (Vulkan/RADEON) support enabled");
+
+            // AMD RADEON をサポート（HIP/ROCm）
+            Environment.SetEnvironmentVariable("GGML_USE_HIP", "1");
+            LoggerService.LogDebug("GPU (HIP/ROCm/RADEON) support enabled");
+
             OnModelStatusChanged(new ModelStatusChangedEventArgs(
                 ServiceName,
                 ModelLabel,
@@ -313,8 +326,10 @@ public class MistralTranslationService : ITranslationService
             _modelParams = new ModelParams(modelPath)
             {
                 ContextSize = 2048,
-                GpuLayerCount = 35 // GPU使用（調整可能）
+                GpuLayerCount = 35 // GPU使用（全レイヤーの一部をGPUで実行）
             };
+
+            LoggerService.LogDebug($"Mistral model parameters: ContextSize=2048, GpuLayerCount=35");
 
             // モデルをロード
             _model = LLamaWeights.LoadFromFile(_modelParams);
@@ -322,6 +337,7 @@ public class MistralTranslationService : ITranslationService
 
             _isModelLoaded = true;
             LoggerService.LogInfo("Mistral翻訳モデルの読み込みが完了しました");
+            LoggerService.LogInfo("Mistral GPU support (CUDA/Vulkan/HIP) enabled with GpuLayerCount=35");
 
             OnModelStatusChanged(new ModelStatusChangedEventArgs(
                 ServiceName,

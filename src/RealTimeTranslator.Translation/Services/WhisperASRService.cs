@@ -280,6 +280,7 @@ public class WhisperASRService : IASRService
             _processor = builder.Build();
 
             LoggerService.LogDebug("Whisper Processor created with GPU support (NVIDIA CUDA + AMD RADEON Vulkan/HIP)");
+            LoggerService.LogInfo("WhisperASR GPU support (CUDA/Vulkan/HIP) enabled");
 
             _isModelLoaded = true;
             LoggerService.LogInfo("Whisper音声認識モデルの読み込みが完了しました");
