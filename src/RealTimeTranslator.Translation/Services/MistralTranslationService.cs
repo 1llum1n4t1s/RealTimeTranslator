@@ -753,11 +753,9 @@ public class MistralTranslationService : ITranslationService
                 throw new FileNotFoundException($"Translation model not found: {modelPath}");
             }
 
-            // GPU環境変数はApp起動時に設定済み（ここではログのみ）
-            LoggerService.LogDebug("GPU (CUDA) support enabled");
-            LoggerService.LogDebug("GPU (Vulkan/RADEON) support enabled");
-            LoggerService.LogDebug("GPU (HIP/ROCm/RADEON) support enabled");
-            LoggerService.LogDebug("CUDA device selection: GPU 0");
+            // GPU環境変数はApp.xaml.csで起動時に設定済み
+            // 対応GPU: NVIDIA CUDA, AMD ROCm/HIP, Intel SYCL, Vulkan (汎用)
+            LoggerService.LogDebug("GPU support: CUDA/HIP/SYCL/Vulkan (環境変数はApp起動時に設定済み)");
 
             OnModelStatusChanged(new ModelStatusChangedEventArgs(
                 ServiceName,
@@ -784,7 +782,7 @@ public class MistralTranslationService : ITranslationService
 
             _isModelLoaded = true;
             LoggerService.LogInfo($"{_modelLabel}の読み込みが完了しました");
-            LoggerService.LogInfo($"{_modelLabel} GPU support (CUDA/Vulkan/HIP) enabled with GpuLayerCount={gpuLayerCount} (完全GPU実行)");
+            LoggerService.LogInfo($"{_modelLabel} initialized (GPU: CUDA/HIP/SYCL/Vulkan auto-detect, GpuLayerCount={gpuLayerCount})");
 
             OnModelStatusChanged(new ModelStatusChangedEventArgs(
                 ServiceName,
