@@ -122,6 +122,7 @@ jobs:
             --mainExe RealTimeTranslator.UI.exe `
             --packDir $publishDir `
             --outputDir $outputDir `
+            --createDist false `
             --shortcuts "StartMenu,Desktop"`
           
           if ($LASTEXITCODE -ne 0) {
