@@ -115,7 +115,7 @@ public partial class App : Application
         services.AddSingleton<IAudioCaptureService, AudioCaptureService>();
         services.AddSingleton<IVADService, VADService>();
         services.AddSingleton<IASRService, WhisperASRService>();
-        services.AddSingleton<ITranslationService, MistralTranslationService>();
+        services.AddSingleton<ITranslationService, MistralTranslationService>(); // Mistral Q3_K_S (高速量子化)
         services.AddSingleton<IUpdateService, UpdateService>();
 
         // ViewModels

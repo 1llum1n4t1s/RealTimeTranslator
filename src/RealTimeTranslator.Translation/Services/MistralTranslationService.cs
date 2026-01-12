@@ -17,8 +17,8 @@ public class MistralTranslationService : ITranslationService
 {
     private const string ServiceName = "翻訳";
     private const string ModelLabel = "Mistral翻訳モデル";
-    private const string DefaultModelFileName = "mistral-7b-instruct-v0.2.Q4_K_M.gguf";
-    private const string DefaultModelDownloadUrl = "https://huggingface.co/TheBloke/Mistral-7B-Instruct-v0.2-GGUF/resolve/main/mistral-7b-instruct-v0.2.Q4_K_M.gguf";
+    private const string DefaultModelFileName = "mistral-7b-instruct-v0.2.Q3_K_S.gguf";
+    private const string DefaultModelDownloadUrl = "https://huggingface.co/TheBloke/Mistral-7B-Instruct-v0.2-GGUF/resolve/main/mistral-7b-instruct-v0.2.Q3_K_S.gguf";
     private const int MaxCacheSize = 1000;
 
     private readonly TranslationSettings _settings;
