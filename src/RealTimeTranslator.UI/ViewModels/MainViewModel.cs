@@ -250,56 +250,74 @@ public partial class MainViewModel : ObservableObject, IDisposable
         var currentProcessId = Environment.ProcessId;
         IEnumerable<ProcessInfo> processes;
 
+        LoggerService.LogDebug($"RefreshProcesses: アクティブなオーディオプロセスID = {activeProcessIds.Count}個");
+
         if (activeProcessIds.Count > 0)
         {
             // アクティブなオーディオプロセスのみを表示（自分自身は除外）
             var allProcesses = Process.GetProcesses()
                 .Where(p => activeProcessIds.Contains(p.Id) && p.Id != currentProcessId)
                 .OrderBy(p => p.ProcessName)
-                .ThenBy(p => p.Id);
+                .ThenBy(p => p.Id)
+                .ToList();
+
+            LoggerService.LogDebug($"RefreshProcesses: Process.GetProcesses()から{allProcesses.Count}個のアクティブプロセスを特定（自分自身を除外）");
 
             var processList = new List<ProcessInfo>();
             var processNames = new Dictionary<string, int>();
 
             foreach (var p in allProcesses)
             {
-                var title = string.IsNullOrWhiteSpace(p.MainWindowTitle) ? p.ProcessName : p.MainWindowTitle;
-                var name = p.ProcessName;
-
-                // 同じプロセス名が複数ある場合（例：複数のChromeプロセス）、IDをタイトルに追加
-                if (!processNames.ContainsKey(name))
+                try
                 {
-                    processNames[name] = 0;
+                    var title = string.IsNullOrWhiteSpace(p.MainWindowTitle) ? p.ProcessName : p.MainWindowTitle;
+                    var name = p.ProcessName;
+
+                    // 同じプロセス名が複数ある場合（例：複数のChromeプロセス）、IDをタイトルに追加
+                    if (!processNames.ContainsKey(name))
+                    {
+                        processNames[name] = 0;
+                    }
+                    processNames[name]++;
+
+                    var displayTitle = processNames[name] > 1
+                        ? $"{title} (PID: {p.Id})"
+                        : title;
+
+                    processList.Add(new ProcessInfo
+                    {
+                        Id = p.Id,
+                        Name = name,
+                        Title = displayTitle
+                    });
+                    LoggerService.LogDebug($"RefreshProcesses: プロセス追加 - {name} (PID: {p.Id}, Title: {displayTitle})");
                 }
-                processNames[name]++;
-
-                var displayTitle = processNames[name] > 1
-                    ? $"{title} (PID: {p.Id})"
-                    : title;
-
-                processList.Add(new ProcessInfo
+                catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
                 {
-                    Id = p.Id,
-                    Name = name,
-                    Title = displayTitle
-                });
+                    LoggerService.LogError($"RefreshProcesses: プロセス情報取得エラー (PID: {p.Id}): {ex.Message}");
+                }
             }
 
             processes = processList;
         }
         else
         {
+            LoggerService.LogInfo("RefreshProcesses: アクティブなオーディオプロセスがないため、フォールバック処理を実行（メインウィンドウを持つプロセスを表示）");
             // フォールバック：メインウィンドウを持つプロセスを表示（自分自身は除外）
-            processes = Process.GetProcesses()
+            var fallbackProcesses = Process.GetProcesses()
                 .Where(p => p.MainWindowHandle != IntPtr.Zero && !string.IsNullOrWhiteSpace(p.MainWindowTitle) && p.Id != currentProcessId)
                 .OrderBy(p => p.ProcessName)
                 .ThenBy(p => p.Id)
-                .Select(p => new ProcessInfo
-                {
-                    Id = p.Id,
-                    Name = p.ProcessName,
-                    Title = p.MainWindowTitle
-                });
+                .ToList();
+
+            LoggerService.LogDebug($"RefreshProcesses: フォールバック処理で{fallbackProcesses.Count}個のプロセスを検出");
+
+            processes = fallbackProcesses.Select(p => new ProcessInfo
+            {
+                Id = p.Id,
+                Name = p.ProcessName,
+                Title = p.MainWindowTitle
+            });
         }
 
         foreach (var process in processes)
@@ -308,6 +326,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
         }
 
         RestoreLastSelectedProcess();
+        LoggerService.LogInfo($"RefreshProcesses: プロセス一覧を更新しました（{Processes.Count}件）");
         Log($"プロセス一覧を更新しました（{Processes.Count}件）");
     }
 
@@ -887,38 +906,58 @@ public partial class MainViewModel : ObservableObject, IDisposable
         var processIds = new HashSet<int>();
         try
         {
+            LoggerService.LogDebug("オーディオセッション列挙を開始");
             using var enumerator = new MMDeviceEnumerator();
             using var device = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
+            LoggerService.LogDebug($"デフォルトオーディオデバイス: {device.FriendlyName}");
+
             var sessionManager = device.AudioSessionManager;
             var sessions = sessionManager.Sessions;
+            LoggerService.LogDebug($"オーディオセッション総数: {sessions.Count}");
 
             for (var i = 0; i < sessions.Count; i++)
             {
                 var session = sessions[i];
                 try
                 {
+                    var stateValue = (int)session.State;
+                    LoggerService.LogDebug($"セッション[{i}]: State={stateValue} (1=Active, 0=Inactive, 2=Expired)");
+
                     // AudioSessionStateActive = 1
-                    if ((int)session.State == 1)
+                    if (stateValue == 1)
                     {
                         // ProcessIDはAudioSessionControlの派生型から取得
                         var processIdProp = session.GetType().GetProperty("ProcessID");
-                        if (processIdProp?.GetValue(session) is uint processId && processId > 0)
+                        if (processIdProp == null)
+                        {
+                            LoggerService.LogDebug($"セッション[{i}]: ProcessIDプロパティが見つかりません");
+                            continue;
+                        }
+
+                        if (processIdProp.GetValue(session) is uint processId && processId > 0)
                         {
                             processIds.Add((int)processId);
+                            LoggerService.LogDebug($"セッション[{i}]: アクティブプロセスID={processId}を検出");
+                        }
+                        else
+                        {
+                            LoggerService.LogDebug($"セッション[{i}]: ProcessIDが取得できないか0です");
                         }
                     }
                 }
                 catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
                 {
                     // 個別のセッション取得に失敗しても続行
-                    LoggerService.LogError($"Failed to get audio session info: {ex.Message}");
+                    LoggerService.LogError($"セッション[{i}]の情報取得に失敗: {ex.GetType().Name}: {ex.Message}");
                 }
             }
+
+            LoggerService.LogInfo($"アクティブなオーディオプロセスを{processIds.Count}個検出: [{string.Join(", ", processIds)}]");
         }
         catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
         {
             // AudioSessionの取得に失敗した場合は空のセットを返す
-            LoggerService.LogError($"Failed to enumerate audio sessions: {ex.Message}");
+            LoggerService.LogError($"オーディオセッション列挙に失敗: {ex.GetType().Name}: {ex.Message}\nStackTrace: {ex.StackTrace}");
         }
 
         return processIds;
