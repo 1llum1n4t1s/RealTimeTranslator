@@ -10,6 +10,7 @@ public class ModelDownloadService : IDisposable
 {
     private const int DefaultBufferSize = 1048576; // 1MB バッファ（ダウンロード速度向上）
     private readonly HttpClient _httpClient;
+    private readonly SemaphoreSlim _downloadSemaphore = new(1, 1);
     private bool _disposed;
 
     public event EventHandler<ModelDownloadProgressEventArgs>? DownloadProgress;
@@ -127,60 +128,86 @@ public class ModelDownloadService : IDisposable
             Directory.CreateDirectory(targetDirectory);
         }
 
-        OnStatusChanged(new ModelStatusChangedEventArgs(
-            serviceName,
-            modelLabel,
-            ModelStatusType.Info,
-            "モデルファイルが見つからないためダウンロードしています。"));
-
+        await _downloadSemaphore.WaitAsync(cancellationToken);
         try
         {
-            System.Diagnostics.Debug.WriteLine($"[{serviceName}] Starting model download...");
-            await DownloadModelAsync(resolvedPath, downloadUrl, serviceName, modelLabel, cancellationToken);
-            System.Diagnostics.Debug.WriteLine($"[{serviceName}] Model download completed.");
-        }
-        catch (OperationCanceledException ex)
-        {
-            System.Diagnostics.Debug.WriteLine($"[{serviceName}] Download cancelled: {ex.Message}");
+            if (File.Exists(resolvedPath))
+            {
+                if (await ValidateModelFileAsync(resolvedPath, downloadUrl, serviceName, modelLabel, cancellationToken))
+                {
+                    return resolvedPath;
+                }
+
+                System.Diagnostics.Debug.WriteLine($"[{serviceName}] Model file is corrupted or outdated after waiting. Deleting and re-downloading...");
+                try
+                {
+                    File.Delete(resolvedPath);
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"[{serviceName}] Failed to delete corrupted file after waiting: {ex.Message}");
+                }
+            }
+
             OnStatusChanged(new ModelStatusChangedEventArgs(
                 serviceName,
                 modelLabel,
-                ModelStatusType.DownloadFailed,
-                "モデルのダウンロードがキャンセルされました。"));
-            return null;
+                ModelStatusType.Info,
+                "モデルファイルが見つからないためダウンロードしています。"));
+
+            try
+            {
+                System.Diagnostics.Debug.WriteLine($"[{serviceName}] Starting model download...");
+                await DownloadModelAsync(resolvedPath, downloadUrl, serviceName, modelLabel, cancellationToken);
+                System.Diagnostics.Debug.WriteLine($"[{serviceName}] Model download completed.");
+            }
+            catch (OperationCanceledException ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[{serviceName}] Download cancelled: {ex.Message}");
+                OnStatusChanged(new ModelStatusChangedEventArgs(
+                    serviceName,
+                    modelLabel,
+                    ModelStatusType.DownloadFailed,
+                    "モデルのダウンロードがキャンセルされました。"));
+                return null;
+            }
+            catch (HttpRequestException ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[{serviceName}] HTTP error during download: {ex.Message}");
+                OnStatusChanged(new ModelStatusChangedEventArgs(
+                    serviceName,
+                    modelLabel,
+                    ModelStatusType.DownloadFailed,
+                    $"モデルのダウンロードに失敗しました: {ex.Message}",
+                    ex));
+                return null;
+            }
+            catch (IOException ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[{serviceName}] IO error during download: {ex.Message}");
+                OnStatusChanged(new ModelStatusChangedEventArgs(
+                    serviceName,
+                    modelLabel,
+                    ModelStatusType.DownloadFailed,
+                    $"モデルのダウンロードに失敗しました: {ex.Message}",
+                    ex));
+                return null;
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[{serviceName}] Unexpected error during download: {ex.GetType().Name}: {ex.Message}");
+                OnStatusChanged(new ModelStatusChangedEventArgs(
+                    serviceName,
+                    modelLabel,
+                    ModelStatusType.DownloadFailed,
+                    $"モデルのダウンロードに失敗しました: {ex.Message}",
+                    ex));
+                return null;
+            }
         }
-        catch (HttpRequestException ex)
+        finally
         {
-            System.Diagnostics.Debug.WriteLine($"[{serviceName}] HTTP error during download: {ex.Message}");
-            OnStatusChanged(new ModelStatusChangedEventArgs(
-                serviceName,
-                modelLabel,
-                ModelStatusType.DownloadFailed,
-                $"モデルのダウンロードに失敗しました: {ex.Message}",
-                ex));
-            return null;
-        }
-        catch (IOException ex)
-        {
-            System.Diagnostics.Debug.WriteLine($"[{serviceName}] IO error during download: {ex.Message}");
-            OnStatusChanged(new ModelStatusChangedEventArgs(
-                serviceName,
-                modelLabel,
-                ModelStatusType.DownloadFailed,
-                $"モデルのダウンロードに失敗しました: {ex.Message}",
-                ex));
-            return null;
-        }
-        catch (Exception ex)
-        {
-            System.Diagnostics.Debug.WriteLine($"[{serviceName}] Unexpected error during download: {ex.GetType().Name}: {ex.Message}");
-            OnStatusChanged(new ModelStatusChangedEventArgs(
-                serviceName,
-                modelLabel,
-                ModelStatusType.DownloadFailed,
-                $"モデルのダウンロードに失敗しました: {ex.Message}",
-                ex));
-            return null;
+            _downloadSemaphore.Release();
         }
 
         var finalCheck = File.Exists(resolvedPath);
