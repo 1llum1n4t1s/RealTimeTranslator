@@ -83,7 +83,7 @@ public class MistralTranslationService : ITranslationService
             }
 
             // モデルをロード
-            await Task.Run(() => LoadModelFromPath(modelFilePath)).ConfigureAwait(false);
+            LoadModelFromPath(modelFilePath);
         }
         catch (Exception ex)
         {
