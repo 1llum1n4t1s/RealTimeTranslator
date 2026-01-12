@@ -250,18 +250,18 @@ public partial class MainViewModel : ObservableObject, IDisposable
         var currentProcessId = Environment.ProcessId;
         IEnumerable<ProcessInfo> processes;
 
-        LoggerService.LogDebug($"RefreshProcesses: アクティブなオーディオプロセスID = {activeProcessIds.Count}個");
+        LoggerService.LogInfo($"RefreshProcesses: オーディオセッションを持つプロセスID = {activeProcessIds.Count}個");
 
         if (activeProcessIds.Count > 0)
         {
-            // アクティブなオーディオプロセスのみを表示（自分自身は除外）
+            // オーディオセッションを持つプロセスのみを表示（自分自身は除外）
             var allProcesses = Process.GetProcesses()
                 .Where(p => activeProcessIds.Contains(p.Id) && p.Id != currentProcessId)
                 .OrderBy(p => p.ProcessName)
                 .ThenBy(p => p.Id)
                 .ToList();
 
-            LoggerService.LogDebug($"RefreshProcesses: Process.GetProcesses()から{allProcesses.Count}個のアクティブプロセスを特定（自分自身を除外）");
+            LoggerService.LogInfo($"RefreshProcesses: Process.GetProcesses()から{allProcesses.Count}個のプロセスを特定（自分自身を除外）");
 
             var processList = new List<ProcessInfo>();
             var processNames = new Dictionary<string, int>();
@@ -290,7 +290,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
                         Name = name,
                         Title = displayTitle
                     });
-                    LoggerService.LogDebug($"RefreshProcesses: プロセス追加 - {name} (PID: {p.Id}, Title: {displayTitle})");
+                    LoggerService.LogInfo($"RefreshProcesses: プロセス追加 - {name} (PID: {p.Id}, Title: {displayTitle})");
                 }
                 catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
                 {
@@ -302,7 +302,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
         }
         else
         {
-            LoggerService.LogInfo("RefreshProcesses: アクティブなオーディオプロセスがないため、フォールバック処理を実行（メインウィンドウを持つプロセスを表示）");
+            LoggerService.LogInfo("RefreshProcesses: オーディオセッションを持つプロセスがないため、フォールバック処理を実行（メインウィンドウを持つプロセスを表示）");
             // フォールバック：メインウィンドウを持つプロセスを表示（自分自身は除外）
             var fallbackProcesses = Process.GetProcesses()
                 .Where(p => p.MainWindowHandle != IntPtr.Zero && !string.IsNullOrWhiteSpace(p.MainWindowTitle) && p.Id != currentProcessId)
@@ -310,7 +310,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 .ThenBy(p => p.Id)
                 .ToList();
 
-            LoggerService.LogDebug($"RefreshProcesses: フォールバック処理で{fallbackProcesses.Count}個のプロセスを検出");
+            LoggerService.LogInfo($"RefreshProcesses: フォールバック処理で{fallbackProcesses.Count}個のプロセスを検出");
 
             processes = fallbackProcesses.Select(p => new ProcessInfo
             {
@@ -898,22 +898,23 @@ public partial class MainViewModel : ObservableObject, IDisposable
     }
 
     /// <summary>
-    /// 現在オーディオをアクティブに再生しているプロセスのIDを取得する
+    /// 現在オーディオセッションを持つプロセスのIDを取得する
+    /// アクティブ（再生中）およびインアクティブ（一時停止中・待機中）のセッションを含む
     /// </summary>
-    /// <returns>アクティブなオーディオプロセスのID一覧</returns>
+    /// <returns>オーディオセッションを持つプロセスのID一覧</returns>
     private static HashSet<int> GetActiveAudioProcessIds()
     {
         var processIds = new HashSet<int>();
         try
         {
-            LoggerService.LogDebug("オーディオセッション列挙を開始");
+            LoggerService.LogInfo("オーディオセッション列挙を開始");
             using var enumerator = new MMDeviceEnumerator();
             using var device = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
-            LoggerService.LogDebug($"デフォルトオーディオデバイス: {device.FriendlyName}");
+            LoggerService.LogInfo($"デフォルトオーディオデバイス: {device.FriendlyName}");
 
             var sessionManager = device.AudioSessionManager;
             var sessions = sessionManager.Sessions;
-            LoggerService.LogDebug($"オーディオセッション総数: {sessions.Count}");
+            LoggerService.LogInfo($"オーディオセッション総数: {sessions.Count}");
 
             for (var i = 0; i < sessions.Count; i++)
             {
@@ -921,28 +922,70 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 try
                 {
                     var stateValue = (int)session.State;
-                    LoggerService.LogDebug($"セッション[{i}]: State={stateValue} (1=Active, 0=Inactive, 2=Expired)");
+                    LoggerService.LogInfo($"セッション[{i}]: State={stateValue} (0=Inactive, 1=Active, 2=Expired)");
 
-                    // AudioSessionStateActive = 1
-                    if (stateValue == 1)
+                    // State 2 (Expired) は除外、State 0 (Inactive) と 1 (Active) の両方を検出
+                    // これにより、一時停止中やバックグラウンドで待機しているプロセスも検出できる
+                    if (stateValue != 2)
                     {
-                        // ProcessIDはAudioSessionControlの派生型から取得
-                        var processIdProp = session.GetType().GetProperty("ProcessID");
-                        if (processIdProp == null)
+                        uint processId = 0;
+
+                        // 方法1: GetProcessId メソッドを試す（NAudio 2.x以降）
+                        try
                         {
-                            LoggerService.LogDebug($"セッション[{i}]: ProcessIDプロパティが見つかりません");
-                            continue;
+                            var getProcessIdMethod = session.GetType().GetMethod("GetProcessId");
+                            if (getProcessIdMethod != null)
+                            {
+                                var result = getProcessIdMethod.Invoke(session, null);
+                                if (result is uint pid)
+                                {
+                                    processId = pid;
+                                    LoggerService.LogInfo($"セッション[{i}]: GetProcessIdメソッドでProcessID={processId}を取得");
+                                }
+                            }
+                        }
+                        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+                        {
+                            LoggerService.LogDebug($"セッション[{i}]: GetProcessIdメソッドでの取得失敗: {ex.Message}");
                         }
 
-                        if (processIdProp.GetValue(session) is uint processId && processId > 0)
+                        // 方法2: ProcessID プロパティを試す（フォールバック）
+                        if (processId == 0)
+                        {
+                            try
+                            {
+                                var processIdProp = session.GetType().GetProperty("ProcessID");
+                                if (processIdProp != null && processIdProp.GetValue(session) is uint pid)
+                                {
+                                    processId = pid;
+                                    LoggerService.LogInfo($"セッション[{i}]: ProcessIDプロパティでProcessID={processId}を取得");
+                                }
+                            }
+                            catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+                            {
+                                LoggerService.LogDebug($"セッション[{i}]: ProcessIDプロパティでの取得失敗: {ex.Message}");
+                            }
+                        }
+
+                        if (processId > 0)
                         {
                             processIds.Add((int)processId);
-                            LoggerService.LogDebug($"セッション[{i}]: アクティブプロセスID={processId}を検出");
+                            var stateName = stateValue switch
+                            {
+                                0 => "Inactive",
+                                1 => "Active",
+                                _ => "Unknown"
+                            };
+                            LoggerService.LogInfo($"セッション[{i}]: ProcessID={processId} (State={stateName}) を検出");
                         }
                         else
                         {
-                            LoggerService.LogDebug($"セッション[{i}]: ProcessIDが取得できないか0です");
+                            LoggerService.LogInfo($"セッション[{i}]: ProcessIDが取得できませんでした（State={stateValue}）");
                         }
+                    }
+                    else
+                    {
+                        LoggerService.LogInfo($"セッション[{i}]: Expired状態のため除外");
                     }
                 }
                 catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
@@ -952,7 +995,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 }
             }
 
-            LoggerService.LogInfo($"アクティブなオーディオプロセスを{processIds.Count}個検出: [{string.Join(", ", processIds)}]");
+            LoggerService.LogInfo($"オーディオセッションを持つプロセスを{processIds.Count}個検出: [{string.Join(", ", processIds)}]");
         }
         catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
         {

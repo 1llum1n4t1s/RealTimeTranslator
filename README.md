@@ -1,4 +1,4 @@
-# Real-Time Subtitle Translator (Windows)
+# RealTimeTranslator
 
 Windows環境で動作する、完全ローカル・GPU対応のリアルタイム字幕翻訳アプリケーションです。
 
