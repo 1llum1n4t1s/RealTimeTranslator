@@ -31,44 +31,54 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($version)) {
             $version = "0.0.${{ github.run_number }}"
           }
-          "RELEASE_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Setting RELEASE_VERSION=$version"
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "RELEASE_VERSION=$version" -Encoding utf8
+          Write-Host "RELEASE_VERSION=$version"
 
       - name: アプリを公開ビルド
         shell: pwsh
         run: |
-          $publishDir = "src/RealTimeTranslator.UI/bin/Release/net10.0-windows/win-x64/publish"
+          $publishDir = Join-Path "src" "RealTimeTranslator.UI" "bin" "Release" "net10.0-windows" "win-x64" "publish"
           if (Test-Path $publishDir) {
             Remove-Item -Path $publishDir -Recurse -Force
           }
           
-          dotnet publish src/RealTimeTranslator.UI/RealTimeTranslator.UI.csproj `
+          Write-Host "Building and publishing application..."
+          dotnet publish (Join-Path "src" "RealTimeTranslator.UI" "RealTimeTranslator.UI.csproj") `
             -c Release `
             -r win-x64 `
             --self-contained true `
             -p:PublishSingleFile=true `
             -p:IncludeNativeLibrariesForSelfExtract=true
           
-          Write-Host "Publish directory contents:"
-          Get-ChildItem -Path $publishDir -Recurse | Select-Object -First 20 | ForEach-Object { Write-Host $_.FullName }
-          
-          if (-not (Test-Path "$publishDir/RealTimeTranslator.UI.exe")) {
-            Write-Error "RealTimeTranslator.UI.exe not found in publish directory"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "dotnet publish failed with exit code $LASTEXITCODE"
             exit 1
           }
+          
+          Write-Host "Publish directory contents:"
+          Get-ChildItem -Path $publishDir -Recurse -ErrorAction SilentlyContinue | Select-Object -First 20 | ForEach-Object { Write-Host $_.FullName }
+          
+          $exePath = Join-Path $publishDir "RealTimeTranslator.UI.exe"
+          if (-not (Test-Path $exePath)) {
+            Write-Error "RealTimeTranslator.UI.exe not found at: $exePath"
+            exit 1
+          }
+          Write-Host "Successfully built: $exePath"
 
       - name: Velopack CLI をインストール
         shell: pwsh
         run: |
           dotnet tool install --global vpk
           $toolsPath = "$env:USERPROFILE\.dotnet\tools"
-          echo "$toolsPath" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          Add-Content -LiteralPath $env:GITHUB_PATH -Value $toolsPath -Encoding utf8
           Write-Host "Velopack CLI installed to: $toolsPath"
-          vpk --version
+          Write-Host "PATH environment updated"
 
       - name: Velopack パッケージを作成
         shell: pwsh
         run: |
-          $publishDir = "src/RealTimeTranslator.UI/bin/Release/net10.0-windows/win-x64/publish"
+          $publishDir = Join-Path "src" "RealTimeTranslator.UI" "bin" "Release" "net10.0-windows" "win-x64" "publish"
           $outputDir = "artifacts"
           
           if (-not (Test-Path $publishDir)) {
@@ -82,9 +92,16 @@ jobs:
           New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
           
           Write-Host "Creating Velopack package..."
+          Write-Host "  Pack ID: RealTimeTranslator"
+          Write-Host "  Version: $env:RELEASE_VERSION"
+          Write-Host "  Title: Real-Time Subtitle Translator"
+          Write-Host "  Main EXE: RealTimeTranslator.UI.exe"
+          Write-Host "  Publish Dir: $publishDir"
+          Write-Host "  Output Dir: $outputDir"
+          
           vpk pack `
             --packId RealTimeTranslator `
-            --packVersion ${{ env.RELEASE_VERSION }} `
+            --packVersion $env:RELEASE_VERSION `
             --packTitle "Real-Time Subtitle Translator" `
             --mainExe RealTimeTranslator.UI.exe `
             --publishDir $publishDir `
@@ -97,10 +114,10 @@ jobs:
           
           Write-Host "Velopack パッケージ作成完了"
           Write-Host "Artifacts directory contents:"
-          Get-ChildItem -Path $outputDir -Recurse | ForEach-Object { Write-Host $_.FullName }
-          
-          if (-not (Get-ChildItem -Path $outputDir -Recurse)) {
-            Write-Error "No files found in artifacts directory"
+          if (Test-Path $outputDir) {
+            Get-ChildItem -Path $outputDir -Recurse | ForEach-Object { Write-Host "  $($_.FullName)" }
+          } else {
+            Write-Error "Artifacts directory was not created"
             exit 1
           }
 
@@ -116,15 +133,25 @@ jobs:
           
           Write-Host "GitHub Releases へのアップロードを開始..."
           Write-Host "Repository: ${{ github.repository }}"
-          Write-Host "Version: ${{ env.RELEASE_VERSION }}"
+          Write-Host "Version: $env:RELEASE_VERSION"
           Write-Host "Artifacts directory contents:"
-          Get-ChildItem -Path $outputDir -Recurse | ForEach-Object { Write-Host $_.FullName }
+          if (Get-ChildItem -Path $outputDir -Recurse -ErrorAction SilentlyContinue) {
+            Get-ChildItem -Path $outputDir -Recurse | ForEach-Object { Write-Host "  $($_.FullName)" }
+          } else {
+            Write-Host "  (empty)"
+          }
           
           $repoUrl = "https://github.com/${{ github.repository }}"
-          $releaseName = "Real-Time Subtitle Translator ${{ env.RELEASE_VERSION }}"
-          $tag = "v${{ env.RELEASE_VERSION }}"
+          $releaseName = "Real-Time Subtitle Translator $env:RELEASE_VERSION"
+          $tag = "v$env:RELEASE_VERSION"
           
-          Write-Host "Executing: vpk upload github --repoUrl $repoUrl --outputDir $outputDir --channel win --publish --releaseName `"$releaseName`" --tag `"$tag`""
+          Write-Host ""
+          Write-Host "Uploading to GitHub Releases:"
+          Write-Host "  Repository URL: $repoUrl"
+          Write-Host "  Release Name: $releaseName"
+          Write-Host "  Tag: $tag"
+          Write-Host "  Output Dir: $outputDir"
+          Write-Host ""
           
           vpk upload github `
             --repoUrl $repoUrl `
