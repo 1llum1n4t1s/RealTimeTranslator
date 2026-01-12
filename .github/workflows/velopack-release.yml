@@ -31,9 +31,18 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($version)) {
             $version = "0.0.${{ github.run_number }}"
           }
-          Write-Host "Setting RELEASE_VERSION=$version"
-          Add-Content -LiteralPath $env:GITHUB_ENV -Value "RELEASE_VERSION=$version" -Encoding utf8
-          Write-Host "RELEASE_VERSION=$version"
+          # SemVer2形式に変換 (YYYY.MM.DD -> Y.M.D)
+          if ($version -match '^(\d{4})(\d{2})(\d{2})$') {
+            $year = [int]$matches[1] - 2000
+            $month = [int]$matches[2]
+            $day = [int]$matches[3]
+            $semver = "$year.$month.$day"
+          } else {
+            $semver = $version
+          }
+          Write-Host "Setting RELEASE_VERSION=$semver"
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "RELEASE_VERSION=$semver" -Encoding utf8
+          Write-Host "RELEASE_VERSION=$semver"
 
       - name: アプリを公開ビルド
         shell: pwsh
@@ -103,7 +112,7 @@ jobs:
             --packVersion $env:RELEASE_VERSION `
             --packTitle "Real-Time Subtitle Translator" `
             --mainExe RealTimeTranslator.UI.exe `
-            --publishDir $publishDir `
+            --packDir $publishDir `
             --outputDir $outputDir
           
           if ($LASTEXITCODE -ne 0) {
