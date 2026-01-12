@@ -32,8 +32,8 @@
     "SampleRate": 16000,
     "VADSensitivity": 0.5,
     "MinSpeechDuration": 0.5,
-    "MaxSpeechDuration": 6.0,
-    "SilenceThreshold": 0.3
+    "MaxSpeechDuration": 3.0,
+    "SilenceThreshold": 0.2
   },
   "LastSelectedProcessName": "",
   "Update": {
