@@ -31,8 +31,8 @@
   "AudioCapture": {
     "SampleRate": 16000,
     "VADSensitivity": 0.5,
-    "MinSpeechDuration": 0.5,
-    "MaxSpeechDuration": 3.0,
+    "MinSpeechDuration": 0.3,
+    "MaxSpeechDuration": 2.5,
     "SilenceThreshold": 0.2
   },
   "LastSelectedProcessName": "",
