@@ -23,7 +23,7 @@ jobs:
           dotnet-quality: 'preview'
 
       - name: 依存関係を復元
-        run: dotnet restore RealTimeTranslator.sln
+        run: dotnet restore RealTimeTranslator.slnx
 
       - name: リリースバージョンを設定
         shell: pwsh
