@@ -647,27 +647,28 @@ public partial class MainViewModel : ObservableObject, IDisposable
             ? $"{e.ProgressPercentage.Value:F1}%"
             : "進捗不明";
 
+        // ファイルサイズを表示
+        var totalSize = e.TotalBytes.HasValue
+            ? FormatBytes(e.TotalBytes.Value)
+            : "不明";
+        var downloadedSize = FormatBytes(e.BytesReceived);
+
+        var downloadStatusText = $"{e.ServiceName} {e.ModelName} ダウンロード中... {downloadedSize} / {totalSize} ({progressText})";
+
         // UI スレッドで実行
         RunOnUiThread(() =>
         {
-            // ローディング中はオーバーレイに表示させるため、メイン画面側は更新しない
-            if (IsLoading)
-            {
-                return;
-            }
-
+            // オーバーレイ用の情報は常に更新（ローディング中も表示）
             IsDownloading = true;
             DownloadProgress = e.ProgressPercentage ?? 0;
+            DownloadStatus = downloadStatusText;
 
-            // ファイルサイズを表示
-            var totalSize = e.TotalBytes.HasValue
-                ? FormatBytes(e.TotalBytes.Value)
-                : "不明";
-            var downloadedSize = FormatBytes(e.BytesReceived);
-
-            DownloadStatus = $"{e.ServiceName} {e.ModelName} ダウンロード中... {downloadedSize} / {totalSize} ({progressText})";
-            StatusText = DownloadStatus;
-            StatusColor = Brushes.Orange;
+            // メイン画面用の情報はローディング終了後に更新
+            if (!IsLoading)
+            {
+                StatusText = downloadStatusText;
+                StatusColor = Brushes.Orange;
+            }
         });
     }
 
