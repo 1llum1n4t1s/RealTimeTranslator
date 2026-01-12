@@ -30,6 +30,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
     private readonly IAudioCaptureService _audioCaptureService;
     private readonly IVADService _vadService;
+    private readonly IASRService _asrService;
     private readonly ITranslationService _translationService;
     private readonly OverlayViewModel _overlayViewModel;
     private readonly AppSettings _settings;
@@ -92,6 +93,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
     public MainViewModel(
         IAudioCaptureService audioCaptureService,
         IVADService vadService,
+        IASRService asrService,
         ITranslationService translationService,
         OverlayViewModel overlayViewModel,
         AppSettings settings,
@@ -102,6 +104,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
     {
         _audioCaptureService = audioCaptureService;
         _vadService = vadService;
+        _asrService = asrService;
         _translationService = translationService;
         _overlayViewModel = overlayViewModel;
         _settings = settings;
@@ -114,6 +117,8 @@ public partial class MainViewModel : ObservableObject, IDisposable
         _audioCaptureService.AudioDataAvailable += OnAudioDataAvailable;
         _audioCaptureService.CaptureStatusChanged += OnCaptureStatusChanged;
         _settingsViewModel.SettingsSaved += OnSettingsSaved;
+        _asrService.ModelDownloadProgress += OnModelDownloadProgress;
+        _asrService.ModelStatusChanged += OnModelStatusChanged;
         _translationService.ModelDownloadProgress += OnModelDownloadProgress;
         _translationService.ModelStatusChanged += OnModelStatusChanged;
         _updateService.StatusChanged += OnUpdateStatusChanged;
@@ -537,33 +542,58 @@ public partial class MainViewModel : ObservableObject, IDisposable
             var sourceLanguage = _settings.Translation.SourceLanguage.ToString();
             var targetLanguage = _settings.Translation.TargetLanguage.ToString();
 
-            // Whisper翻訳で音声を直接翻訳
-            string translatedText = string.Empty;
-            if (_translationService is Translation.Services.WhisperTranslationService whisperTranslationService && _translationService.IsModelLoaded)
-            {
-                var sw = Stopwatch.StartNew();
-                translatedText = await whisperTranslationService.TranslateAudioAsync(item.Segment.AudioData, sourceLanguage, targetLanguage);
-                sw.Stop();
+            var sw = Stopwatch.StartNew();
 
-                TranslationLatency = sw.ElapsedMilliseconds;
-                LoggerService.LogDebug($"[翻訳処理] 完了: Result='{translatedText}', Time={sw.ElapsedMilliseconds}ms");
+            // ステップ1: ASRで音声を文字起こし
+            string recognizedText = string.Empty;
+            if (_asrService.IsModelLoaded)
+            {
+                var transcriptionResult = await _asrService.TranscribeAccurateAsync(item.Segment);
+                recognizedText = transcriptionResult.Text;
+                LoggerService.LogDebug($"[ASR処理] 認識完了: Text='{recognizedText}'");
             }
             else
             {
-                LoggerService.LogWarning($"[翻訳処理] WhisperTranslationServiceが利用不可");
+                LoggerService.LogWarning($"[翻訳処理] ASRサービスが利用不可");
+                sw.Stop();
+                return;
             }
+
+            if (string.IsNullOrWhiteSpace(recognizedText))
+            {
+                LoggerService.LogDebug($"[ASR処理] 認識されたテキストがありません");
+                sw.Stop();
+                return;
+            }
+
+            // ステップ2: 翻訳サービスで翻訳
+            string translatedText = string.Empty;
+            if (_translationService.IsModelLoaded)
+            {
+                var translationResult = await _translationService.TranslateAsync(recognizedText, sourceLanguage, targetLanguage);
+                translatedText = translationResult.TranslatedText;
+                LoggerService.LogDebug($"[翻訳処理] 翻訳完了: Result='{translatedText}'");
+            }
+            else
+            {
+                LoggerService.LogWarning($"[翻訳処理] 翻訳サービスが利用不可");
+                translatedText = recognizedText; // フォールバック：認識テキストをそのまま使用
+            }
+
+            sw.Stop();
+            TranslationLatency = sw.ElapsedMilliseconds;
 
             if (!string.IsNullOrWhiteSpace(translatedText))
             {
                 var subtitle = new SubtitleItem
                 {
                     SegmentId = item.Segment.Id,
-                    OriginalText = translatedText,
+                    OriginalText = recognizedText,
                     TranslatedText = translatedText,
                     IsFinal = true
                 };
                 _overlayViewModel.AddOrUpdateSubtitle(subtitle);
-                var logMessage = $"[確定] ({sourceLanguage}→{targetLanguage}) {translatedText}";
+                var logMessage = $"[確定] ({sourceLanguage}→{targetLanguage}) {recognizedText} → {translatedText}";
                 LoggerService.LogInfo(logMessage);
                 Log(logMessage);
             }
@@ -746,9 +776,6 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
     /// <summary>
     /// モデルを初期化（起動時に呼び出される）
-    /// </summary>
-    /// <summary>
-    /// モデルを初期化（起動時に呼び出される）
     /// ASRと翻訳モデルを並列ダウンロード・読み込み
     /// </summary>
     public async Task InitializeModelsAsync()
@@ -758,18 +785,14 @@ public partial class MainViewModel : ObservableObject, IDisposable
             IsLoading = true;
             Log("モデルの初期化を開始します...");
 
-            // 翻訳モデルのみを初期化
-            try
+            // ASRと翻訳モデルを並列初期化
+            var initTasks = new List<Task>
             {
-                LoadingMessage = "翻訳モデルをダウンロード中...";
-                await _translationService.InitializeAsync();
-                LoggerService.LogInfo("Translation model initialization completed");
-            }
-            catch (Exception ex)
-            {
-                LoggerService.LogError($"Translation initialization error: {ex.Message}");
-                throw;
-            }
+                InitializeASRModelAsync(),
+                InitializeTranslationModelAsync()
+            };
+
+            await Task.WhenAll(initTasks);
 
             LoadingMessage = "準備完了";
             Log("モデルの初期化が完了しました。");
@@ -784,6 +807,36 @@ public partial class MainViewModel : ObservableObject, IDisposable
         finally
         {
             IsLoading = false;
+        }
+    }
+
+    private async Task InitializeASRModelAsync()
+    {
+        try
+        {
+            LoadingMessage = "音声認識モデルをダウンロード中...";
+            await _asrService.InitializeAsync();
+            LoggerService.LogInfo("ASR model initialization completed");
+        }
+        catch (Exception ex)
+        {
+            LoggerService.LogError($"ASR initialization error: {ex.Message}");
+            throw;
+        }
+    }
+
+    private async Task InitializeTranslationModelAsync()
+    {
+        try
+        {
+            LoadingMessage = "翻訳モデルをダウンロード中...";
+            await _translationService.InitializeAsync();
+            LoggerService.LogInfo("Translation model initialization completed");
+        }
+        catch (Exception ex)
+        {
+            LoggerService.LogError($"Translation initialization error: {ex.Message}");
+            throw;
         }
     }
 
