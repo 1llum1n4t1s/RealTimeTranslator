@@ -85,9 +85,25 @@ public class ModelDownloadService : IDisposable
                 serviceName,
                 modelLabel,
                 ModelStatusType.Info,
-                $"モデルファイルを検出しました ({fileInfo.Length} bytes)。"));
+                $"モデルファイルを検出しました ({fileInfo.Length} bytes)。検証中..."));
             System.Diagnostics.Debug.WriteLine($"[{serviceName}] Model file found at: {resolvedPath} (Size: {fileInfo.Length} bytes)");
-            return resolvedPath;
+
+            // ファイルの整合性を検証
+            if (await ValidateModelFileAsync(resolvedPath, downloadUrl, serviceName, modelLabel, cancellationToken))
+            {
+                return resolvedPath;
+            }
+
+            // ファイルが破損している場合は削除して再ダウンロード
+            System.Diagnostics.Debug.WriteLine($"[{serviceName}] Model file is corrupted or outdated. Deleting and re-downloading...");
+            try
+            {
+                File.Delete(resolvedPath);
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[{serviceName}] Failed to delete corrupted file: {ex.Message}");
+            }
         }
 
         System.Diagnostics.Debug.WriteLine($"[{serviceName}] Model file not found at {resolvedPath}. Will attempt to download from {downloadUrl}");
@@ -230,6 +246,72 @@ public class ModelDownloadService : IDisposable
             modelLabel,
             ModelStatusType.DownloadCompleted,
             "モデルのダウンロードが完了しました。"));
+    }
+
+    /// <summary>
+    /// モデルファイルの整合性を検証（サーバーのファイルサイズと比較）
+    /// </summary>
+    private async Task<bool> ValidateModelFileAsync(
+        string localPath,
+        string downloadUrl,
+        string serviceName,
+        string modelLabel,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            if (!File.Exists(localPath))
+            {
+                return false;
+            }
+
+            var localFileInfo = new FileInfo(localPath);
+            System.Diagnostics.Debug.WriteLine($"[{serviceName}] Validating file: {localPath} (Local size: {localFileInfo.Length} bytes)");
+
+            // サーバーからファイルサイズを取得（HEADリクエスト）
+            using var headRequest = new HttpRequestMessage(HttpMethod.Head, downloadUrl);
+            using var response = await _httpClient.SendAsync(headRequest, cancellationToken).ConfigureAwait(false);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                System.Diagnostics.Debug.WriteLine($"[{serviceName}] Failed to get file info from server: {response.StatusCode}");
+                return true; // サーバーに問い合わせできない場合は既存ファイルを信頼
+            }
+
+            var remoteFileSize = response.Content.Headers.ContentLength;
+
+            if (remoteFileSize == null || remoteFileSize <= 0)
+            {
+                System.Diagnostics.Debug.WriteLine($"[{serviceName}] Could not determine remote file size");
+                return true; // ファイルサイズが不明な場合は既存ファイルを信頼
+            }
+
+            // ローカルファイルサイズとリモートファイルサイズを比較
+            if (localFileInfo.Length == remoteFileSize.Value)
+            {
+                System.Diagnostics.Debug.WriteLine($"[{serviceName}] File validation passed: Local size ({localFileInfo.Length}) matches remote size ({remoteFileSize.Value})");
+                OnStatusChanged(new ModelStatusChangedEventArgs(
+                    serviceName,
+                    modelLabel,
+                    ModelStatusType.Info,
+                    $"ファイルの検証に成功しました。"));
+                return true;
+            }
+
+            // ファイルサイズが異なる場合は破損している可能性あり
+            System.Diagnostics.Debug.WriteLine($"[{serviceName}] File validation failed: Local size ({localFileInfo.Length}) != Remote size ({remoteFileSize.Value})");
+            OnStatusChanged(new ModelStatusChangedEventArgs(
+                serviceName,
+                modelLabel,
+                ModelStatusType.Info,
+                $"ファイルが破損しているか古いバージョンです。再ダウンロードします..."));
+            return false;
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"[{serviceName}] Error during file validation: {ex.Message}");
+            return true; // 検証中にエラーが発生した場合は既存ファイルを信頼
+        }
     }
 
     private static string? ResolveModelPath(string modelPath, string defaultFileName)
