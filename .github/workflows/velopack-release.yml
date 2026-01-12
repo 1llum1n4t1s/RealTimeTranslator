@@ -20,7 +20,6 @@ jobs:
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
-          dotnet-quality: 'preview'
 
       - name: 依存関係を復元
         run: dotnet restore RealTimeTranslator.slnx
@@ -32,35 +31,150 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($version)) {
             $version = "0.0.${{ github.run_number }}"
           }
-          "RELEASE_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          # SemVer2形式に変換 (YYYY.MM.DD -> Y.M.D)
+          if ($version -match '^(\d{4})(\d{2})(\d{2})$') {
+            $year = [int]$matches[1] - 2000
+            $month = [int]$matches[2]
+            $day = [int]$matches[3]
+            $semver = "$year.$month.$day"
+          } else {
+            $semver = $version
+          }
+          Write-Host "Setting RELEASE_VERSION=$semver"
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "RELEASE_VERSION=$semver" -Encoding utf8
+          Write-Host "RELEASE_VERSION=$semver"
 
       - name: アプリを公開ビルド
-        run: >
-          dotnet publish src/RealTimeTranslator.UI/RealTimeTranslator.UI.csproj
-          -c Release
-          -r win-x64
-          --self-contained true
-          -p:PublishSingleFile=true
-          -p:IncludeNativeLibrariesForSelfExtract=true
+        shell: pwsh
+        run: |
+          $publishDir = Join-Path "src" "RealTimeTranslator.UI" "bin" "Release" "net10.0-windows" "win-x64" "publish"
+          if (Test-Path $publishDir) {
+            Remove-Item -Path $publishDir -Recurse -Force
+          }
+          
+          Write-Host "Building and publishing application..."
+          dotnet publish (Join-Path "src" "RealTimeTranslator.UI" "RealTimeTranslator.UI.csproj") `
+            -c Release `
+            -r win-x64 `
+            --self-contained true `
+            -p:LLamaSharpCpuVariant=avx2
+          
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "dotnet publish failed with exit code $LASTEXITCODE"
+            exit 1
+          }
+          
+          Write-Host "Publish directory contents:"
+          Get-ChildItem -Path $publishDir -Recurse -ErrorAction SilentlyContinue | Select-Object -First 20 | ForEach-Object { Write-Host $_.FullName }
+          
+          $exePath = Join-Path $publishDir "RealTimeTranslator.UI.exe"
+          if (-not (Test-Path $exePath)) {
+            Write-Error "RealTimeTranslator.UI.exe not found at: $exePath"
+            exit 1
+          }
+          Write-Host "Successfully built: $exePath"
 
       - name: Velopack CLI をインストール
+        shell: pwsh
         run: |
           dotnet tool install --global vpk
-          echo "$env:USERPROFILE\.dotnet\tools" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          $toolsPath = "$env:USERPROFILE\.dotnet\tools"
+          Add-Content -LiteralPath $env:GITHUB_PATH -Value $toolsPath -Encoding utf8
+          Write-Host "Velopack CLI installed to: $toolsPath"
+          Write-Host "PATH environment updated"
 
       - name: Velopack パッケージを作成
-        run: >
-          vpk pack
-          --packId RealTimeTranslator
-          --packVersion ${{ env.RELEASE_VERSION }}
-          --packTitle "Real-Time Subtitle Translator"
-          --mainExe RealTimeTranslator.UI.exe
-          --publishDir src/RealTimeTranslator.UI/bin/Release/net10.0-windows/win-x64/publish
-          --outputDir artifacts
+        shell: pwsh
+        run: |
+          $publishDir = Join-Path "src" "RealTimeTranslator.UI" "bin" "Release" "net10.0-windows" "win-x64" "publish"
+          $outputDir = "artifacts"
+          
+          if (-not (Test-Path $publishDir)) {
+            Write-Error "Publish directory not found: $publishDir"
+            exit 1
+          }
+          
+          if (Test-Path $outputDir) {
+            Remove-Item -Path $outputDir -Recurse -Force
+          }
+          New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
+          
+          Write-Host "Creating Velopack package..."
+          Write-Host "  Pack ID: RealTimeTranslator"
+          Write-Host "  Version: $env:RELEASE_VERSION"
+          Write-Host "  Title: Real-Time Subtitle Translator"
+          Write-Host "  Main EXE: RealTimeTranslator.UI.exe"
+          Write-Host "  Publish Dir: $publishDir"
+          Write-Host "  Output Dir: $outputDir"
+          
+          vpk pack `
+            --packId RealTimeTranslator `
+            --packVersion $env:RELEASE_VERSION `
+            --packTitle "Real-Time Subtitle Translator" `
+            --packAuthors "RTST" `
+            --mainExe RealTimeTranslator.UI.exe `
+            --packDir $publishDir `
+            --outputDir $outputDir `
+            --shortcuts "StartMenu,Desktop"`
+          
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "vpk pack failed with exit code $LASTEXITCODE"
+            exit 1
+          }
+          
+          Write-Host "Velopack パッケージ作成完了"
+          Write-Host "Artifacts directory contents:"
+          if (Test-Path $outputDir) {
+            Get-ChildItem -Path $outputDir -Recurse | ForEach-Object { Write-Host "  $($_.FullName)" }
+          } else {
+            Write-Error "Artifacts directory was not created"
+            exit 1
+          }
 
       - name: GitHub Releases にアップロード
-        run: >
-          vpk upload github
-          --repo ${{ github.repository }}
-          --token ${{ secrets.GITHUB_TOKEN }}
-          --releaseDir artifacts
+        shell: pwsh
+        run: |
+          $outputDir = "artifacts"
+          
+          if (-not (Test-Path $outputDir)) {
+            Write-Error "Artifacts directory not found: $outputDir"
+            exit 1
+          }
+          
+          Write-Host "GitHub Releases へのアップロードを開始..."
+          Write-Host "Repository: ${{ github.repository }}"
+          Write-Host "Version: $env:RELEASE_VERSION"
+          Write-Host "Artifacts directory contents:"
+          if (Get-ChildItem -Path $outputDir -Recurse -ErrorAction SilentlyContinue) {
+            Get-ChildItem -Path $outputDir -Recurse | ForEach-Object { Write-Host "  $($_.FullName)" }
+          } else {
+            Write-Host "  (empty)"
+          }
+          
+          $repoUrl = "https://github.com/${{ github.repository }}"
+          $releaseName = "Real-Time Subtitle Translator $env:RELEASE_VERSION"
+          $tag = "v$env:RELEASE_VERSION"
+          
+          Write-Host ""
+          Write-Host "Uploading to GitHub Releases:"
+          Write-Host "  Repository URL: $repoUrl"
+          Write-Host "  Release Name: $releaseName"
+          Write-Host "  Tag: $tag"
+          Write-Host "  Output Dir: $outputDir"
+          Write-Host ""
+          
+          vpk upload github `
+            --repoUrl $repoUrl `
+            --token "${{ secrets.GITHUB_TOKEN }}" `
+            --outputDir $outputDir `
+            --channel win `
+            --publish `
+            --releaseName $releaseName `
+            --tag $tag
+          
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "vpk upload failed with exit code $LASTEXITCODE"
+            exit 1
+          }
+          
+          Write-Host "GitHub Releases へのアップロード完了"
