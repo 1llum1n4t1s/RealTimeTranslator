@@ -63,8 +63,9 @@ public class WhisperASRService : IASRService
         try
         {
             // モデルファイルをダウンロード/確認
-            const string defaultModelFileName = "ggml-large-v3.bin";
-            const string downloadUrl = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3.bin";
+            // パフォーマンス最適化: medium モデルを使用（large-v3より5-10倍高速、精度も十分）
+            const string defaultModelFileName = "ggml-medium.bin";
+            const string downloadUrl = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.bin";
 
             var modelPath = Path.Combine(_settings.ModelPath, "asr");
             var modelFilePath = await _downloadService.EnsureModelAsync(
@@ -274,10 +275,14 @@ public class WhisperASRService : IASRService
                 ModelStatusType.Info,
                 "WhisperProcessor を作成中..."));
 
-            // パフォーマンス最適化のため、スレッド数を制限し、言語を事前指定
+            // パフォーマンス最適化: スレッド数を増やし、言語を事前指定
+            // CPUコア数の75%を使用（最大8スレッド）
+            var threadCount = Math.Min(8, Math.Max(4, (int)(Environment.ProcessorCount * 0.75)));
             var builder = _factory.CreateBuilder()
-                .WithThreads(Math.Min(4, Environment.ProcessorCount))  // スレッド数を制限（4が最適）
+                .WithThreads(threadCount)  // より多くのスレッドでパフォーマンス向上
                 .WithLanguage("en");  // 英語を事前指定してパフォーマンス向上
+
+            LoggerService.LogDebug($"Whisper using {threadCount} threads (ProcessorCount: {Environment.ProcessorCount})");
 
             _processor = builder.Build();
 
