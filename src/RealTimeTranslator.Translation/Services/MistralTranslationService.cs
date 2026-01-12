@@ -195,16 +195,17 @@ public class MistralTranslationService : ITranslationService
             LoggerService.LogDebug($"[MistralTranslation] プロンプト: {prompt}");
 
             // 推論パラメータを設定（翻訳タスクに最適化）
+            // パフォーマンス最適化: より高速な推論のためパラメータを調整
             var inferenceParams = new InferenceParams
             {
-                MaxTokens = 64,  // 翻訳結果には64トークンで十分（さらに削減）
+                MaxTokens = 48,  // 翻訳結果には48トークンで十分（さらに削減でスピードアップ）
                 AntiPrompts = new List<string> { "</s>", "\n" },  // 改行1つで終了
                 SamplingPipeline = new DefaultSamplingPipeline
                 {
-                    Temperature = 0.05f,  // さらに低温度で決定論的に
-                    TopP = 0.9f,
-                    TopK = 20,  // TopKを削減
-                    RepeatPenalty = 1.15f  // 繰り返しペナルティを強化
+                    Temperature = 0.01f,  // 極低温度で決定論的かつ高速に
+                    TopP = 0.85f,        // TopPを削減してサンプリング効率化
+                    TopK = 10,           // TopKをさらに削減して高速化
+                    RepeatPenalty = 1.2f // 繰り返しペナルティを強化
                 }
             };
 
@@ -329,14 +330,16 @@ public class MistralTranslationService : ITranslationService
                 "Mistralモデルを読み込み中..."));
 
             // モデルパラメータを設定（翻訳タスクに最適化）
+            // パフォーマンス最適化: より高速な推論のためパラメータを調整
             _modelParams = new ModelParams(modelPath)
             {
-                ContextSize = 256,  // 翻訳タスクには256で十分（パフォーマンスを最大化）
-                BatchSize = 512,    // バッチサイズを増やして処理速度向上
-                GpuLayerCount = 35  // GPU使用（全レイヤーをGPUで実行）
+                ContextSize = 512,   // コンテキストを少し拡張（処理安定性向上）
+                BatchSize = 1024,    // バッチサイズを大幅増加で処理速度向上
+                GpuLayerCount = 35,  // GPU使用（全レイヤーをGPUで実行）
+                Threads = (uint)Math.Max(4, Environment.ProcessorCount / 2)  // CPU並列処理も活用
             };
 
-            LoggerService.LogDebug($"Mistral model parameters: ContextSize=256, BatchSize=512, GpuLayerCount=35");
+            LoggerService.LogDebug($"Mistral model parameters: ContextSize=512, BatchSize=1024, GpuLayerCount=35, Threads={_modelParams.Threads}");
 
             // モデルをロード
             _model = LLamaWeights.LoadFromFile(_modelParams);
