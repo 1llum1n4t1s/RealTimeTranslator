@@ -111,9 +111,11 @@ jobs:
             --packId RealTimeTranslator `
             --packVersion $env:RELEASE_VERSION `
             --packTitle "Real-Time Subtitle Translator" `
+            --packAuthors "RTST" `
             --mainExe RealTimeTranslator.UI.exe `
             --packDir $publishDir `
-            --outputDir $outputDir
+            --outputDir $outputDir `
+            --shortcuts "StartMenu,Desktop"`
           
           if ($LASTEXITCODE -ne 0) {
             Write-Error "vpk pack failed with exit code $LASTEXITCODE"

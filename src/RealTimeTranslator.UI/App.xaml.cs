@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Win32;
 using RealTimeTranslator.Core.Interfaces;
 using RealTimeTranslator.Core.Models;
 using RealTimeTranslator.Core.Services;
@@ -32,6 +33,8 @@ public partial class App : Application
             LoggerService.LogInfo("OnStartup: 起動開始");
             VelopackApp.Build().Run();
             LoggerService.LogInfo("OnStartup: Velopack初期化完了");
+            RegisterApplicationInARP();
+            LoggerService.LogInfo("OnStartup: ARP登録完了");
             base.OnStartup(e);
             LoggerService.LogInfo("OnStartup: base.OnStartup完了");
 
@@ -182,5 +185,41 @@ public partial class App : Application
 
         LoggerService.LogInfo("OnExit: アプリケーション終了完了");
         base.OnExit(e);
+    }
+
+    /// <summary>
+    /// アプリケーションをWindows の「追加と削除」（ARP）に登録
+    /// </summary>
+    private static void RegisterApplicationInARP()
+    {
+        try
+        {
+            var exePath = System.Reflection.Assembly.GetExecutingAssembly().Location;
+            var exeDir = System.IO.Path.GetDirectoryName(exePath);
+            var appVersion = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "1.0.0.0";
+
+            // レジストリキー: HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall
+            var registryPath = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\RealTimeTranslator";
+
+            using (var key = Microsoft.Win32.Registry.LocalMachine.CreateSubKey(registryPath))
+            {
+                if (key != null)
+                {
+                    key.SetValue("DisplayName", "Real-Time Subtitle Translator", Microsoft.Win32.RegistryValueKind.String);
+                    key.SetValue("DisplayVersion", appVersion, Microsoft.Win32.RegistryValueKind.String);
+                    key.SetValue("Publisher", "1llum1n4t1s", Microsoft.Win32.RegistryValueKind.String);
+                    key.SetValue("InstallLocation", exeDir, Microsoft.Win32.RegistryValueKind.String);
+                    key.SetValue("UninstallString", exePath, Microsoft.Win32.RegistryValueKind.String);
+                    key.SetValue("DisplayIcon", exePath, Microsoft.Win32.RegistryValueKind.String);
+                    key.SetValue("NoModify", 1, Microsoft.Win32.RegistryValueKind.DWord);
+                    key.SetValue("NoRepair", 1, Microsoft.Win32.RegistryValueKind.DWord);
+                    LoggerService.LogInfo("RegisterApplicationInARP: ARP登録成功");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            LoggerService.LogWarning($"RegisterApplicationInARP: ARP登録エラー: {ex.Message}");
+        }
     }
 }
