@@ -27,9 +27,9 @@
     <ItemGroup>
       <ResolvedFileToPublish Remove="@(ResolvedFileToPublish)"
                              Condition="'%(ResolvedFileToPublish.OriginalItemSpec)' != ''
-                               and $([System.String]::Copy('%(ResolvedFileToPublish.OriginalItemSpec)').Contains('llamasharp.backend.cpu'))
-                               and $([System.String]::Copy('%(ResolvedFileToPublish.OriginalItemSpec)').Contains('runtimes\\win-x64\\native\\'))
-                               and !$([System.String]::Copy('%(ResolvedFileToPublish.OriginalItemSpec)').Contains('runtimes\\win-x64\\native\\$(LLamaSharpCpuVariant)\\'))" />
+                               and ('%(ResolvedFileToPublish.OriginalItemSpec)'.Contains('llamasharp.backend.cpu'))
+                               and ('%(ResolvedFileToPublish.OriginalItemSpec)'.Contains('runtimes\win-x64\native\'))
+                               and !('%(ResolvedFileToPublish.OriginalItemSpec)'.Contains('runtimes\win-x64\native\$(LLamaSharpCpuVariant)\'))" />
     </ItemGroup>
   </Target>
 
