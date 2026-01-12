@@ -69,6 +69,11 @@
                                TextAlignment="Center"
                                TextWrapping="Wrap"
                                Margin="0,0,0,8"/>
+                    <TextBlock Text="{Binding DownloadReason}"
+                               FontSize="11" Foreground="#555"
+                               TextAlignment="Center"
+                               TextWrapping="Wrap"
+                               Margin="0,0,0,8"/>
                     <ProgressBar Height="6"
                                  Value="{Binding DownloadProgress, Mode=OneWay}"
                                  Minimum="0" Maximum="100"

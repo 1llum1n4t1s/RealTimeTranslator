@@ -127,6 +127,12 @@ public class ModelDownloadService : IDisposable
             Directory.CreateDirectory(targetDirectory);
         }
 
+        OnStatusChanged(new ModelStatusChangedEventArgs(
+            serviceName,
+            modelLabel,
+            ModelStatusType.Info,
+            "モデルファイルが見つからないためダウンロードしています。"));
+
         try
         {
             System.Diagnostics.Debug.WriteLine($"[{serviceName}] Starting model download...");
@@ -304,7 +310,7 @@ public class ModelDownloadService : IDisposable
                 serviceName,
                 modelLabel,
                 ModelStatusType.Info,
-                $"ファイルが破損しているか古いバージョンです。再ダウンロードします..."));
+                "ファイルが破損しているか古いバージョンのため再ダウンロードしています。"));
             return false;
         }
         catch (Exception ex)
