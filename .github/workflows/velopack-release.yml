@@ -27,22 +27,29 @@ jobs:
       - name: リリースバージョンを設定
         shell: pwsh
         run: |
-          $version = "${{ github.ref_name }}" -replace '^release/', ''
+          # csproj からバージョンを読み取る
+          $csprojPath = "src/RealTimeTranslator.UI/RealTimeTranslator.UI.csproj"
+          [xml]$xml = Get-Content -Path $csprojPath
+
+          # すべての PropertyGroup から Version を検索
+          $version = $null
+          foreach ($propertyGroup in $xml.Project.PropertyGroup) {
+            if ($propertyGroup.Version) {
+              $version = $propertyGroup.Version
+              break
+            }
+          }
+
           if ([string]::IsNullOrWhiteSpace($version)) {
-            $version = "0.0.${{ github.run_number }}"
+            Write-Error "Version not found in csproj at: $csprojPath"
+            Write-Host "csproj content:"
+            Get-Content -Path $csprojPath | Select-Object -First 30
+            exit 1
           }
-          # SemVer2形式に変換 (YYYY.MM.DD -> Y.M.D)
-          if ($version -match '^(\d{4})(\d{2})(\d{2})$') {
-            $year = [int]$matches[1] - 2000
-            $month = [int]$matches[2]
-            $day = [int]$matches[3]
-            $semver = "$year.$month.$day"
-          } else {
-            $semver = $version
-          }
-          Write-Host "Setting RELEASE_VERSION=$semver"
-          Add-Content -LiteralPath $env:GITHUB_ENV -Value "RELEASE_VERSION=$semver" -Encoding utf8
-          Write-Host "RELEASE_VERSION=$semver"
+
+          Write-Host "Setting RELEASE_VERSION=$version"
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "RELEASE_VERSION=$version" -Encoding utf8
+          Write-Host "RELEASE_VERSION=$version"
 
       - name: アプリを公開ビルド
         shell: pwsh
