@@ -193,28 +193,28 @@ public class MistralTranslationService : ITranslationService
             var sourceLangName = GetLanguageName(sourceLanguage);
             var targetLangName = GetLanguageName(targetLanguage);
 
-            // Mistral Instruct形式のプロンプトを作成
-            var prompt = $"<s>[INST] Translate the following {sourceLangName} text to {targetLangName}. Only output the translation, nothing else.\n\n{sourceLangName} text: {text}\n\n{targetLangName} translation: [/INST] ";
+            // Mistral Instruct形式のプロンプトを作成（シンプルに、ローマ字なし）
+            var prompt = $"<s>[INST] Translate to {targetLangName}: {text} [/INST]";
 
             LoggerService.LogDebug($"[MistralTranslation] プロンプト: {prompt}");
 
             // 推論パラメータを設定（翻訳タスクに最適化）
             var inferenceParams = new InferenceParams
             {
-                MaxTokens = 128,  // 翻訳結果には128トークンで十分
-                AntiPrompts = new List<string> { "</s>", "\n\n" },  // 改行2つで終了
+                MaxTokens = 64,  // 翻訳結果には64トークンで十分（さらに削減）
+                AntiPrompts = new List<string> { "</s>", "\n" },  // 改行1つで終了
                 SamplingPipeline = new DefaultSamplingPipeline
                 {
-                    Temperature = 0.1f,  // 決定論的な翻訳のため低温度
-                    TopP = 0.95f,
-                    TopK = 40,
-                    RepeatPenalty = 1.1f
+                    Temperature = 0.05f,  // さらに低温度で決定論的に
+                    TopP = 0.9f,
+                    TopK = 20,  // TopKを削減
+                    RepeatPenalty = 1.15f  // 繰り返しペナルティを強化
                 }
             };
 
-            // 推論を実行（StatelessExecutorを使用）
+            // 推論を実行（InstructExecutorを使用）
             var sb = new StringBuilder();
-            var executor = new StatelessExecutor(_model, _modelParams);
+            var executor = new InstructExecutor(context);
 
             await foreach (var outputToken in executor.InferAsync(prompt, inferenceParams))
             {
@@ -258,6 +258,17 @@ public class MistralTranslationService : ITranslationService
 
         // 不要なマーカーを削除
         result = result.Replace("</s>", "").Replace("[INST]", "").Replace("[/INST]", "");
+
+        // 括弧内のローマ字読み方を削除（例: "(Wareware ga...)"）
+        var parenStartIndex = result.IndexOf('(');
+        if (parenStartIndex >= 0)
+        {
+            var parenEndIndex = result.LastIndexOf(')');
+            if (parenEndIndex > parenStartIndex)
+            {
+                result = result.Substring(0, parenStartIndex).Trim();
+            }
+        }
 
         // 改行を削除（1行の翻訳結果を期待）
         result = result.Replace("\n", " ").Replace("\r", "");
@@ -328,11 +339,12 @@ public class MistralTranslationService : ITranslationService
             // モデルパラメータを設定（翻訳タスクに最適化）
             _modelParams = new ModelParams(modelPath)
             {
-                ContextSize = 512,  // 翻訳タスクには512で十分（パフォーマンス向上）
+                ContextSize = 256,  // 翻訳タスクには256で十分（パフォーマンスを最大化）
+                BatchSize = 512,    // バッチサイズを増やして処理速度向上
                 GpuLayerCount = 35  // GPU使用（全レイヤーをGPUで実行）
             };
 
-            LoggerService.LogDebug($"Mistral model parameters: ContextSize=512, GpuLayerCount=35");
+            LoggerService.LogDebug($"Mistral model parameters: ContextSize=256, BatchSize=512, GpuLayerCount=35");
 
             // モデルをロード
             _model = LLamaWeights.LoadFromFile(_modelParams);

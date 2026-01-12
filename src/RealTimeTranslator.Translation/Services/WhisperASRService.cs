@@ -276,8 +276,10 @@ public class WhisperASRService : IASRService
 
             // パフォーマンス最適化のため、スレッド数を制限し、言語を事前指定
             var builder = _factory.CreateBuilder()
-                .WithThreads(Math.Min(8, Environment.ProcessorCount))  // スレッド数を制限（過剰なスレッドは逆効果）
-                .WithLanguage("en");  // 英語を事前指定してパフォーマンス向上
+                .WithThreads(Math.Min(4, Environment.ProcessorCount))  // スレッド数をさらに制限（4が最適）
+                .WithLanguage("en")  // 英語を事前指定してパフォーマンス向上
+                .WithSingleSegment(false)  // セグメント分割を有効化
+                .WithSpeedup(true);  // 高速化モードを有効化
 
             _processor = builder.Build();
 
