@@ -25,12 +25,16 @@
   </ItemGroup>
 
   <Target Name="FilterLLamaSharpCpuNativeVariants" AfterTargets="ResolveFilesToPublish">
+    <PropertyGroup>
+      <_LLamaSharpCpuVariant Condition="'$(LLamaSharpCpuVariant)' != ''">$(LLamaSharpCpuVariant)</_LLamaSharpCpuVariant>
+      <_LLamaSharpCpuVariant Condition="'$(_LLamaSharpCpuVariant)' == ''">avx2</_LLamaSharpCpuVariant>
+    </PropertyGroup>
     <ItemGroup>
       <ResolvedFileToPublish Remove="@(ResolvedFileToPublish)"
                              Condition="'%(ResolvedFileToPublish.OriginalItemSpec)' != ''
-                               and $([System.String]::Copy('%(ResolvedFileToPublish.OriginalItemSpec)').Contains('llamasharp.backend.cpu'))
-                               and $([System.String]::Copy('%(ResolvedFileToPublish.OriginalItemSpec)').Contains('runtimes\win-x64\native\'))
-                               and !$([System.String]::Copy('%(ResolvedFileToPublish.OriginalItemSpec)').Contains('runtimes\win-x64\native\$(LLamaSharpCpuVariant)\'))" />
+                               and $([System.String]::Copy('%(ResolvedFileToPublish.OriginalItemSpec)').ToLower().Contains('llamasharp.backend.cpu'))
+                               and ($([System.String]::Copy('%(ResolvedFileToPublish.OriginalItemSpec)').Contains('runtimes\win-x64\native\')) or $([System.String]::Copy('%(ResolvedFileToPublish.OriginalItemSpec)').Contains('runtimes/win-x64/native/')))
+                               and !($([System.String]::Copy('%(ResolvedFileToPublish.OriginalItemSpec)').Contains('runtimes\win-x64\native\$(_LLamaSharpCpuVariant)\')) or $([System.String]::Copy('%(ResolvedFileToPublish.OriginalItemSpec)').Contains('runtimes/win-x64/native/$(_LLamaSharpCpuVariant)/')))" />
     </ItemGroup>
   </Target>
 
