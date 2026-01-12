@@ -75,6 +75,15 @@ public partial class MainViewModel : ObservableObject, IDisposable
     [ObservableProperty]
     private string _loadingMessage = "初期化中...";
 
+    [ObservableProperty]
+    private double _downloadProgress;
+
+    [ObservableProperty]
+    private string _downloadStatus = string.Empty;
+
+    [ObservableProperty]
+    private bool _isDownloading;
+
     /// <summary>
     /// 開始ボタンが有効かどうか
     /// </summary>
@@ -616,15 +625,44 @@ public partial class MainViewModel : ObservableObject, IDisposable
         return System.Text.RegularExpressions.Regex.Replace(message, @"[\d.]+%?", "").Trim();
     }
 
+    /// <summary>
+    /// バイト数を人間が読みやすい形式にフォーマット
+    /// </summary>
+    private static string FormatBytes(long bytes)
+    {
+        string[] sizes = { "B", "KB", "MB", "GB", "TB" };
+        double len = bytes;
+        int order = 0;
+        while (len >= 1024 && order < sizes.Length - 1)
+        {
+            order++;
+            len = len / 1024;
+        }
+        return $"{len:F1} {sizes[order]}";
+    }
+
     private void OnModelDownloadProgress(object? sender, ModelDownloadProgressEventArgs e)
     {
         var progressText = e.ProgressPercentage.HasValue
             ? $"{e.ProgressPercentage.Value:F1}%"
             : "進捗不明";
-        StatusText = $"{e.ServiceName} {e.ModelName} ダウンロード中... {progressText}";
-        StatusColor = Brushes.Orange;
-        // suppressDuplicate: true で連続するダウンロード進捗メッセージを抑制
-        Log($"{e.ServiceName} {e.ModelName} ダウンロード進行中: {progressText}", suppressDuplicate: true);
+
+        // UI スレッドで実行
+        RunOnUiThread(() =>
+        {
+            IsDownloading = true;
+            DownloadProgress = e.ProgressPercentage ?? 0;
+
+            // ファイルサイズを表示
+            var totalSize = e.TotalBytes.HasValue
+                ? FormatBytes(e.TotalBytes.Value)
+                : "不明";
+            var downloadedSize = FormatBytes(e.BytesReceived);
+
+            DownloadStatus = $"{e.ServiceName} {e.ModelName} ダウンロード中... {downloadedSize} / {totalSize} ({progressText})";
+            StatusText = DownloadStatus;
+            StatusColor = Brushes.Orange;
+        });
     }
 
     private void OnModelStatusChanged(object? sender, ModelStatusChangedEventArgs e)
@@ -633,10 +671,22 @@ public partial class MainViewModel : ObservableObject, IDisposable
             ? $"{e.Message} ({FormatExceptionMessage(e.Exception)})"
             : e.Message;
 
-        StatusText = $"{e.ServiceName}: {message}";
-        StatusColor = e.Status == ModelStatusType.DownloadFailed || e.Status == ModelStatusType.LoadFailed
-            ? Brushes.Red
-            : Brushes.Orange;
+        RunOnUiThread(() =>
+        {
+            StatusText = $"{e.ServiceName}: {message}";
+            StatusColor = e.Status == ModelStatusType.DownloadFailed || e.Status == ModelStatusType.LoadFailed
+                ? Brushes.Red
+                : Brushes.Orange;
+
+            // ダウンロード完了・失敗時にプログレスバーを非表示
+            if (e.Status == ModelStatusType.DownloadCompleted || e.Status == ModelStatusType.DownloadFailed)
+            {
+                IsDownloading = false;
+                DownloadProgress = 0;
+                DownloadStatus = string.Empty;
+            }
+        });
+
         Log($"{e.ServiceName} {e.ModelName}: {message}");
     }
 
