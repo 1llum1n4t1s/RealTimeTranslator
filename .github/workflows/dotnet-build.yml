@@ -21,13 +21,13 @@ jobs:
           dotnet-quality: 'preview'
 
       - name: 依存関係を復元
-        run: dotnet restore RealTimeTranslator.sln
+        run: dotnet restore RealTimeTranslator.slnx
 
       - name: ビルド
-        run: dotnet build RealTimeTranslator.sln --configuration Release --no-restore
+        run: dotnet build RealTimeTranslator.slnx --configuration Release --no-restore
 
       - name: テスト実行
-        run: dotnet test RealTimeTranslator.sln --configuration Release --no-build --verbosity normal --logger "trx;LogFileName=test-results.trx"
+        run: dotnet test RealTimeTranslator.slnx --configuration Release --no-build --verbosity normal --logger "trx;LogFileName=test-results.trx"
         continue-on-error: true
 
       - name: テスト結果をアップロード
