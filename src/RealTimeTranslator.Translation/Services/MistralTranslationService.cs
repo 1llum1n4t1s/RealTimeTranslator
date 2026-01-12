@@ -200,13 +200,14 @@ public class MistralTranslationService : ITranslationService
 
             // 推論パラメータを設定（翻訳タスクに最適化）
             // パフォーマンス最適化: より高速な推論のためパラメータを調整
-            var maxTokens = Math.Clamp(text.Length / 4 + 8, 16, 48);
+            // 日本語翻訳では英語よりトークン数が2-3倍必要（文字ごとにトークン化）
+            var maxTokens = Math.Clamp(text.Length / 2 + 16, 32, 128);
             LoggerService.LogDebug($"[MistralTranslation] 推論パラメータ: MaxTokens={maxTokens}, Temp=0.05, TopP=0.7, TopK=8");
 
             var inferenceParams = new InferenceParams
             {
-                MaxTokens = maxTokens,  // 入力長に応じて上限を調整し速度を確保
-                AntiPrompts = new List<string> { "</s>", "\n", "\r", "[INST]" },  // 改行や指示で終了
+                MaxTokens = maxTokens,  // 日本語翻訳に十分なトークン数
+                AntiPrompts = new List<string> { "</s>", "[INST]" },  // 改行削除（日本語では途中で止まる原因）
                 SamplingPipeline = new DefaultSamplingPipeline
                 {
                     Temperature = 0.05f,  // 低温度で決定論的かつ高速に
@@ -226,25 +227,37 @@ public class MistralTranslationService : ITranslationService
 
             var tokenCount = 0;
             var lastLogTime = inferenceStartTime;
+            var lastTokenTime = inferenceStartTime;
+            var tokenTimes = new List<double>();
+
             await foreach (var outputToken in executor.InferAsync(prompt, inferenceParams))
             {
                 sb.Append(outputToken);
                 tokenCount++;
 
-                // 5トークンごと、または500ms経過ごとにログ出力
                 var currentTime = Stopwatch.GetTimestamp();
+                var tokenDuration = (currentTime - lastTokenTime) * 1000.0 / Stopwatch.Frequency;
+                tokenTimes.Add(tokenDuration);
+                lastTokenTime = currentTime;
+
+                // 5トークンごと、または500ms経過ごとにログ出力
                 var timeSinceLastLog = (currentTime - lastLogTime) * 1000.0 / Stopwatch.Frequency;
                 if (tokenCount % 5 == 0 || timeSinceLastLog >= 500)
                 {
                     var elapsedMs = (currentTime - inferenceStartTime) * 1000.0 / Stopwatch.Frequency;
-                    LoggerService.LogDebug($"[MistralTranslation] トークン生成中: {tokenCount}トークン, {elapsedMs:F0}ms経過");
+                    var avgTokenTime = tokenTimes.Count > 0 ? tokenTimes.Average() : 0;
+                    LoggerService.LogDebug($"[MistralTranslation] トークン生成中: {tokenCount}トークン, {elapsedMs:F0}ms経過, 平均={avgTokenTime:F0}ms/token");
                     lastLogTime = currentTime;
                 }
             }
 
             var inferenceEndTime = Stopwatch.GetTimestamp();
             var inferenceDuration = (inferenceEndTime - inferenceStartTime) * 1000.0 / Stopwatch.Frequency;
+            var tokensPerSec = tokenCount > 0 ? tokenCount * 1000.0 / inferenceDuration : 0;
+            var avgTokenTime = tokenTimes.Count > 0 ? tokenTimes.Average() : 0;
+            var firstTokenTime = tokenTimes.Count > 0 ? tokenTimes[0] : 0;
             LoggerService.LogDebug($"[MistralTranslation] InferAsync 完了: {tokenCount}トークン生成, {inferenceDuration:F0}ms");
+            LoggerService.LogDebug($"[MistralTranslation] 速度統計: {tokensPerSec:F2} tokens/sec, 平均={avgTokenTime:F0}ms/token, 初回={firstTokenTime:F0}ms");
 
             var result = sb.ToString().Trim();
 
