@@ -109,7 +109,7 @@ jobs:
           Write-Host "Creating Velopack package..."
           Write-Host "  Pack ID: RealTimeTranslator"
           Write-Host "  Version: $env:RELEASE_VERSION"
-          Write-Host "  Title: Real-Time Subtitle Translator"
+          Write-Host "  Title: RealTimeTranslator"
           Write-Host "  Main EXE: RealTimeTranslator.UI.exe"
           Write-Host "  Publish Dir: $publishDir"
           Write-Host "  Output Dir: $outputDir"
@@ -117,7 +117,7 @@ jobs:
           vpk pack `
             --packId RealTimeTranslator `
             --packVersion $env:RELEASE_VERSION `
-            --packTitle "Real-Time Subtitle Translator" `
+            --packTitle "RealTimeTranslator" `
             --packAuthors "RTST" `
             --mainExe RealTimeTranslator.UI.exe `
             --packDir $publishDir `
@@ -159,7 +159,7 @@ jobs:
           }
           
           $repoUrl = "https://github.com/${{ github.repository }}"
-          $releaseName = "Real-Time Subtitle Translator $env:RELEASE_VERSION"
+          $releaseName = "RealTimeTranslator $env:RELEASE_VERSION"
           $tag = "v$env:RELEASE_VERSION"
           
           Write-Host ""
