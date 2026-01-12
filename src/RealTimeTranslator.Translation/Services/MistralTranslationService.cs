@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Text;
 using LLama;
 using LLama.Common;
+using LLama.Sampling;
 using RealTimeTranslator.Core.Interfaces;
 using RealTimeTranslator.Core.Models;
 using RealTimeTranslator.Core.Services;
@@ -82,7 +83,7 @@ public class MistralTranslationService : ITranslationService
             }
 
             // モデルをロード
-            await Task.Run(() => LoadModelFromPath(modelFilePath)).ConfigureAwait(false);
+            LoadModelFromPath(modelFilePath);
         }
         catch (Exception ex)
         {
@@ -183,65 +184,65 @@ public class MistralTranslationService : ITranslationService
             return text;
         }
 
-        return await Task.Run(() =>
+        try
         {
-            try
-            {
-                // 言語名を取得
-                var sourceLangName = GetLanguageName(sourceLanguage);
-                var targetLangName = GetLanguageName(targetLanguage);
+            // 言語名を取得
+            var sourceLangName = GetLanguageName(sourceLanguage);
+            var targetLangName = GetLanguageName(targetLanguage);
 
-                // Mistral Instruct形式のプロンプトを作成
-                var prompt = $@"<s>[INST] Translate the following {sourceLangName} text to {targetLangName}. Only output the translation, nothing else.
+            // Mistral Instruct形式のプロンプトを作成
+            var prompt = $@"<s>[INST] Translate the following {sourceLangName} text to {targetLangName}. Only output the translation, nothing else.
 
 {sourceLangName} text: {text}
 
 {targetLangName} translation: [/INST]";
 
-                LoggerService.LogDebug($"[MistralTranslation] プロンプト: {prompt}");
+            LoggerService.LogDebug($"[MistralTranslation] プロンプト: {prompt}");
 
-                // 推論パラメータを設定
-                var inferenceParams = new InferenceParams
+            // 推論パラメータを設定
+            var inferenceParams = new InferenceParams
+            {
+                MaxTokens = 256,
+                AntiPrompts = new List<string> { "</s>", "[INST]", "[/INST]" },
+                SamplingPipeline = new DefaultSamplingPipeline
                 {
-                    MaxTokens = 256,
                     Temperature = 0.3f,
                     TopP = 0.9f,
                     TopK = 40,
-                    RepeatPenalty = 1.1f,
-                    AntiPrompts = new List<string> { "</s>", "[INST]", "[/INST]" }
-                };
-
-                // 推論を実行
-                var sb = new StringBuilder();
-                var executor = new InteractiveExecutor(_context);
-
-                foreach (var outputToken in executor.Infer(prompt, inferenceParams))
-                {
-                    sb.Append(outputToken);
+                    RepeatPenalty = 1.1f
                 }
+            };
 
-                var result = sb.ToString().Trim();
+            // 推論を実行
+            var sb = new StringBuilder();
+            var executor = new InteractiveExecutor(_context);
 
-                // 結果のクリーンアップ
-                result = CleanupTranslationResult(result);
-
-                LoggerService.LogDebug($"[MistralTranslation] 生成結果: {result}");
-
-                if (string.IsNullOrWhiteSpace(result))
-                {
-                    LoggerService.LogWarning("[MistralTranslation] 空の翻訳結果");
-                    return text;
-                }
-
-                return result;
-            }
-            catch (Exception ex)
+            await foreach (var outputToken in executor.InferAsync(prompt, inferenceParams))
             {
-                LoggerService.LogError($"[MistralTranslation] 翻訳エラー: {ex.Message}");
-                LoggerService.LogDebug($"[MistralTranslation] StackTrace: {ex.StackTrace}");
+                sb.Append(outputToken);
+            }
+
+            var result = sb.ToString().Trim();
+
+            // 結果のクリーンアップ
+            result = CleanupTranslationResult(result);
+
+            LoggerService.LogDebug($"[MistralTranslation] 生成結果: {result}");
+
+            if (string.IsNullOrWhiteSpace(result))
+            {
+                LoggerService.LogWarning("[MistralTranslation] 空の翻訳結果");
                 return text;
             }
-        }).ConfigureAwait(false);
+
+            return result;
+        }
+        catch (Exception ex)
+        {
+            LoggerService.LogError($"[MistralTranslation] 翻訳エラー: {ex.Message}");
+            LoggerService.LogDebug($"[MistralTranslation] StackTrace: {ex.StackTrace}");
+            return text;
+        }
     }
 
     /// <summary>
@@ -312,9 +313,7 @@ public class MistralTranslationService : ITranslationService
             _modelParams = new ModelParams(modelPath)
             {
                 ContextSize = 2048,
-                GpuLayerCount = 35, // GPU使用（調整可能）
-                Seed = 1337,
-                EmbeddingMode = false
+                GpuLayerCount = 35 // GPU使用（調整可能）
             };
 
             // モデルをロード
