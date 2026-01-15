@@ -4,7 +4,9 @@ using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 using Microsoft.Win32;
 using RealTimeTranslator.Core.Interfaces;
 using RealTimeTranslator.Core.Models;
@@ -65,20 +67,15 @@ public partial class App : Application
             base.OnStartup(e);
             LoggerService.LogInfo("OnStartup: base.OnStartup完了");
 
-            // 設定を読み込み
-            var settingsPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "settings.json");
-            LoggerService.LogInfo($"OnStartup: settingsPath={settingsPath}");
-            var settings = AppSettings.Load(settingsPath);
-            LoggerService.LogInfo("OnStartup: 設定読み込み完了");
-
             // DIコンテナを構築
             var services = new ServiceCollection();
-            ConfigureServices(services, settings, settingsPath);
+            ConfigureServices(services);
             _serviceProvider = services.BuildServiceProvider();
             LoggerService.LogInfo("OnStartup: DI構築完了");
 
             var updateService = _serviceProvider.GetRequiredService<IUpdateService>();
-            updateService.UpdateSettings(settings.Update);
+            var optionsSnapshot = _serviceProvider.GetRequiredService<IOptionsSnapshot<AppSettings>>();
+            updateService.UpdateSettings(optionsSnapshot.Value.Update);
             _updateCancellation = new CancellationTokenSource();
             var updateApplied = updateService.CheckAndApplyStartupAsync(_updateCancellation.Token).GetAwaiter().GetResult();
             if (updateApplied)
@@ -117,15 +114,24 @@ public partial class App : Application
         }
     }
 
-    private void ConfigureServices(IServiceCollection services, AppSettings settings, string settingsPath)
+    private void ConfigureServices(IServiceCollection services)
     {
-        // 設定
-        services.AddSingleton(settings);
-        services.AddSingleton(settings.ASR);
-        services.AddSingleton(settings.Translation);
-        services.AddSingleton(settings.Overlay);
-        services.AddSingleton(settings.AudioCapture);
-        services.AddSingleton(new SettingsFilePath(settingsPath));
+        // 1. 設定ファイルのビルド
+        var configurationBuilder = new ConfigurationBuilder()
+            .SetBasePath(AppDomain.CurrentDomain.BaseDirectory)
+            .AddJsonFile("settings.json", optional: true, reloadOnChange: true);
+
+        IConfiguration configuration = configurationBuilder.Build();
+        LoggerService.LogInfo("ConfigureServices: 設定ファイルを読み込み完了");
+
+        // 2. IConfiguration 自体を登録（必要な場合）
+        services.AddSingleton(configuration);
+
+        // 3. IOptionsパターンの登録
+        services.Configure<AppSettings>(configuration);
+
+        // 4. 設定保存サービスの登録
+        services.AddSingleton<ISettingsService, SettingsService>();
 
         // HttpClient（シングルトン）
         services.AddSingleton<HttpClient>(sp =>
@@ -138,14 +144,14 @@ public partial class App : Application
         // モデルダウンロードサービス
         services.AddSingleton<ModelDownloadService>();
 
+        // プロンプトビルダーファクトリ
+        services.AddSingleton<PromptBuilderFactory>();
+
         // サービス
         services.AddSingleton<IAudioCaptureService, AudioCaptureService>();
 
         // VADService の登録 (依存関係はDIが自動解決)
-        services.AddSingleton<IVADService>(sp => new VADService(
-            sp.GetRequiredService<AudioCaptureSettings>(),
-            sp.GetRequiredService<ModelDownloadService>()
-        ));
+        services.AddSingleton<IVADService, VADService>();
 
         services.AddSingleton<IASRService, WhisperASRService>();
         services.AddSingleton<ITranslationService, MistralTranslationService>(); // Mistral Q3_K_S (高速量子化)
@@ -159,8 +165,8 @@ public partial class App : Application
         services.AddSingleton<MainViewModel>();
         services.AddSingleton(sp =>
             new SettingsViewModel(
-                sp.GetRequiredService<AppSettings>(),
-                sp.GetRequiredService<SettingsFilePath>().Value,
+                sp.GetRequiredService<IOptionsSnapshot<AppSettings>>(),
+                sp.GetRequiredService<ISettingsService>(),
                 sp.GetRequiredService<OverlayViewModel>()));
 
         services.AddTransient<SettingsWindow>();

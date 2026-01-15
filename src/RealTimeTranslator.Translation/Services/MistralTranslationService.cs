@@ -6,6 +6,7 @@ using LLama.Sampling;
 using RealTimeTranslator.Core.Interfaces;
 using RealTimeTranslator.Core.Models;
 using RealTimeTranslator.Core.Services;
+using RealTimeTranslator.Translation.Interfaces;
 
 namespace RealTimeTranslator.Translation.Services;
 
@@ -25,6 +26,7 @@ public class MistralTranslationService : ITranslationService
 
     private readonly TranslationSettings _settings;
     private readonly ModelDownloadService _downloadService;
+    private readonly PromptBuilderFactory _promptBuilderFactory;
     private readonly Dictionary<string, string> _cache = new();
     private readonly LinkedList<string> _cacheOrder = new();
     private readonly Dictionary<string, LinkedListNode<string>> _cacheNodeMap = new();
@@ -37,6 +39,7 @@ public class MistralTranslationService : ITranslationService
     private StatelessExecutor? _executor;
     private TranslationModelType _detectedModelType = TranslationModelType.Auto;
     private string _modelLabel = "翻訳モデル";
+    private IPromptBuilder? _promptBuilder;
 
     private Dictionary<string, string> _preTranslationDict = new();
     private Dictionary<string, string> _postTranslationDict = new();
@@ -48,15 +51,25 @@ public class MistralTranslationService : ITranslationService
     public event EventHandler<ModelDownloadProgressEventArgs>? ModelDownloadProgress;
     public event EventHandler<ModelStatusChangedEventArgs>? ModelStatusChanged;
 
-    public MistralTranslationService(TranslationSettings settings, ModelDownloadService downloadService)
+    /// <summary>
+    /// MistralTranslationServiceのコンストラクタ
+    /// </summary>
+    /// <param name="settings">翻訳設定</param>
+    /// <param name="downloadService">モデルダウンロードサービス</param>
+    /// <param name="promptBuilderFactory">プロンプトビルダーファクトリ</param>
+    public MistralTranslationService(TranslationSettings settings, ModelDownloadService downloadService, PromptBuilderFactory promptBuilderFactory)
     {
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
         _downloadService = downloadService ?? throw new ArgumentNullException(nameof(downloadService));
+        _promptBuilderFactory = promptBuilderFactory ?? throw new ArgumentNullException(nameof(promptBuilderFactory));
 
         _downloadService.DownloadProgress += (sender, e) => ModelDownloadProgress?.Invoke(this, e);
         _downloadService.StatusChanged += (sender, e) => ModelStatusChanged?.Invoke(this, e);
     }
 
+    /// <summary>
+    /// モデルステータス変更時のイベント発火
+    /// </summary>
     protected virtual void OnModelStatusChanged(ModelStatusChangedEventArgs e)
     {
         ModelStatusChanged?.Invoke(this, e);
@@ -91,6 +104,7 @@ public class MistralTranslationService : ITranslationService
             // モデルタイプを検出
             _detectedModelType = DetectModelType(modelFilePath);
             _modelLabel = GetModelLabel(_detectedModelType);
+            _promptBuilder = _promptBuilderFactory.GetBuilder(_detectedModelType);
             LoggerService.LogInfo($"翻訳モデルタイプ検出: {_detectedModelType} ({_modelLabel})");
 
             // モデルをロード
@@ -307,7 +321,7 @@ public class MistralTranslationService : ITranslationService
     /// </summary>
     private async Task<string> TranslateWithMistralAsync(string text, string sourceLanguage, string targetLanguage)
     {
-        if (!_isModelLoaded || _model == null)
+        if (!_isModelLoaded || _model == null || _promptBuilder == null)
         {
             LoggerService.LogError("[Translation] モデルが読み込まれていません");
             return text;
@@ -319,9 +333,9 @@ public class MistralTranslationService : ITranslationService
             var sourceLangName = GetLanguageName(sourceLanguage);
             var targetLangName = GetLanguageName(targetLanguage);
 
-            // モデルタイプに応じたプロンプトを作成
-            var prompt = BuildPrompt(text, sourceLangName, targetLangName);
-            var antiPrompts = GetAntiPrompts();
+            // Strategy パターン: プロンプトビルダーがプロンプトを生成
+            var prompt = _promptBuilder.BuildPrompt(text, sourceLangName, targetLangName);
+            var antiPrompts = _promptBuilder.GetAntiPrompts();
 
             LoggerService.LogDebug($"[Translation] プロンプト: {prompt}");
 
@@ -398,8 +412,8 @@ public class MistralTranslationService : ITranslationService
 
             var result = sb.ToString().Trim();
 
-            // 結果のクリーンアップ
-            result = CleanupTranslationResult(result);
+            // Strategy パターン: プロンプトビルダーが結果をクリーンアップ
+            result = _promptBuilder.ParseOutput(result);
 
             LoggerService.LogDebug($"[Translation] 生成結果: {result}");
 
@@ -427,75 +441,14 @@ public class MistralTranslationService : ITranslationService
     }
 
     /// <summary>
-    /// モデルタイプに応じたプロンプトを生成
-    /// </summary>
-    private string BuildPrompt(string text, string sourceLangName, string targetLangName)
-    {
-        return _detectedModelType switch
-        {
-            TranslationModelType.Phi3 => BuildPhi3Prompt(text, sourceLangName, targetLangName),
-            TranslationModelType.Gemma => BuildGemmaPrompt(text, sourceLangName, targetLangName),
-            TranslationModelType.Qwen => BuildQwenPrompt(text, sourceLangName, targetLangName),
-            TranslationModelType.Mistral => BuildMistralPrompt(text, sourceLangName, targetLangName),
-            _ => BuildPhi3Prompt(text, sourceLangName, targetLangName)
-        };
-    }
-
-    /// <summary>
-    /// Phi-3形式のプロンプト（シンプルで高品質）
-    /// </summary>
-    private static string BuildPhi3Prompt(string text, string sourceLangName, string targetLangName)
-    {
-        return $"<|user|>\nTranslate this {sourceLangName} text to {targetLangName}. Reply with ONLY the translation, no explanations.\n\n{text}<|end|>\n<|assistant|>\n";
-    }
-
-    /// <summary>
-    /// Gemma形式のプロンプト
-    /// </summary>
-    private static string BuildGemmaPrompt(string text, string sourceLangName, string targetLangName)
-    {
-        return $"<start_of_turn>user\nTranslate this {sourceLangName} text to {targetLangName}. Reply with ONLY the translation.\n\n{text}<end_of_turn>\n<start_of_turn>model\n";
-    }
-
-    /// <summary>
-    /// Qwen形式のプロンプト
-    /// </summary>
-    private static string BuildQwenPrompt(string text, string sourceLangName, string targetLangName)
-    {
-        return $"<|im_start|>user\nTranslate this {sourceLangName} text to {targetLangName}. Reply with ONLY the translation.\n\n{text}<|im_end|>\n<|im_start|>assistant\n";
-    }
-
-    /// <summary>
-    /// Mistral形式のプロンプト
-    /// </summary>
-    private static string BuildMistralPrompt(string text, string sourceLangName, string targetLangName)
-    {
-        return $"<s>[INST] Translate this {sourceLangName} text to {targetLangName}. Reply with ONLY the translation, no explanations or notes.\n\n{text} [/INST] ";
-    }
-
-    /// <summary>
-    /// モデルタイプに応じたアンチプロンプト（早期終了用）を取得
-    /// </summary>
-    private List<string> GetAntiPrompts()
-    {
-        var common = new List<string> { "\n\n", "Note:", "Explanation:", "Translation:", "Original:" };
-
-        return _detectedModelType switch
-        {
-            TranslationModelType.Phi3 => new List<string>(common) { "<|end|>", "<|user|>", "<|assistant|>" },
-            TranslationModelType.Gemma => new List<string>(common) { "<end_of_turn>", "<start_of_turn>" },
-            TranslationModelType.Qwen => new List<string>(common) { "<|im_end|>", "<|im_start|>" },
-            TranslationModelType.Mistral => new List<string>(common) { "</s>", "[INST]", "[/INST]" },
-            _ => new List<string>(common) { "<|end|>", "</s>" }
-        };
-    }
-
-    /// <summary>
     /// 生成を早期終了すべきか判定
     /// </summary>
     private static bool ShouldStopGeneration(string currentText, string targetLanguage)
     {
-        if (string.IsNullOrEmpty(currentText)) return false;
+        if (string.IsNullOrEmpty(currentText))
+        {
+            return false;
+        }
 
         // 日本語の場合、句点で終了判定
         if (targetLanguage == "ja")
@@ -514,178 +467,6 @@ public class MistralTranslationService : ITranslationService
         }
 
         return false;
-    }
-
-    /// <summary>
-    /// 翻訳結果をクリーンアップ
-    /// </summary>
-    private string CleanupTranslationResult(string result)
-    {
-        if (string.IsNullOrWhiteSpace(result))
-            return result;
-
-        // モデル固有のトークンを削除
-        result = RemoveModelTokens(result);
-
-        result = ExtractTranslationOnly(result);
-
-        // 英語の括弧内を削除（ローマ字や説明が入っていることが多い）
-        // ただし日本語の括弧は保持
-        result = RemoveEnglishParentheses(result);
-
-        // 改行を削除（1行の翻訳結果を期待）
-        result = result.Replace("\n", " ").Replace("\r", "");
-
-        // 複数のスペースを1つに
-        while (result.Contains("  "))
-        {
-            result = result.Replace("  ", " ");
-        }
-
-        // 末尾の句点が複数ある場合は1つに統一
-        while (result.EndsWith("。。"))
-        {
-            result = result[..^1];
-        }
-
-        return result.Trim();
-    }
-
-    /// <summary>
-    /// モデル固有のトークンを削除
-    /// </summary>
-    private static string RemoveModelTokens(string result)
-    {
-        // 共通のトークン
-        result = result.Replace("</s>", "")
-                       .Replace("<s>", "")
-                       .Replace("<unk>", "")
-                       .Replace("<pad>", "");
-
-        // Phi-3トークン
-        result = result.Replace("<|end|>", "")
-                       .Replace("<|user|>", "")
-                       .Replace("<|assistant|>", "")
-                       .Replace("<|system|>", "");
-
-        // Gemmaトークン
-        result = result.Replace("<start_of_turn>", "")
-                       .Replace("<end_of_turn>", "");
-
-        // Qwenトークン
-        result = result.Replace("<|im_start|>", "")
-                       .Replace("<|im_end|>", "");
-
-        // Mistralトークン
-        result = result.Replace("[INST]", "")
-                       .Replace("[/INST]", "");
-
-        return result;
-    }
-
-    /// <summary>
-    /// 英語の括弧内を削除（日本語の括弧は保持）
-    /// </summary>
-    private static string RemoveEnglishParentheses(string result)
-    {
-        // 英語の丸括弧内に英字が含まれている場合のみ削除
-        while (true)
-        {
-            var parenStartIndex = result.IndexOf('(');
-            if (parenStartIndex < 0)
-                break;
-
-            var parenEndIndex = result.IndexOf(')', parenStartIndex);
-            if (parenEndIndex <= parenStartIndex)
-                break;
-
-            var content = result.Substring(parenStartIndex + 1, parenEndIndex - parenStartIndex - 1);
-
-            // 括弧内に英字が多く含まれている場合は削除
-            var englishCount = content.Count(c => (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'));
-            if (englishCount > content.Length * 0.5)
-            {
-                result = (result[..parenStartIndex] + result[(parenEndIndex + 1)..]).Trim();
-            }
-            else
-            {
-                // 日本語の括弧は保持するためbreakして次へ
-                break;
-            }
-        }
-        return result;
-    }
-
-    private string ExtractTranslationOnly(string result)
-    {
-        if (string.IsNullOrWhiteSpace(result))
-            return result;
-
-        var trimmed = result.Trim();
-
-        // よくある説明文の先頭を除去
-        var prefixes = new[]
-        {
-            "In Japanese", "In Japanese,", "In Japanese:", "Japanese translation", "Japanese:",
-            "日本語訳", "日本語:", "日本語では", "和訳"
-        };
-
-        foreach (var prefix in prefixes)
-        {
-            if (trimmed.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
-            {
-                var colonIndex = trimmed.IndexOf(':');
-                if (colonIndex >= 0 && colonIndex + 1 < trimmed.Length)
-                {
-                    trimmed = trimmed[(colonIndex + 1)..].Trim();
-                }
-                break;
-            }
-        }
-
-        // 引用符/かぎ括弧の中身を優先
-        var quoted = ExtractQuotedText(trimmed);
-        if (!string.IsNullOrWhiteSpace(quoted))
-        {
-            return quoted.Trim();
-        }
-
-        // 最初の改行以降は削除
-        var newlineIndex = trimmed.IndexOfAny(new[] { '\n', '\r' });
-        if (newlineIndex >= 0)
-        {
-            trimmed = trimmed[..newlineIndex].Trim();
-        }
-
-        return trimmed;
-    }
-
-    private static string? ExtractQuotedText(string text)
-    {
-        var quotePairs = new[]
-        {
-            new[] { "「", "」" },
-            new[] { "『", "』" },
-            new[] { "\"", "\"" },
-            new[] { "“", "”" }
-        };
-
-        foreach (var pair in quotePairs)
-        {
-            var start = text.IndexOf(pair[0], StringComparison.Ordinal);
-            if (start < 0) continue;
-            var end = text.IndexOf(pair[1], start + pair[0].Length, StringComparison.Ordinal);
-            if (end > start)
-            {
-                var extracted = text.Substring(start + pair[0].Length, end - start - pair[0].Length);
-                if (!string.IsNullOrWhiteSpace(extracted))
-                {
-                    return extracted;
-                }
-            }
-        }
-
-        return null;
     }
 
     /// <summary>
@@ -875,6 +656,9 @@ public class MistralTranslationService : ITranslationService
         }
     }
 
+    /// <summary>
+    /// 翻訳前の用語正規化を適用
+    /// </summary>
     private string ApplyPreTranslation(string text)
     {
         foreach (var kvp in _preTranslationDict)
@@ -884,6 +668,9 @@ public class MistralTranslationService : ITranslationService
         return text;
     }
 
+    /// <summary>
+    /// 翻訳後の補正を適用
+    /// </summary>
     private string ApplyPostTranslation(string text)
     {
         foreach (var kvp in _postTranslationDict)
