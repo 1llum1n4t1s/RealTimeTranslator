@@ -34,7 +34,7 @@ public partial class SettingsViewModel : ObservableObject
             "Noto Sans CJK JP"
         });
         FontSizes = new ReadOnlyCollection<double>(new[] { 12d, 14d, 16d, 18d, 20d, 24d, 28d, 32d, 36d, 40d });
-        TextColorOptions = new ReadOnlyCollection<ColorOption>(new[]
+        TextColorOptions = new ReadOnlyCollection<ColorOption>(new ColorOption[]
         {
             new("白", "#FFFFFFFF"),
             new("薄白", "#CCFFFFFF"),
@@ -43,7 +43,7 @@ public partial class SettingsViewModel : ObservableObject
             new("緑", "#FF00FF7F"),
             new("赤", "#FFFF6B6B")
         });
-        BackgroundColorOptions = new ReadOnlyCollection<ColorOption>(new[]
+        BackgroundColorOptions = new ReadOnlyCollection<ColorOption>(new ColorOption[]
         {
             new("黒（標準）", "#80000000"),
             new("黒（濃い）", "#CC000000"),

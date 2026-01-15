@@ -155,10 +155,49 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
 
             try
             {
-                LoggerService.LogDebug($"ProcessLoopbackCapture: Calling GetMixFormat on IAudioClient");
-                ThrowOnError(_audioClient.GetMixFormat(out formatPointer));
-                LoggerService.LogDebug($"ProcessLoopbackCapture: GetMixFormat succeeded, formatPointer=0x{formatPointer:X}");
-                WaveFormat = CreateWaveFormat(formatPointer);
+                LoggerService.LogDebug($"ProcessLoopbackCapture: Getting device mix format from default render device");
+
+                // デバイス自体のミックスフォーマットを取得
+                // Process Loopback では GetMixFormat が NotImplemented なため、
+                // 代わりにデバイス（スピーカー）のフォーマットを使用する
+                WaveFormat deviceMixFormat;
+                try
+                {
+                    deviceMixFormat = device!.AudioClient.MixFormat;
+                    LoggerService.LogDebug($"ProcessLoopbackCapture: Device MixFormat obtained: SampleRate={deviceMixFormat.SampleRate}, Channels={deviceMixFormat.Channels}, BitsPerSample={deviceMixFormat.BitsPerSample}, Encoding={deviceMixFormat.Encoding}");
+                }
+                catch (Exception ex)
+                {
+                    LoggerService.LogWarning($"ProcessLoopbackCapture: Failed to get device MixFormat: {ex.Message}. Using fallback format (48kHz, Stereo, Float).");
+                    deviceMixFormat = WaveFormat.CreateIeeeFloatWaveFormat(48000, 2);
+                }
+
+                // デバイスのフォーマット情報をベースに、Float 32-bit の形式を構築
+                // Process Loopback は自動変換機能があるため、指定フォーマットにデータを変換してくれる
+                var processLoopbackFormat = new WaveFormatEx
+                {
+                    FormatTag = WaveFormatTag.IeeeFloat,
+                    Channels = (short)deviceMixFormat.Channels,
+                    SampleRate = deviceMixFormat.SampleRate,
+                    BitsPerSample = 32,
+                    BlockAlign = (short)(deviceMixFormat.Channels * 4), // Channels * BytesPerSample
+                    AvgBytesPerSec = deviceMixFormat.SampleRate * deviceMixFormat.Channels * 4, // SampleRate * BlockAlign
+                    Size = 0
+                };
+
+                LoggerService.LogDebug($"ProcessLoopbackCapture: Prepared format for Initialize: SampleRate={processLoopbackFormat.SampleRate}, Channels={processLoopbackFormat.Channels}, BitsPerSample={processLoopbackFormat.BitsPerSample}");
+
+                // アンマネージドメモリに構造体をコピー
+                var size = Marshal.SizeOf(processLoopbackFormat);
+                formatPointer = Marshal.AllocCoTaskMem(size);
+                Marshal.StructureToPtr(processLoopbackFormat, formatPointer, false);
+
+                // WaveFormat プロパティを設定
+                WaveFormat = WaveFormat.CreateIeeeFloatWaveFormat(processLoopbackFormat.SampleRate, processLoopbackFormat.Channels);
+                LoggerService.LogDebug($"ProcessLoopbackCapture: WaveFormat property set: {WaveFormat}");
+
+                // Process Loopback クライアントを初期化
+                // Windows のオーディオエンジンが自動的に変換してくれる
                 InitializeAudioClient(formatPointer, WaveFormat);
             }
             finally
@@ -797,9 +836,13 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
                 LoggerService.LogDebug($"GetActivatedInterface: Marshal.GetObjectForIUnknown returned {obj?.GetType().Name ?? "null"}");
 
                 // 変換できたら IAudioClient にキャスト
+                if (obj == null)
+                {
+                    throw new InvalidOperationException("Marshal.GetObjectForIUnknown returned null");
+                }
+
                 var audioClient = (IAudioClient)obj;
                 LoggerService.LogDebug("GetActivatedInterface: Successfully cast to IAudioClient");
-
                 return audioClient;
             }
             catch (InvalidCastException castEx)
