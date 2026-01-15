@@ -140,10 +140,19 @@ public partial class App : Application
 
         // サービス
         services.AddSingleton<IAudioCaptureService, AudioCaptureService>();
-        services.AddSingleton<IVADService, VADService>();
+
+        // VADService の登録 (依存関係はDIが自動解決)
+        services.AddSingleton<IVADService>(sp => new VADService(
+            sp.GetRequiredService<AudioCaptureSettings>(),
+            sp.GetRequiredService<ModelDownloadService>()
+        ));
+
         services.AddSingleton<IASRService, WhisperASRService>();
         services.AddSingleton<ITranslationService, MistralTranslationService>(); // Mistral Q3_K_S (高速量子化)
         services.AddSingleton<IUpdateService, UpdateService>();
+
+        // 翻訳パイプラインサービス
+        services.AddSingleton<ITranslationPipelineService, TranslationPipelineService>();
 
         // ViewModels
         services.AddSingleton<OverlayViewModel>();

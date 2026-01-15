@@ -1,46 +1,72 @@
-using System.Runtime.InteropServices;
+using Microsoft.ML.OnnxRuntime;
+using Microsoft.ML.OnnxRuntime.Tensors;
 using RealTimeTranslator.Core.Interfaces;
 using RealTimeTranslator.Core.Models;
-using static RealTimeTranslator.Core.Services.LoggerService;
 
 namespace RealTimeTranslator.Core.Services;
 
 /// <summary>
-/// VAD（Voice Activity Detection）サービス
-/// エネルギーベースの簡易VAD実装
+/// Silero VAD (ONNX) を使用した発話区間検出サービス
+/// AIモデルにより、ノイズやBGMと人の声を高精度に識別する
 /// </summary>
-public class VADService : IVADService
+public class VADService : IVADService, IDisposable
 {
-    private const int FramesPerSecond = 100; // 1秒あたりのフレーム数 (10ms/フレーム)
-    private const float BaseEnergyThreshold = 0.008f; // 基本エネルギー閾値（感度向上）
-    private const float MaxEnergyThreshold = 0.1f; // 最大エネルギー閾値
+    private const string ModelFileName = "silero_vad.onnx";
+    private const string ModelDownloadUrl = "https://github.com/snakers4/silero-vad/raw/master/files/silero_vad.onnx";
 
-    private int _sampleRate;
-    private float _sensitivity;
-    private float _minSpeechDuration;
-    private float _maxSpeechDuration;
-    private float _silenceThreshold;
+    // Silero VAD v4 は以下のチャンクサイズ(16kHz時)をサポート: 512, 1024, 1536
+    private const int WindowSizeSamples = 512;
+    private const int SampleRate = 16000;
 
-    private readonly List<float> _audioBuffer = new();
-    private readonly object _settingsLock = new();
-    private readonly object _stateLock = new(); // スレッドセーフティのための状態ロック
-    private float _currentTime = 0;
+    private readonly AudioCaptureSettings _settings;
+    private readonly ModelDownloadService _downloadService;
+    private readonly object _lock = new();
+
+    // VADの状態
+    private InferenceSession? _session;
+    private bool _isModelLoaded = false;
+    private readonly List<float> _audioBuffer = new();        // 入力バッファ（処理待ちデータ）
+    private readonly List<float> _speechBuffer = new();       // 現在の発話データ蓄積用
+    private float[] _vadState = new float[2 * 1 * 128];       // VADの内部ステート (2, batch, 128)
     private bool _isSpeaking = false;
-    private float _speechStartTime = 0;
-    private readonly List<float> _currentSpeechBuffer = new();
+    private float _speechStartTimestamp = 0;
+    private float _currentTimestamp = 0;
     private float _silenceDuration = 0;
 
-    public VADService(AudioCaptureSettings? settings = null)
+    // パラメータ
+    private float _threshold = 0.5f;
+
+    /// <summary>
+    /// VADの感度（0.0～1.0）
+    /// 感度が高いほど声を敏感に検出する
+    /// </summary>
+    public float Sensitivity
     {
-        var s = settings ?? new AudioCaptureSettings();
-        lock (_settingsLock)
-        {
-            _sampleRate = s.SampleRate;
-            _sensitivity = s.VADSensitivity;
-            _minSpeechDuration = s.MinSpeechDuration;
-            _maxSpeechDuration = s.MaxSpeechDuration;
-            _silenceThreshold = s.SilenceThreshold;
-        }
+        get => _threshold;
+        set => _threshold = Math.Clamp(1.0f - value, 0.1f, 0.9f); // 感度が高いほど閾値を下げる
+    }
+
+    /// <summary>
+    /// 最小発話長（秒）
+    /// </summary>
+    public float MinSpeechDuration { get; set; }
+
+    /// <summary>
+    /// 最大発話長（秒）
+    /// </summary>
+    public float MaxSpeechDuration { get; set; }
+
+    /// <summary>
+    /// VADサービスのコンストラクタ
+    /// </summary>
+    public VADService(AudioCaptureSettings settings, ModelDownloadService downloadService)
+    {
+        _settings = settings ?? throw new ArgumentNullException(nameof(settings));
+        _downloadService = downloadService ?? throw new ArgumentNullException(nameof(downloadService));
+        ApplySettings(_settings);
+
+        // モデルの準備（非同期で開始）
+        Task.Run(InitializeModelAsync);
     }
 
     /// <summary>
@@ -48,83 +74,49 @@ public class VADService : IVADService
     /// </summary>
     public void ApplySettings(AudioCaptureSettings settings)
     {
-        if (settings == null)
+        lock (_lock)
         {
-            throw new ArgumentNullException(nameof(settings));
-        }
-
-        lock (_settingsLock)
-        {
-            _sampleRate = settings.SampleRate;
-            _sensitivity = settings.VADSensitivity;
-            _minSpeechDuration = settings.MinSpeechDuration;
-            _maxSpeechDuration = settings.MaxSpeechDuration;
-            _silenceThreshold = settings.SilenceThreshold;
-        }
-
-        Reset();
-    }
-
-    /// <summary>
-    /// VADの感度設定（0.0～1.0）
-    /// </summary>
-    public float Sensitivity
-    {
-        get
-        {
-            lock (_settingsLock)
-            {
-                return _sensitivity;
-            }
-        }
-        set
-        {
-            lock (_settingsLock)
-            {
-                _sensitivity = Math.Clamp(value, 0.0f, 1.0f);
-            }
+            // 感度(0.0-1.0)を閾値(1.0-0.0)に変換。デフォルト感度0.5なら閾値0.5
+            Sensitivity = settings.VADSensitivity;
+            MinSpeechDuration = settings.MinSpeechDuration;
+            MaxSpeechDuration = settings.MaxSpeechDuration;
         }
     }
 
     /// <summary>
-    /// 最小発話長（秒）
+    /// モデルの非同期初期化
     /// </summary>
-    public float MinSpeechDuration
+    private async Task InitializeModelAsync()
     {
-        get
+        try
         {
-            lock (_settingsLock)
-            {
-                return _minSpeechDuration;
-            }
-        }
-        set
-        {
-            lock (_settingsLock)
-            {
-                _minSpeechDuration = Math.Max(value, 0.0f);
-            }
-        }
-    }
+            // モデルファイルのパス解決とダウンロード
+            var modelPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "models", "vad");
+            var resolvedPath = await _downloadService.EnsureModelAsync(
+                modelPath,
+                ModelFileName,
+                ModelDownloadUrl,
+                "VAD",
+                "Silero VAD Model"
+            );
 
-    /// <summary>
-    /// 最大発話長（秒）
-    /// </summary>
-    public float MaxSpeechDuration
-    {
-        get
-        {
-            lock (_settingsLock)
+            if (!string.IsNullOrEmpty(resolvedPath) && File.Exists(resolvedPath))
             {
-                return _maxSpeechDuration;
+                lock (_lock)
+                {
+                    var options = new SessionOptions();
+                    options.RegisterOrtExtensions(); // 必要に応じて
+                    options.LogSeverityLevel = OrtLoggingLevel.ORT_LOGGING_LEVEL_ERROR;
+                    _session = new InferenceSession(resolvedPath, options);
+                    _isModelLoaded = true;
+                    LoggerService.LogInfo("Silero VAD model loaded successfully.");
+                    ResetState();
+                }
             }
         }
-        set
+        catch (Exception ex)
         {
-            lock (_settingsLock)
-            {
-                _maxSpeechDuration = Math.Max(value, 0.0f);
-            }
+            LoggerService.LogError($"Failed to initialize Silero VAD model: {ex.Message}");
         }
     }
 
@@ -134,94 +126,152 @@ public class VADService : IVADService
     public IEnumerable<SpeechSegment> DetectSpeech(float[] audioData)
     {
         if (audioData == null || audioData.Length == 0)
+            yield break;
+
+        lock (_lock)
         {
-            return Enumerable.Empty<SpeechSegment>();
-        }
+            // 入力データをバッファに追加
+            _audioBuffer.AddRange(audioData);
 
-        lock (_stateLock)
-        {
-            var segments = new List<SpeechSegment>();
-
-            // 設定値をスレッドセーフに読み取り
-            int frameSize;
-            float maxSpeechDuration;
-            float silenceThreshold;
-            lock (_settingsLock)
+            // WindowSizeSamples (512サンプル) 単位で処理
+            while (_audioBuffer.Count >= WindowSizeSamples)
             {
-                frameSize = _sampleRate / FramesPerSecond;
-                maxSpeechDuration = _maxSpeechDuration;
-                silenceThreshold = _silenceThreshold;
-            }
+                // バッファから切り出し
+                var chunk = _audioBuffer.GetRange(0, WindowSizeSamples).ToArray();
+                _audioBuffer.RemoveRange(0, WindowSizeSamples);
 
-            float frameDuration = 1.0f / FramesPerSecond;
+                // 推論実行
+                float prob = RunInference(chunk);
 
-            for (int i = 0; i < audioData.Length; i += frameSize)
-            {
-                int frameEnd = Math.Min(i + frameSize, audioData.Length);
-                var frame = audioData.AsSpan(i, frameEnd - i);
+                // 時間更新 (16kHzで512サンプル = 32ms)
+                float chunkDuration = (float)WindowSizeSamples / SampleRate;
+                _currentTimestamp += chunkDuration;
 
-                // フレームのエネルギー（RMS）を計算
-                float energy = CalculateRMS(frame);
-                bool isSpeech = energy > GetEnergyThreshold();
-
-                if (isSpeech)
+                // 判定ロジック
+                if (prob >= _threshold)
                 {
+                    // 発話検出
                     if (!_isSpeaking)
                     {
-                        // 発話開始
                         _isSpeaking = true;
-                        _speechStartTime = _currentTime;
-                        _currentSpeechBuffer.Clear();
-                        _silenceDuration = 0;
-                        LogDebug($"[VAD] 発話開始: StartTime={_currentTime:F2}秒, Energy={energy:F4}");
+                        _speechStartTimestamp = _currentTimestamp - chunkDuration;
+                        _speechBuffer.Clear();
+                        LoggerService.LogDebug($"[VAD] Speech started (Prob: {prob:F2})");
                     }
 
-                    // Span to Array 変換を避けて直接追加（パフォーマンス最適化）
-                    AddSpanToList(_currentSpeechBuffer, frame);
+                    _speechBuffer.AddRange(chunk);
                     _silenceDuration = 0;
                 }
-                else if (_isSpeaking)
+                else
                 {
-                    // 発話中の無音
-                    _silenceDuration += frameDuration;
-                    // Span to Array 変換を避けて直接追加（パフォーマンス最適化）
-                    AddSpanToList(_currentSpeechBuffer, frame);
-
-                    // 無音が閾値を超えたら発話終了
-                    if (_silenceDuration >= silenceThreshold)
+                    // 非発話
+                    if (_isSpeaking)
                     {
-                        var segment = CreateSegment();
-                        if (segment != null)
+                        _speechBuffer.AddRange(chunk);
+                        _silenceDuration += chunkDuration;
+
+                        // 無音が一定時間続いたら発話終了とみなす
+                        if (_silenceDuration > _settings.SilenceThreshold)
                         {
-                            var duration = segment.EndTime - segment.StartTime;
-                            LogDebug($"[VAD] 発話終了（無音検出）: Duration={duration:F2}秒, AudioLength={segment.AudioData.Length} samples, SilenceDuration={_silenceDuration:F2}秒");
-                            segments.Add(segment);
+                            var segment = FinalizeSegment();
+                            if (segment != null)
+                                yield return segment;
                         }
-                        _isSpeaking = false;
-                        _currentSpeechBuffer.Clear();
                     }
                 }
 
-                // 最大発話長を超えた場合は強制的に分割
-                float currentSpeechDuration = _currentTime - _speechStartTime;
-                if (_isSpeaking && currentSpeechDuration >= maxSpeechDuration)
+                // 最大発話長チェック
+                if (_isSpeaking)
                 {
-                    var segment = CreateSegment();
-                    if (segment != null)
+                    float currentDuration = _currentTimestamp - _speechStartTimestamp;
+                    if (currentDuration >= MaxSpeechDuration)
                     {
-                        var duration = segment.EndTime - segment.StartTime;
-                        LogDebug($"[VAD] 発話終了（最大長到達）: Duration={duration:F2}秒, AudioLength={segment.AudioData.Length} samples, MaxDuration={maxSpeechDuration:F2}秒");
-                        segments.Add(segment);
+                        var segment = FinalizeSegment();
+                        if (segment != null)
+                            yield return segment;
                     }
-                    _isSpeaking = false;
-                    _currentSpeechBuffer.Clear();
                 }
-
-                _currentTime += frameDuration;
             }
-
-            return segments;
         }
+    }
+
+    /// <summary>
+    /// VADの推論を実行
+    /// </summary>
+    private float RunInference(float[] chunk)
+    {
+        if (!_isModelLoaded || _session == null)
+            return 0f;
+
+        try
+        {
+            // Input tensor: [batch, samples] -> [1, 512]
+            var inputTensor = new DenseTensor<float>(new Memory<float>(chunk), new[] { 1, WindowSizeSamples });
+
+            // State tensor: [2, batch, 128] -> [2, 1, 128]
+            var stateTensor = new DenseTensor<float>(new Memory<float>(_vadState), new[] { 2, 1, 128 });
+
+            // SR tensor: [1] (Sample Rate)
+            var srTensor = new DenseTensor<long>(new Memory<long>(new[] { (long)SampleRate }), new[] { 1 });
+
+            var inputs = new List<NamedOnnxValue>
+            {
+                NamedOnnxValue.CreateFromTensor("input", inputTensor),
+                NamedOnnxValue.CreateFromTensor("state", stateTensor),
+                NamedOnnxValue.CreateFromTensor("sr", srTensor)
+            };
+
+            using var results = _session.Run(inputs);
+
+            // Output: probability
+            var outputTensor = results.First(x => x.Name == "output").AsTensor<float>();
+            float probability = outputTensor[0];
+
+            // Update State
+            var stateOutput = results.First(x => x.Name == "stateN").AsTensor<float>();
+            var stateSpan = stateOutput.ToArray();
+            Array.Copy(stateSpan, _vadState, _vadState.Length);
+
+            return probability;
+        }
+        catch (Exception ex)
+        {
+            LoggerService.LogDebug($"VAD Inference Error: {ex.Message}");
+            return 0f;
+        }
+    }
+
+    /// <summary>
+    /// 現在の発話セグメントを確定して返す
+    /// </summary>
+    private SpeechSegment? FinalizeSegment()
+    {
+        _isSpeaking = false;
+        _silenceDuration = 0;
+
+        if (_speechBuffer.Count == 0)
+            return null;
+
+        float duration = (float)_speechBuffer.Count / SampleRate;
+
+        // 最小発話長チェック
+        if (duration < MinSpeechDuration)
+        {
+            _speechBuffer.Clear();
+            return null;
+        }
+
+        LoggerService.LogDebug($"[VAD] Segment finalized: {duration:F2}s");
+
+        var segment = new SpeechSegment
+        {
+            StartTime = _speechStartTimestamp,
+            EndTime = _currentTimestamp,
+            AudioData = _speechBuffer.ToArray()
+        };
+
+        _speechBuffer.Clear();
+        return segment;
     }
 
     /// <summary>
@@ -229,117 +279,29 @@ public class VADService : IVADService
     /// </summary>
     public SpeechSegment? FlushPendingSegment()
     {
-        lock (_stateLock)
+        lock (_lock)
         {
-            if (!_isSpeaking || _currentSpeechBuffer.Count == 0)
-            {
-                ResetInternal();
-                return null;
-            }
-
-            var segment = CreateSegment();
-            ResetInternal();
-            return segment;
-        }
-    }
-
-    private SpeechSegment? CreateSegment()
-    {
-        float duration = _currentTime - _speechStartTime;
-
-        // 最小発話長未満は無視
-        float minSpeechDuration;
-        lock (_settingsLock)
-        {
-            minSpeechDuration = _minSpeechDuration;
-        }
-
-        if (duration < minSpeechDuration)
-        {
-            LogDebug($"[VAD] セグメント破棄（最小長未満）: Duration={duration:F2}秒 < MinDuration={minSpeechDuration:F2}秒");
-            return null;
-        }
-
-        LogDebug($"[VAD] セグメント作成: Duration={duration:F2}秒, AudioLength={_currentSpeechBuffer.Count} samples");
-
-        return new SpeechSegment
-        {
-            StartTime = _speechStartTime,
-            EndTime = _currentTime,
-            AudioData = _currentSpeechBuffer.ToArray()
-        };
-    }
-
-    private float CalculateRMS(ReadOnlySpan<float> samples)
-    {
-        if (samples.Length == 0)
-            return 0;
-
-        float sum = 0;
-        foreach (var sample in samples)
-        {
-            sum += sample * sample;
-        }
-        return MathF.Sqrt(sum / samples.Length);
-    }
-
-    private float GetEnergyThreshold()
-    {
-        // 感度に基づいて閾値を調整
-        // 感度が高い（1.0に近い）ほど、閾値は低くなる
-        float sensitivity;
-        lock (_settingsLock)
-        {
-            sensitivity = _sensitivity;
-        }
-        return BaseEnergyThreshold + (MaxEnergyThreshold - BaseEnergyThreshold) * (1 - sensitivity);
-    }
-
-    /// <summary>
-    /// ReadOnlySpan をリストに効率的に追加（ToArray() を避ける）
-    /// </summary>
-    private static void AddSpanToList(List<float> list, ReadOnlySpan<float> span)
-    {
-        if (span.Length == 0)
-            return;
-
-        // CollectionsMarshal を使用して List の内部バッファに直接アクセス
-        int currentCount = list.Count;
-        int requiredCapacity = currentCount + span.Length;
-
-        // 必要に応じて容量を拡張
-        if (list.Capacity < requiredCapacity)
-        {
-            list.Capacity = requiredCapacity;
-        }
-
-        // List のサイズを拡張
-        CollectionsMarshal.SetCount(list, requiredCapacity);
-
-        // List の内部バッファに直接コピー
-        span.CopyTo(CollectionsMarshal.AsSpan(list).Slice(currentCount));
-    }
-
-    /// <summary>
-    /// バッファをリセット
-    /// </summary>
-    public void Reset()
-    {
-        lock (_stateLock)
-        {
-            ResetInternal();
+            return _isSpeaking ? FinalizeSegment() : null;
         }
     }
 
     /// <summary>
-    /// バッファをリセット（内部メソッド、ロック不要）
+    /// 状態をリセット
     /// </summary>
-    private void ResetInternal()
+    private void ResetState()
     {
-        _currentTime = 0;
+        Array.Clear(_vadState, 0, _vadState.Length);
+        _audioBuffer.Clear();
+        _speechBuffer.Clear();
         _isSpeaking = false;
-        _speechStartTime = 0;
         _silenceDuration = 0;
-        _currentSpeechBuffer.Clear();
+    }
+
+    /// <summary>
+    /// リソースを破棄
+    /// </summary>
+    public void Dispose()
+    {
+        _session?.Dispose();
     }
 }
