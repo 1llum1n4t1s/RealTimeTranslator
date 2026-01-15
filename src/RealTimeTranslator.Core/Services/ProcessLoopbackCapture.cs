@@ -466,9 +466,13 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
     /// </summary>
     private void InitializeAudioClient(IntPtr formatPointer, WaveFormat waveFormat)
     {
-        // AutoConvertPcm と EventCallback フラグを組み合わせてバッファサイズの問題を回避
-        var streamFlags = AudioClientStreamFlags.EventCallback | AudioClientStreamFlags.AutoConvertPcm;
+        // 修正: EventCallback フラグを削除して AutoConvertPcm のみにする
+        // ポーリングモード(Thread.Sleep)で実装されているため、EventCallback は必須ではなく有害です
+        var streamFlags = AudioClientStreamFlags.AutoConvertPcm;
         var bufferDuration = HundredNanosecondsPerSecond * AudioBufferDurationMs / 1000;
+
+        // 修正: ref 引数のためにローカル変数を定義
+        var sessionGuid = Guid.Empty;
 
         try
         {
@@ -479,7 +483,7 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
                 bufferDuration,
                 0,
                 formatPointer,
-                Guid.Empty));
+                ref sessionGuid));
             LoggerService.LogDebug("InitializeAudioClient: Initialize succeeded");
         }
         catch (COMException ex) when ((uint)ex.ErrorCode == 0x88890021)
@@ -501,7 +505,7 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
                 alignedBufferDuration,
                 0,
                 formatPointer,
-                Guid.Empty));
+                ref sessionGuid));
             LoggerService.LogDebug("InitializeAudioClient: Initialize succeeded with aligned buffer duration");
         }
     }
