@@ -706,7 +706,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
     {
         try
         {
-            LoadingMessage = "音声認識モデルをダウンロード中...";
+            LoadingMessage = "音声認識モデル読み込み中...";
             await asrService.InitializeAsync();
             LoggerService.LogInfo("ASR model initialization completed");
         }
@@ -724,7 +724,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
     {
         try
         {
-            LoadingMessage = "翻訳モデルをダウンロード中...";
+            LoadingMessage = "翻訳モデル読み込み中...";
             await translationService.InitializeAsync();
             LoggerService.LogInfo("Translation model initialization completed");
         }
@@ -737,8 +737,14 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
     private void RestoreLastSelectedProcess()
     {
+        if (Processes.Count == 0)
+        {
+            return;
+        }
+
         if (string.IsNullOrWhiteSpace(_settings.LastSelectedProcessName))
         {
+            SelectFirstProcessIfNeeded();
             return;
         }
 
@@ -748,7 +754,21 @@ public partial class MainViewModel : ObservableObject, IDisposable
         {
             SelectedProcess = match;
             Log($"前回選択したプロセス '{match.DisplayName}' を復元しました");
+            return;
         }
+
+        SelectFirstProcessIfNeeded();
+    }
+
+    private void SelectFirstProcessIfNeeded()
+    {
+        if (SelectedProcess != null || Processes.Count == 0)
+        {
+            return;
+        }
+
+        SelectedProcess = Processes[0];
+        Log($"最初のプロセス '{SelectedProcess.DisplayName}' を既定選択しました");
     }
 
     private void SaveLastSelectedProcess(ProcessInfo? process)
