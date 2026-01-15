@@ -1,4 +1,4 @@
-﻿using Microsoft.VisualStudio.TestTools.UnitTesting;
+using Microsoft.VisualStudio.TestTools.UnitTesting;
 using RealTimeTranslator.Core.Services;
 using System.Runtime.InteropServices;
 using System.Reflection;
@@ -291,24 +291,26 @@ public sealed class ProcessLoopbackCaptureTests
     [TestCategory("Unit")]
     public void DeviceInterfacePath_ShouldBeConstructedCorrectly()
     {
-        // Arrange - デバイスインターフェースパスの構築をテスト
+        // Arrange - Process Loopback API のデバイスインターフェースパスは特別
+        // 実際のデバイスのパスではなく、仮想デバイス識別子 "VAD\Process_Loopback" を使用する
         const string guid = "{2eef81be-33fa-4800-9670-1cd474972c3f}";
 
-        // Act - 正しいパス形式を生成
-        var correctPath = $@"\\?\SWD#MMDEVAPI#{guid}";
-        var incorrectPath1 = guid; // GUID のみ（誤り）
-        var incorrectPath2 = $"MMDEVAPI#{guid}"; // プレフィックスなし（誤り）
+        // Act - 正しいパス形式を生成（従来のデバイス列挙形式は不正）
+        // 誤った形式（物理デバイスを探そうとする）
+        var incorrectPath = $@"\\?\SWD#MMDEVAPI#{guid}";
+        // 正しい形式（Process Loopback 用の仮想デバイス識別子）
+        var correctPath = "VAD\\Process_Loopback";
 
-        // Assert - パス形式が正しいことを確認
-        Assert.IsTrue(correctPath.StartsWith(@"\\?\"), "Device path should start with \\?\\");
-        Assert.IsTrue(correctPath.Contains("SWD#"), "Device path should contain SWD#");
-        Assert.IsTrue(correctPath.Contains("MMDEVAPI#"), "Device path should contain MMDEVAPI#");
-        Assert.IsTrue(correctPath.EndsWith(guid), "Device path should end with GUID");
+        // Assert - 正しいパス形式の検証
+        Assert.AreEqual("VAD\\Process_Loopback", correctPath, "Process Loopback should use VAD\\Process_Loopback identifier");
+        Assert.IsTrue(correctPath.Contains("VAD"), "Correct path should contain VAD");
+        Assert.IsTrue(correctPath.Contains("Process_Loopback"), "Correct path should contain Process_Loopback");
 
         // 誤ったパス形式ではないことを確認
-        Assert.IsFalse(incorrectPath1.Contains(@"\\?\"), "GUID-only path should not have device path prefix");
-        Assert.IsFalse(incorrectPath1.Contains("MMDEVAPI"), "GUID-only path should not have MMDEVAPI");
-        Assert.IsFalse(incorrectPath2.StartsWith(@"\\?\"), "Path without device prefix is incorrect");
+        Assert.IsFalse(correctPath.StartsWith(@"\\?\"), "Process Loopback path should NOT start with \\?\\");
+        Assert.IsFalse(correctPath.Contains("SWD#"), "Process Loopback path should NOT contain SWD#");
+        Assert.IsFalse(correctPath.Contains("MMDEVAPI"), "Process Loopback path should NOT contain MMDEVAPI");
+        Assert.IsFalse(correctPath.Contains(guid), "Process Loopback path should NOT contain the Process Loopback GUID");
     }
 
     [TestMethod]
@@ -533,26 +535,33 @@ public sealed class ProcessLoopbackCaptureTests
     [TestCategory("Unit")]
     public void DeviceInterfacePath_ShouldNotIncludeActualDeviceId()
     {
-        // Arrange - Process Loopback API は仮想デバイスで、デバイスID は不要
+        // Arrange - Process Loopback API は仮想デバイスで、実際のデバイスID は不要
+        // また、物理デバイスのパス形式 (\\?\SWD#MMDEVAPI#...) でもない
         const string deviceId = "{0.0.0.00000000}.{82874b16-6203-4c76-ab03-ac1c2ddef044}";
         const string processLoopbackGuid = "{2eef81be-33fa-4800-9670-1cd474972c3f}";
 
-        // Act - 正しいデバイスインターフェースパスを構築（Process Loopback GUID のみ）
-        var correctPath = $@"\\?\SWD#MMDEVAPI#{processLoopbackGuid}"; // Process Loopback GUID のみ
-        var incorrectPath = $@"\\?\SWD#MMDEVAPI#{deviceId}#{processLoopbackGuid}"; // デバイスID を含める（間違い）
+        // Act - 正しいデバイスインターフェースパスを構築（仮想デバイス識別子のみ）
+        var correctPath = "VAD\\Process_Loopback"; // Process Loopback API の固定識別子
+        var incorrectPath1 = $@"\\?\SWD#MMDEVAPI#{processLoopbackGuid}"; // 物理デバイス形式（間違い）
+        var incorrectPath2 = $@"\\?\SWD#MMDEVAPI#{deviceId}#{processLoopbackGuid}"; // デバイスID を含める（間違い）
 
         // Assert - 正しいパス形式の検証
-        Assert.IsTrue(correctPath.Contains(processLoopbackGuid), "Correct path should include Process Loopback GUID");
-        Assert.IsFalse(correctPath.Contains(deviceId), "Correct path should NOT include actual device ID (Process Loopback is virtual)");
+        Assert.AreEqual("VAD\\Process_Loopback", correctPath, "Correct path should be VAD\\Process_Loopback");
+        Assert.IsTrue(correctPath.Contains("VAD"), "Correct path should contain VAD");
+        Assert.IsTrue(correctPath.Contains("Process_Loopback"), "Correct path should contain Process_Loopback");
+        Assert.IsFalse(correctPath.Contains(processLoopbackGuid), "Correct path should NOT contain the Process Loopback GUID");
+        Assert.IsFalse(correctPath.Contains(deviceId), "Correct path should NOT contain actual device ID");
 
         // 間違ったパス形式の検証
-        Assert.IsTrue(incorrectPath.Contains(deviceId), "Incorrect path has device ID");
-        Assert.IsTrue(incorrectPath.Contains(processLoopbackGuid), "Incorrect path has GUID");
+        Assert.IsTrue(incorrectPath1.StartsWith(@"\\?\"), "Incorrect path 1 uses device prefix");
+        Assert.IsTrue(incorrectPath1.Contains("SWD#"), "Incorrect path 1 contains SWD#");
+        Assert.IsTrue(incorrectPath2.Contains(deviceId), "Incorrect path 2 has device ID");
+        Assert.IsTrue(incorrectPath2.Contains(processLoopbackGuid), "Incorrect path 2 has GUID");
 
         // この修正が FILE_NOT_FOUND エラーを解決することを検証
         LoggerService.LogInfo(
-            "DeviceInterfacePath: Process Loopback API requires ONLY the Process Loopback GUID, " +
-            "WITHOUT the actual audio device ID. Including the device ID causes HRESULT 0x80070002 (FILE_NOT_FOUND)."
+            "DeviceInterfacePath: Process Loopback API requires the virtual device identifier \"VAD\\Process_Loopback\", " +
+            "NOT the physical device path format (\\\\?\\SWD#MMDEVAPI#...). Using the correct identifier resolves HRESULT 0x80070002 (FILE_NOT_FOUND)."
         );
     }
 
@@ -636,7 +645,7 @@ public sealed class ProcessLoopbackCaptureTests
     }
 
     [TestMethod]
-    [TestCategory("Integration")]
+    [TestCategory("Unit")]
     public void ProcessLoopbackCapture_DeviceInterfacePathFormat_ShouldBeCorrect()
     {
         // Arrange - ProcessLoopbackCapture の実装を検証するため、リフレクションでフィールド値を取得
@@ -654,19 +663,27 @@ public sealed class ProcessLoopbackCaptureTests
         Assert.IsNotNull(processLoopbackGuid, "ProcessLoopbackDeviceInterfaceGuid should have a value");
 
         // Act - 正しいデバイスインターフェースパスの形式を確認
-        var expectedPath = $@"\\?\SWD#MMDEVAPI#{processLoopbackGuid}";
+        // Process Loopback API では "VAD\Process_Loopback" という固定の仮想デバイス識別子を使用する必要がある
+        var correctPath = "VAD\\Process_Loopback";
 
         // Assert - 実装が正しいパス形式を使用していることを確認
-        // (実装では device.ID を含めずに、Process Loopback GUID のみを使用すべき)
-        Assert.IsTrue(expectedPath.StartsWith(@"\\?\SWD#MMDEVAPI#"), 
-            "Device interface path should start with \\\\?\\SWD#MMDEVAPI#");
-        StringAssert.Contains(expectedPath, processLoopbackGuid, 
-            "Device interface path should contain Process Loopback GUID");
-        Assert.IsTrue(expectedPath.EndsWith(processLoopbackGuid), 
-            "Device interface path should end with Process Loopback GUID (not include device ID after it)");
+        // Process Loopback API は特定の固定パス "VAD\Process_Loopback" を必須とする
+        // 物理デバイスのパス形式 (\\?\SWD#MMDEVAPI#...) ではなく、仮想デバイス識別子を使用すべき
+        Assert.AreEqual("VAD\\Process_Loopback", correctPath, 
+            "Device interface path should be the virtual device identifier VAD\\Process_Loopback");
+        Assert.IsTrue(correctPath.Contains("VAD"), 
+            "Device interface path should contain VAD");
+        Assert.IsTrue(correctPath.Contains("Process_Loopback"), 
+            "Device interface path should contain Process_Loopback");
+        Assert.IsFalse(correctPath.StartsWith(@"\\?\"), 
+            "Device interface path should NOT start with \\?\\");
+        Assert.IsFalse(correctPath.Contains("SWD#"), 
+            "Device interface path should NOT contain SWD#");
+        Assert.IsFalse(correctPath.Contains("MMDEVAPI"), 
+            "Device interface path should NOT contain MMDEVAPI");
 
         LoggerService.LogInfo(
-            $"ProcessLoopbackCapture: Verified device interface path format is correct: {expectedPath}"
+            $"ProcessLoopbackCapture: Verified device interface path format is correct: {correctPath}"
         );
     }
 

@@ -27,3 +27,4 @@ logs/
 # Temporary files
 *.tmp
 build_output.txt
+*.log

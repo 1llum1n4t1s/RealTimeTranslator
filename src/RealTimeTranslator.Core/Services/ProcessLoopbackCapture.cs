@@ -315,10 +315,9 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
                 LoggerService.LogDebug($"ActivateProcessAudioClient: Using IID_IAudioClient={iid:B}");
                 LoggerService.LogDebug($"ActivateProcessAudioClient: Device ID={device.ID}");
 
-                // Build the complete device interface path: \\?\SWD#MMDEVAPI#{ProcessLoopbackGUID}
-                // 正しい形式：Process Loopback GUID のみを使用する
-                var deviceInterfacePath = $@"\\?\SWD#MMDEVAPI#{ProcessLoopbackDeviceInterfaceGuid}";
-                LoggerService.LogDebug($"ActivateProcessAudioClient: Device interface path={deviceInterfacePath}");
+                // Process Loopback 用の特別なデバイスインターフェースパスを使用する
+                // 定義値: VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK (L"VAD\\Process_Loopback")
+                var deviceInterfacePath = "VAD\\Process_Loopback";
 
                 return ActivateAudioInterface(deviceInterfacePath, ref iid, (IntPtr)propVariantPtr, out var audioClient);
             }
