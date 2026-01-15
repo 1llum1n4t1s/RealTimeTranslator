@@ -529,18 +529,40 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
         // ref 引数のためにローカル変数を定義
         var sessionGuid = Guid.Empty;
 
+        var sharedModePeriod = GetSharedModePeriodHns(formatPointer, waveFormat.SampleRate);
+        if (sharedModePeriod.HasValue)
+        {
+            LoggerService.LogDebug($"InitializeAudioClient: Shared mode engine period (hns)={sharedModePeriod.Value}");
+        }
+
         LoggerService.LogDebug($"InitializeAudioClient: Attempting Initialize with streamFlags={streamFlags:X}, bufferDuration={bufferDuration} (system default)");
-        var hResult = _audioClient.Initialize(
-            AudioClientShareMode.Shared,
-            streamFlags,
-            bufferDuration,
-            0,
-            formatPointer,
-            ref sessionGuid);
+        int hResult;
+        try
+        {
+            hResult = _audioClient.Initialize(
+                AudioClientShareMode.Shared,
+                streamFlags,
+                bufferDuration,
+                0,
+                formatPointer,
+                ref sessionGuid);
+        }
+        catch (COMException ex) when (ex.HResult == unchecked((int)0x88890021))
+        {
+            var alignedDuration = sharedModePeriod ?? (defaultDevicePeriod > 0 ? defaultDevicePeriod : 100000L);
+            LoggerService.LogWarning($"InitializeAudioClient: Buffer size not aligned (COMException). Retrying with bufferDuration={alignedDuration}.");
+            hResult = _audioClient.Initialize(
+                AudioClientShareMode.Shared,
+                streamFlags,
+                alignedDuration,
+                0,
+                formatPointer,
+                ref sessionGuid);
+        }
 
         if (hResult == unchecked((int)0x88890021)) // AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED
         {
-            var alignedDuration = defaultDevicePeriod > 0 ? defaultDevicePeriod : 100000L;
+            var alignedDuration = sharedModePeriod ?? (defaultDevicePeriod > 0 ? defaultDevicePeriod : 100000L);
             LoggerService.LogWarning($"InitializeAudioClient: Buffer size not aligned with system default. Retrying with bufferDuration={alignedDuration}.");
             hResult = _audioClient.Initialize(
                 AudioClientShareMode.Shared,
@@ -553,6 +575,46 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
 
         ThrowOnError(hResult);
         LoggerService.LogDebug("InitializeAudioClient: Initialize succeeded");
+    }
+
+    private long? GetSharedModePeriodHns(IntPtr formatPointer, int sampleRate)
+    {
+        if (_audioClient is not IAudioClient3 audioClient3)
+        {
+            LoggerService.LogDebug("GetSharedModePeriodHns: IAudioClient3 not available");
+            return null;
+        }
+
+        try
+        {
+            var hResult = audioClient3.GetSharedModeEnginePeriod(
+                formatPointer,
+                out var defaultPeriodFrames,
+                out var fundamentalPeriodFrames,
+                out var minPeriodFrames,
+                out var maxPeriodFrames);
+
+            if (hResult != 0)
+            {
+                LoggerService.LogWarning($"GetSharedModePeriodHns: GetSharedModeEnginePeriod failed HRESULT=0x{hResult:X8}");
+                return null;
+            }
+
+            if (defaultPeriodFrames == 0 || sampleRate <= 0)
+            {
+                LoggerService.LogWarning("GetSharedModePeriodHns: Invalid default period or sample rate");
+                return null;
+            }
+
+            var hns = (long)defaultPeriodFrames * HundredNanosecondsPerSecond / sampleRate;
+            LoggerService.LogDebug($"GetSharedModePeriodHns: default={defaultPeriodFrames} frames, fundamental={fundamentalPeriodFrames}, min={minPeriodFrames}, max={maxPeriodFrames}, hns={hns}");
+            return hns;
+        }
+        catch (Exception ex)
+        {
+            LoggerService.LogWarning($"GetSharedModePeriodHns: Exception: {ex.GetType().Name} - {ex.Message}");
+            return null;
+        }
     }
 
     private void CaptureThread()
@@ -747,6 +809,12 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
         int Reset();
         int SetEventHandle(IntPtr eventHandle);
         int GetService(ref Guid riid, [MarshalAs(UnmanagedType.IUnknown)] out object service);
+        int GetSharedModeEnginePeriod(
+            IntPtr format,
+            out uint defaultPeriodInFrames,
+            out uint fundamentalPeriodInFrames,
+            out uint minPeriodInFrames,
+            out uint maxPeriodInFrames);
     }
 
     [ComImport]
