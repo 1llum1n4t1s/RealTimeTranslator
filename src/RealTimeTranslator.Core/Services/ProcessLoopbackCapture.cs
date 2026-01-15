@@ -525,7 +525,7 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
         return new WaveFormat((int)format.SampleRate, format.BitsPerSample, format.Channels);
     }
 
-    [DllImport("mmdevapi.dll", CallingConvention = CallingConvention.Winapi)]
+    [DllImport("mmdevapi.dll", CallingConvention = CallingConvention.Winapi, CharSet = CharSet.Unicode)]
     private static extern int ActivateAudioInterfaceAsync(
         string deviceInterfacePath,
         ref Guid iid,

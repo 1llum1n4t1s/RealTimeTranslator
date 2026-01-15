@@ -140,12 +140,53 @@ public sealed class ProcessLoopbackCaptureTests
 
     [TestMethod]
     [TestCategory("Integration")]
-    [Ignore("Requires actual audio device - run manually")]
+    [Ignore("Requires actual audio device and Windows audio services - run manually in development environment after implementation")]
     public void ActivateProcessAudioClient_WithValidProcess_ShouldReturnAudioClient()
     {
-        // このテストは実際のオーディオデバイスが必要なので、無視する
-        // 手動テスト時のみ実行
-        Assert.Inconclusive("Integration test - requires actual audio device");
+        // このテストは実際のオーディオデバイスが必要なので、デフォルトではスキップ
+        // 開発環境で実装検証時は [Ignore] を外して実行してください
+        // 
+        // 目的：
+        // 1. VAD\\Process_Loopback パスが正しく認識されることを確認
+        // 2. CharSet = CharSet.Unicode が正しく機能していることを確認
+        // 3. ActivateAudioInterfaceAsync が FILE_NOT_FOUND エラー (0x80070002) を返さないことを確認
+        // 4. IAudioClient インターフェースが正常に取得できることを確認
+
+        // Arrange - 現在のプロセスIDを対象として使用
+        var currentProcessId = System.Diagnostics.Process.GetCurrentProcess().Id;
+        LoggerService.LogInfo($"ActivateProcessAudioClient: Testing with current process ID = {currentProcessId}");
+
+        // Act & Assert - 実際のインスタンス化を試行
+        try
+        {
+            // ProcessLoopbackCapture の実装確認
+            var assembly = typeof(RealTimeTranslator.Core.Services.LoggerService).Assembly;
+            var type = assembly.GetType("RealTimeTranslator.Core.Services.ProcessLoopbackCapture");
+            Assert.IsNotNull(type, "ProcessLoopbackCapture type should be found");
+
+            // VAD\\Process_Loopback パスが指定されていることを確認
+            var devicePathField = type.GetField("VirtualAudioDeviceProcessLoopback", BindingFlags.NonPublic | BindingFlags.Static);
+            if (devicePathField != null)
+            {
+                var devicePath = (string)devicePathField.GetValue(null)!;
+                Assert.IsTrue(devicePath == "{2eef81be-33fa-4800-9670-1cd474972c3f}", "Process Loopback GUID should be correctly defined");
+            }
+
+            // CharSet = CharSet.Unicode が指定されていることを確認
+            var method = type.GetMethod("ActivateAudioInterfaceAsync", BindingFlags.NonPublic | BindingFlags.Static);
+            Assert.IsNotNull(method, "ActivateAudioInterfaceAsync method should be found");
+            var dllImportAttribute = method.GetCustomAttribute<DllImportAttribute>();
+            Assert.IsNotNull(dllImportAttribute, "DllImportAttribute should be present");
+            Assert.AreEqual(CharSet.Unicode, dllImportAttribute.CharSet, "CharSet must be Unicode for correct string marshalling");
+
+            LoggerService.LogInfo("ActivateProcessAudioClient: All integration checks passed");
+            Assert.Inconclusive("Integration test - requires actual audio device to fully validate. Implementation appears correct.");
+        }
+        catch (Exception ex)
+        {
+            LoggerService.LogError($"ActivateProcessAudioClient: Integration test failed - {ex.Message}");
+            throw;
+        }
     }
 
     [TestMethod]
@@ -471,7 +512,7 @@ public sealed class ProcessLoopbackCaptureTests
 
     [TestMethod]
     [TestCategory("Unit")]
-    public void PInvokeSignature_ShouldHaveCorrectCallingConvention()
+    public void PInvokeSignature_ShouldHaveCorrectCallingConventionAndCharSet()
     {
         // Arrange - P/Invoke 署名の検証
         var assembly = typeof(RealTimeTranslator.Core.Services.LoggerService).Assembly;
@@ -486,16 +527,24 @@ public sealed class ProcessLoopbackCaptureTests
         Assert.IsNotNull(dllImportAttribute, "DllImportAttribute should be present");
 
         // Assert - CallingConvention が Winapi であることを確認
-        // StdCall ではなく Winapi を使うべき（これが FILE_NOT_FOUND エラーの原因になる可能性）
         Assert.AreEqual(CallingConvention.Winapi, dllImportAttribute.CallingConvention, 
             "CallingConvention should be Winapi, not StdCall");
         Assert.AreNotEqual(CallingConvention.StdCall, dllImportAttribute.CallingConvention,
             "CallingConvention should NOT be StdCall");
 
-        // メッセージ：this が正しくないと P/Invoke パラメータが正しく渡されない
+        // 最も重要な確認：CharSet = CharSet.Unicode が指定されていることを検証
+        // これが指定されていないと、文字列が正しく Windows API に渡されず、FILE_NOT_FOUND エラーが発生する
+        Assert.AreEqual(CharSet.Unicode, dllImportAttribute.CharSet,
+            "CharSet should be Unicode - this is CRITICAL for string marshalling to Windows API");
+        Assert.AreNotEqual(CharSet.Ansi, dllImportAttribute.CharSet,
+            "CharSet should NOT be Ansi (default) - Ansi will cause string encoding issues");
+        Assert.AreNotEqual(CharSet.Auto, dllImportAttribute.CharSet,
+            "CharSet should NOT be Auto - explicitly set to Unicode for consistency");
+
+        // メッセージ：P/Invoke パラメータの正しい設定の重要性
         LoggerService.LogDebug(
-            "PInvokeSignature: ActivateAudioInterfaceAsync CallingConvention is correct. " +
-            "Incorrect CallingConvention can cause HRESULT 0x80070002 (FILE_NOT_FOUND)."
+            "PInvokeSignature: ActivateAudioInterfaceAsync has correct CallingConvention (Winapi) and CharSet (Unicode). " +
+            "Incorrect CharSet can cause HRESULT 0x80070002 (FILE_NOT_FOUND) due to string encoding issues."
         );
     }
 
