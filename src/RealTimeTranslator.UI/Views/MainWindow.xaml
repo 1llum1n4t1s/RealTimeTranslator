@@ -7,16 +7,16 @@
         WindowStartupLocation="CenterScreen">
     
     <Window.Resources>
-        <Style TargetType="Button">
+        <Style TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
             <Setter Property="Padding" Value="15,8"/>
             <Setter Property="Margin" Value="5"/>
             <Setter Property="FontSize" Value="14"/>
         </Style>
-        <Style TargetType="ComboBox">
+        <Style TargetType="ComboBox" BasedOn="{StaticResource {x:Type ComboBox}}">
             <Setter Property="Padding" Value="8,5"/>
             <Setter Property="Margin" Value="5"/>
         </Style>
-        <Style TargetType="Label">
+        <Style TargetType="Label" BasedOn="{StaticResource {x:Type Label}}">
             <Setter Property="VerticalAlignment" Value="Center"/>
             <Setter Property="FontSize" Value="14"/>
         </Style>
@@ -97,7 +97,7 @@
             <TextBlock Text="リアルタイム字幕翻訳" 
                        FontSize="24" FontWeight="Bold"/>
             <TextBlock Text="ゲームや動画の音声をリアルタイムで日本語字幕に変換します" 
-                       Foreground="Gray" Margin="0,5,0,0"/>
+                       Opacity="0.7" Margin="0,5,0,0"/>
         </StackPanel>
         
         <!-- プロセス選択 -->
@@ -149,12 +149,10 @@
             <Button Content="開始" 
                     Command="{Binding StartCommand}"
                     IsEnabled="{Binding CanStart}"
-                    Background="#4CAF50" Foreground="White"
                     Width="120"/>
             <Button Content="停止" 
                     Command="{Binding StopCommand}"
                     IsEnabled="{Binding IsRunning}"
-                    Background="#F44336" Foreground="White"
                     Width="120"/>
             <Button Content="設定" 
                     Command="{Binding OpenSettingsCommand}"

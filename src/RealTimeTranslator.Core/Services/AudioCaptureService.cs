@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using NAudio.Wave;
@@ -35,6 +36,11 @@ public class AudioCaptureService : IAudioCaptureService
     private bool _isCapturing;
     private bool _isDisposed;
     private int _targetProcessId;
+    private readonly ConcurrentQueue<AudioProcessingTask> _processingQueue = [];
+    private Task? _processingTask;
+    private CancellationTokenSource? _processingCancellation;
+    private WaveFileWriter? _debugRawAudioWriter;
+    private WaveFileWriter? _debugResampledAudioWriter;
 
     /// <summary>
     /// キャプチャ中かどうか
@@ -101,6 +107,7 @@ public class AudioCaptureService : IAudioCaptureService
 
         _capture.StartRecording();
         _isCapturing = true;
+        StartProcessingTask();
     }
 
     /// <summary>
@@ -148,6 +155,7 @@ public class AudioCaptureService : IAudioCaptureService
                     _capture.StartRecording();
                     _isCapturing = true;
                     _targetProcessId = currentProcessId; // 成功したプロセスIDを記録
+                    StartProcessingTask();
 
                     var message = currentProcessId == processId
                         ? "音声キャプチャを開始しました。"
@@ -277,6 +285,7 @@ public class AudioCaptureService : IAudioCaptureService
 
                     _capture.StartRecording();
                     _isCapturing = true;
+                    StartProcessingTask();
 
                     OnCaptureStatusChanged("デスクトップ音声キャプチャを開始しました（リモートオーディオモード）。", false);
                     LoggerService.LogInfo("StartDesktopCaptureAsync: Desktop audio capture started successfully");
@@ -439,10 +448,27 @@ public class AudioCaptureService : IAudioCaptureService
             targetSampleRate = _settings.SampleRate;
         }
 
-        // リサンプリング（必要に応じて）
-        if (sourceFormat.SampleRate != targetSampleRate)
+        // Debug: raw audio before resampling to WAV file
+        try
         {
-            samples = Resample(samples, sourceFormat.SampleRate, targetSampleRate);
+            var debugRawFolder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "RealTimeTranslator", "debug_audio_raw");
+            Directory.CreateDirectory(debugRawFolder);
+
+            if (_debugRawAudioWriter == null)
+            {
+                var debugRawPath = Path.Combine(debugRawFolder, "debug_audio_raw.wav");
+                var format = WaveFormat.CreateIeeeFloatWaveFormat(sourceFormat.SampleRate, MonoChannelCount);
+                _debugRawAudioWriter = new WaveFileWriter(debugRawPath, format);
+                LoggerService.LogDebug($"OnDataAvailable: Created debug raw audio file at {debugRawPath}");
+            }
+
+            var byteArray = new byte[samples.Length * BytesPerFloat];
+            Buffer.BlockCopy(samples, 0, byteArray, 0, byteArray.Length);
+            _debugRawAudioWriter.Write(byteArray, 0, byteArray.Length);
+        }
+        catch (Exception ex)
+        {
+            LoggerService.LogError($"OnDataAvailable: Failed to write debug raw audio file - {ex.Message}");
         }
 
         // モノラルに変換（必要に応じて）
@@ -451,10 +477,19 @@ public class AudioCaptureService : IAudioCaptureService
             samples = ConvertToMono(samples, sourceFormat.Channels);
         }
 
-        // バッファに追加
+        // 非同期処理キューに追加
+        var processingTask = new AudioProcessingTask(samples, sourceFormat.SampleRate, targetSampleRate);
+        _processingQueue.Enqueue(processingTask);
+
+        // バッファに追加（VAD用）
         lock (_bufferLock)
         {
-            _audioBuffer.AddRange(samples);
+            // VAD用のリサンプリング済みサンプルを準備
+            var resampledForVad = sourceFormat.SampleRate != targetSampleRate
+                ? Resample(samples, sourceFormat.SampleRate, targetSampleRate)
+                : (float[])samples.Clone();
+
+            _audioBuffer.AddRange(resampledForVad);
 
             // バッファサイズが上限を超えた場合は古いデータを削除
             if (_audioBuffer.Count > MaxBufferSize)
@@ -613,5 +648,156 @@ public class AudioCaptureService : IAudioCaptureService
 
         _isDisposed = true;
         StopCapture();
+        StopProcessingTask();
+        _debugRawAudioWriter?.Dispose();
+        _debugResampledAudioWriter?.Dispose();
+    }
+
+    /// <summary>
+    /// 非同期リサンプリング処理タスクを開始
+    /// </summary>
+    private void StartProcessingTask()
+    {
+        if (_processingTask != null)
+            return;
+
+        _processingCancellation = new CancellationTokenSource();
+        _processingTask = ProcessAudioQueueAsync(_processingCancellation.Token);
+        LoggerService.LogDebug("AudioCaptureService: Processing task started");
+    }
+
+    /// <summary>
+    /// 非同期リサンプリング処理タスクを停止
+    /// </summary>
+    private void StopProcessingTask()
+    {
+        if (_processingCancellation != null)
+        {
+            _processingCancellation.Cancel();
+            try
+            {
+                _processingTask?.Wait(5000);
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            _processingCancellation.Dispose();
+            _processingCancellation = null;
+            _processingTask = null;
+            LoggerService.LogDebug("AudioCaptureService: Processing task stopped");
+        }
+    }
+
+    /// <summary>
+    /// 音声処理キューを非同期処理
+    /// </summary>
+    private async Task ProcessAudioQueueAsync(CancellationToken cancellationToken)
+    {
+        LoggerService.LogDebug("ProcessAudioQueueAsync: Background task started");
+        try
+        {
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                if (_processingQueue.TryDequeue(out var task))
+                {
+                    try
+                    {
+                        ProcessAudioData(task);
+                    }
+                    catch (Exception ex)
+                    {
+                        LoggerService.LogError($"ProcessAudioQueueAsync: Error processing audio - {ex.Message}");
+                    }
+                }
+                else
+                {
+                    await Task.Delay(10, cancellationToken);
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        LoggerService.LogDebug("ProcessAudioQueueAsync: Background task stopped");
+    }
+
+    /// <summary>
+    /// 音声データを処理（リサンプリング、正規化、ファイル出力）
+    /// </summary>
+    private void ProcessAudioData(AudioProcessingTask processingTask)
+    {
+        try
+        {
+            var samples = processingTask.Samples;
+            var sourceSampleRate = processingTask.SourceSampleRate;
+            var targetSampleRate = processingTask.TargetSampleRate;
+
+            // リサンプリング（必要に応じて）
+            if (sourceSampleRate != targetSampleRate)
+            {
+                samples = Resample(samples, sourceSampleRate, targetSampleRate);
+            }
+
+            // amplitude normalization: 最大値が0.95f を超える場合のみ減衰
+            var maxAmplitude = samples.Length > 0 ? samples.Max(s => Math.Abs(s)) : 0f;
+            if (maxAmplitude > 0.95f)
+            {
+                var attenuationFactor = 0.95f / maxAmplitude;
+                for (int i = 0; i < samples.Length; i++)
+                {
+                    samples[i] *= attenuationFactor;
+                }
+            }
+
+            // Debug: resampled audio to WAV file
+            try
+            {
+                var debugResampledFolder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "RealTimeTranslator", "debug_audio");
+                Directory.CreateDirectory(debugResampledFolder);
+
+                if (_debugResampledAudioWriter == null)
+                {
+                    var debugResampledPath = Path.Combine(debugResampledFolder, "debug_audio.wav");
+                    var format = WaveFormat.CreateIeeeFloatWaveFormat(targetSampleRate, MonoChannelCount);
+                    _debugResampledAudioWriter = new WaveFileWriter(debugResampledPath, format);
+                    LoggerService.LogDebug($"ProcessAudioData: Created debug resampled audio file at {debugResampledPath}");
+                }
+
+                var byteArray = new byte[samples.Length * BytesPerFloat];
+                Buffer.BlockCopy(samples, 0, byteArray, 0, byteArray.Length);
+                _debugResampledAudioWriter.Write(byteArray, 0, byteArray.Length);
+            }
+            catch (Exception ex)
+            {
+                LoggerService.LogError($"ProcessAudioData: Failed to write debug audio file - {ex.Message}");
+            }
+
+            // イベントを発火
+            AudioDataAvailable?.Invoke(this, new AudioDataEventArgs(samples, DateTime.Now));
+        }
+        catch (Exception ex)
+        {
+            LoggerService.LogError($"ProcessAudioData: Error during audio processing - {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// 音声処理タスク用の内部クラス
+    /// </summary>
+    private class AudioProcessingTask
+    {
+        public float[] Samples { get; }
+        public int SourceSampleRate { get; }
+        public int TargetSampleRate { get; }
+
+        /// <summary>
+        /// コンストラクタ
+        /// </summary>
+        public AudioProcessingTask(float[] samples, int sourceSampleRate, int targetSampleRate)
+        {
+            Samples = samples;
+            SourceSampleRate = sourceSampleRate;
+            TargetSampleRate = targetSampleRate;
+        }
     }
 }
