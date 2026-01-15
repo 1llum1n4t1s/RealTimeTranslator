@@ -1,5 +1,3 @@
-using System.Linq;
-using System.Reflection;
 using Microsoft.Extensions.Options;
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
@@ -150,68 +148,12 @@ public class VADService : IVADService, IDisposable
                     var options = new SessionOptions();
                     options.LogSeverityLevel = OrtLoggingLevel.ORT_LOGGING_LEVEL_ERROR;
                     
-                    // GPUプロバイダーを追加（Windows環境ではDirectMLを使用）
-                    bool dmlAdded = false;
-                    try
-                    {
-                        // DirectMLプロバイダーを追加（デバイスID 0 = デフォルトGPU）
-                        // ONNX Runtime 1.20.1のDirectMLパッケージでは、拡張メソッドとして提供される
-                        var sessionOptionsType = typeof(SessionOptions);
-                        var assembly = sessionOptionsType.Assembly;
-                        
-                        // すべてのアセンブリからDirectML拡張メソッドを探す
-                        var allAssemblies = AppDomain.CurrentDomain.GetAssemblies();
-                        foreach (var asm in allAssemblies)
-                        {
-                            try
-                            {
-                                var dmlTypes = asm.GetTypes()
-                                    .Where(t => t.IsSealed && t.IsAbstract && t.IsClass)
-                                    .Where(t => t.Namespace?.Contains("OnnxRuntime") == true || 
-                                                t.Namespace?.Contains("DirectML") == true);
-                                
-                                foreach (var dmlType in dmlTypes)
-                                {
-                                    var dmlMethod = dmlType.GetMethods(BindingFlags.Public | BindingFlags.Static)
-                                        .FirstOrDefault(m => m.Name == "AppendExecutionProvider_DML" && 
-                                                            m.GetParameters().Length >= 1 &&
-                                                            m.GetParameters()[0].ParameterType == typeof(SessionOptions));
-                                    
-                                    if (dmlMethod != null)
-                                    {
-                                        var parameters = dmlMethod.GetParameters();
-                                        if (parameters.Length == 1)
-                                        {
-                                            dmlMethod.Invoke(null, new object[] { options });
-                                        }
-                                        else if (parameters.Length == 2 && parameters[1].ParameterType == typeof(int))
-                                        {
-                                            dmlMethod.Invoke(null, new object[] { options, 0 });
-                                        }
-                                        LoggerService.LogInfo($"[VAD] DirectML GPU provider added for Silero VAD via {dmlType.FullName}");
-                                        dmlAdded = true;
-                                        break;
-                                    }
-                                }
-                                
-                                if (dmlAdded)
-                                    break;
-                            }
-                            catch
-                            {
-                                // アセンブリの読み込みに失敗した場合はスキップ
-                                continue;
-                            }
-                        }
-                    }
-                    catch (Exception dmlEx)
-                    {
-                        LoggerService.LogWarning($"[VAD] DirectML provider not available: {dmlEx.Message}, using CPU");
-                    }
+                    // GPU プロバイダーを追加（CUDA → DirectML → CPU の順でフォールバック）
+                    var gpuProviderAdded = TryAddCudaProvider(options) || TryAddDirectMLProvider(options);
                     
-                    if (!dmlAdded)
+                    if (!gpuProviderAdded)
                     {
-                        LoggerService.LogDebug("[VAD] DirectML provider not found, using CPU execution provider");
+                        LoggerService.LogInfo("[VAD] No GPU provider available, using CPU execution provider");
                     }
                     
                     LoggerService.LogDebug($"[VAD] Creating InferenceSession with model: {resolvedPath}");
@@ -470,6 +412,49 @@ public class VADService : IVADService, IDisposable
         _probHistorySum = 0f;
         _isSpeaking = false;
         _silenceDuration = 0;
+    }
+
+    /// <summary>
+    /// CUDA プロバイダーを追加（NVIDIA GPU用）
+    /// </summary>
+    /// <param name="options">セッションオプション</param>
+    /// <returns>追加成功した場合は true</returns>
+    private static bool TryAddCudaProvider(SessionOptions options)
+    {
+        try
+        {
+            // ONNX Runtime 1.17+ の AppendExecutionProvider を使用
+            // プロバイダー名を文字列で指定する方法
+            options.AppendExecutionProvider_CUDA(0);
+            LoggerService.LogInfo("[VAD] CUDA GPU provider added for Silero VAD (NVIDIA GPU)");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            LoggerService.LogDebug($"[VAD] CUDA provider not available: {ex.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// DirectML プロバイダーを追加（AMD/Intel GPU用）
+    /// </summary>
+    /// <param name="options">セッションオプション</param>
+    /// <returns>追加成功した場合は true</returns>
+    private static bool TryAddDirectMLProvider(SessionOptions options)
+    {
+        try
+        {
+            // ONNX Runtime 1.17+ の AppendExecutionProvider_DML を使用
+            options.AppendExecutionProvider_DML(0);
+            LoggerService.LogInfo("[VAD] DirectML GPU provider added for Silero VAD (AMD/Intel GPU)");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            LoggerService.LogDebug($"[VAD] DirectML provider not available: {ex.Message}");
+            return false;
+        }
     }
 
     /// <summary>

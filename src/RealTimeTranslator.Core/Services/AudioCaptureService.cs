@@ -448,15 +448,22 @@ public class AudioCaptureService : IAudioCaptureService
             targetSampleRate = _settings.SampleRate;
         }
 
-        // Debug: raw audio before resampling to WAV file
+        // モノラルに変換（必要に応じて）
+        if (sourceFormat.Channels > 1)
+        {
+            samples = ConvertToMono(samples, sourceFormat.Channels);
+        }
+
+        // Debug: raw audio before resampling to WAV file (モノラル変換後、リサンプリング前)
         try
         {
-            var debugRawFolder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "RealTimeTranslator", "debug_audio_raw");
+            var debugRawFolder = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "debug_audio_raw");
             Directory.CreateDirectory(debugRawFolder);
 
             if (_debugRawAudioWriter == null)
             {
                 var debugRawPath = Path.Combine(debugRawFolder, "debug_audio_raw.wav");
+                // モノラル変換後なので MonoChannelCount を使用
                 var format = WaveFormat.CreateIeeeFloatWaveFormat(sourceFormat.SampleRate, MonoChannelCount);
                 _debugRawAudioWriter = new WaveFileWriter(debugRawPath, format);
                 LoggerService.LogDebug($"OnDataAvailable: Created debug raw audio file at {debugRawPath}");
@@ -469,12 +476,6 @@ public class AudioCaptureService : IAudioCaptureService
         catch (Exception ex)
         {
             LoggerService.LogError($"OnDataAvailable: Failed to write debug raw audio file - {ex.Message}");
-        }
-
-        // モノラルに変換（必要に応じて）
-        if (sourceFormat.Channels > 1)
-        {
-            samples = ConvertToMono(samples, sourceFormat.Channels);
         }
 
         // 非同期処理キューに追加
@@ -752,7 +753,7 @@ public class AudioCaptureService : IAudioCaptureService
             // Debug: resampled audio to WAV file
             try
             {
-                var debugResampledFolder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "RealTimeTranslator", "debug_audio");
+                var debugResampledFolder = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "debug_audio");
                 Directory.CreateDirectory(debugResampledFolder);
 
                 if (_debugResampledAudioWriter == null)

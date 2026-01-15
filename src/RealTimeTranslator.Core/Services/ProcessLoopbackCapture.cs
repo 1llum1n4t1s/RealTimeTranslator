@@ -181,6 +181,11 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
 
         var paramsSize = Marshal.SizeOf<AudioClientActivationParams>();
         LoggerService.LogDebug($"ActivateProcessAudioClient: paramsSize={paramsSize}, expected 12");
+        LoggerService.LogDebug($"ActivateProcessAudioClient: ActivationType={activationParams.ActivationType} ({(int)activationParams.ActivationType}), TargetProcessId={activationParams.TargetProcessId}, ProcessLoopbackMode={activationParams.ProcessLoopbackMode} ({(int)activationParams.ProcessLoopbackMode})");
+
+        // Windows バージョン情報をログ出力
+        var osVersion = Environment.OSVersion;
+        LoggerService.LogDebug($"ActivateProcessAudioClient: OS Version={osVersion.Version}, Platform={osVersion.Platform}");
 
         if (paramsSize != 12)
         {
@@ -191,6 +196,12 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
         try
         {
             Marshal.StructureToPtr(activationParams, paramsPtr, false);
+            
+            // メモリダンプをログ出力（デバッグ用）
+            var dumpBytes = new byte[paramsSize];
+            Marshal.Copy(paramsPtr, dumpBytes, 0, paramsSize);
+            LoggerService.LogDebug($"ActivateProcessAudioClient: Memory dump = {BitConverter.ToString(dumpBytes)}");
+
             var activationParamsPtr = new PropVariant
             {
                 vt = 0x41, // VT_BLOB
@@ -198,10 +209,10 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
                 pointerValue = paramsPtr
             };
 
-            LoggerService.LogDebug($"ActivateProcessAudioClient: PropVariant size={Marshal.SizeOf<PropVariant>()}, vt={activationParamsPtr.vt}, blobSize={activationParamsPtr.blobSize}");
+            LoggerService.LogDebug($"ActivateProcessAudioClient: PropVariant size={Marshal.SizeOf<PropVariant>()}, vt={activationParamsPtr.vt}, blobSize={activationParamsPtr.blobSize}, pointerValue=0x{activationParamsPtr.pointerValue:X}");
 
             var iid = typeof(IAudioClient3).GUID;
-            ActivateAudioInterface(VirtualAudioDeviceProcessLoopback, ref iid, activationParamsPtr, out var audioClient);
+            ActivateAudioInterface(VirtualAudioDeviceProcessLoopback, ref iid, ref activationParamsPtr, out var audioClient);
             return audioClient;
         }
         finally
@@ -213,7 +224,7 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
     /// <summary>
     /// オーディオインターフェースを非同期でアクティベート
     /// </summary>
-    private static void ActivateAudioInterface(string deviceInterfacePath, ref Guid iid, PropVariant activationParams, out IAudioClient3 audioClient)
+    private static void ActivateAudioInterface(string deviceInterfacePath, ref Guid iid, ref PropVariant activationParams, out IAudioClient3 audioClient)
     {
         var completionHandler = new ActivateCompletionHandler();
         try
@@ -221,7 +232,7 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
             var paramsSize = Marshal.SizeOf<AudioClientActivationParams>();
             LoggerService.LogDebug($"ActivateAudioInterfaceAsync: deviceInterfacePath={deviceInterfacePath}, ParamsSize={paramsSize}, ParamsPtrSize={Marshal.SizeOf<PropVariant>()}");
 
-            var hr = ActivateAudioInterfaceAsync(deviceInterfacePath, ref iid, activationParams, completionHandler, out var result);
+            var hr = ActivateAudioInterfaceAsync(deviceInterfacePath, ref iid, ref activationParams, completionHandler, out var result);
             if (hr != 0)
             {
                 var errorMessage = $"ActivateAudioInterfaceAsync failed: HRESULT=0x{hr:X8}";
@@ -373,7 +384,7 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
     private static extern int ActivateAudioInterfaceAsync(
         string deviceInterfacePath,
         ref Guid riid,
-        PropVariant activationParams,
+        ref PropVariant activationParams,
         IActivateAudioInterfaceCompletionHandler? completionHandler,
         out IActivateAudioInterfaceAsyncOperation asyncOperation);
 
@@ -481,7 +492,7 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
     /// <summary>
     /// PROPVARIANT 構造体（VT_BLOB用）
     /// Windows APIの標準レイアウトに完全に準拠
-    /// sizeof(PROPVARIANT) = 16バイト（32ビット）、24バイト（64ビット）
+    /// BLOB構造: cbSize(4bytes) + pBlobData(8bytes) が offset 8 から連続配置
     /// </summary>
     [StructLayout(LayoutKind.Explicit, Size = 24)]
     private struct PropVariant
@@ -517,9 +528,10 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
         public uint blobSize;
 
         /// <summary>
-        /// Pointer to BLOB data (8バイト、offset 16、アラインメント重要)
+        /// Pointer to BLOB data (8バイト、offset 12)
+        /// BLOB構造ではcbSizeの直後にpBlobDataが配置される
         /// </summary>
-        [FieldOffset(16)]
+        [FieldOffset(12)]
         public IntPtr pointerValue;
     }
 
