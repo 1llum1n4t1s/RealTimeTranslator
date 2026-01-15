@@ -552,7 +552,9 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
     [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
     private interface IActivateAudioInterfaceAsyncOperation
     {
-        void GetActivateResult(out int activateResult, [MarshalAs(UnmanagedType.IUnknown)] out object activatedInterface);
+        // object ではなく IntPtr で受け取るように変更
+        // スレッド間のマーシャリング問題を回避するため
+        void GetActivateResult(out int activateResult, out IntPtr activatedInterface);
     }
 
     /// <summary>
@@ -709,36 +711,19 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
         private const int ActivationTimeoutMs = 5000;
         private readonly ManualResetEventSlim _completedEvent = new(false);
         private int _activateResult;
-        private object? _activatedInterface;
+        private IntPtr _activatedInterfacePtr = IntPtr.Zero;
 
         public void ActivateCompleted(IActivateAudioInterfaceAsyncOperation operation)
         {
             try
             {
-                operation.GetActivateResult(out _activateResult, out var activatedInterface);
-                LoggerService.LogDebug($"ActivateCompleted: GetActivateResult returned HRESULT=0x{_activateResult:X8}, Interface={activatedInterface?.GetType().Name ?? "null"}");
-                if (_activateResult == 0)
-                {
-                    if (activatedInterface != null)
-                    {
-                        LoggerService.LogDebug($"ActivateCompleted: Storing activatedInterface, InterfaceType={activatedInterface.GetType().Name}");
-                        _activatedInterface = activatedInterface;
-                        LoggerService.LogDebug("ActivateCompleted: Successfully stored activatedInterface");
-                    }
-                    else
-                    {
-                        LoggerService.LogError("ActivateCompleted: activatedInterface is null despite HRESULT success");
-                    }
-                }
-                else if (activatedInterface != null)
-                {
-                    LoggerService.LogDebug($"ActivateCompleted: HRESULT indicates failure (0x{_activateResult:X8}), releasing interface");
-                    Marshal.ReleaseComObject(activatedInterface);
-                }
+                // ポインタとして受け取る
+                operation.GetActivateResult(out _activateResult, out _activatedInterfacePtr);
+                LoggerService.LogDebug($"ActivateCompleted: GetActivateResult returned HRESULT=0x{_activateResult:X8}, Ptr=0x{_activatedInterfacePtr:X}");
             }
             catch (Exception ex)
             {
-                LoggerService.LogError($"ActivateCompleted: Exception during GetActivateResult: {ex.GetType().Name} - {ex.Message}");
+                LoggerService.LogError($"ActivateCompleted: Exception: {ex.GetType().Name} - {ex.Message}");
             }
             finally
             {
@@ -758,6 +743,13 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
 
             if (_activateResult != 0)
             {
+                // エラー時のクリーンアップ
+                if (_activatedInterfacePtr != IntPtr.Zero)
+                {
+                    Marshal.Release(_activatedInterfacePtr);
+                    _activatedInterfacePtr = IntPtr.Zero;
+                }
+
                 var errorMessage = $"Audio client activation result: HRESULT=0x{_activateResult:X8}";
                 if (_activateResult == unchecked((int)0x80070057)) // E_INVALIDARG
                 {
@@ -783,7 +775,6 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
                 }
                 catch (ArgumentException aex)
                 {
-                    // Marshal.ThrowExceptionForHRが無効なHRESULTで ArgumentExceptionを発生させた場合
                     LoggerService.LogError($"Marshal.ThrowExceptionForHR threw ArgumentException: {aex.Message}");
                     throw new COMException($"Audio client activation failed with HRESULT 0x{_activateResult:X8}", _activateResult);
                 }
@@ -792,53 +783,36 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
 
         public IAudioClient GetActivatedInterface()
         {
-            LoggerService.LogDebug($"GetActivatedInterface: _activatedInterface is {(_activatedInterface == null ? "null" : "not null")}, _activateResult=0x{_activateResult:X8}");
-            if (_activatedInterface == null)
+            if (_activatedInterfacePtr == IntPtr.Zero)
             {
-                var errorMsg = $"Audio client activation failed: _activatedInterface is null, _activateResult=0x{_activateResult:X8}";
-                LoggerService.LogError(errorMsg);
-                throw new InvalidOperationException(errorMsg);
+                throw new InvalidOperationException("Audio client activation failed: Interface pointer is null");
             }
 
-            LoggerService.LogDebug($"GetActivatedInterface: Attempting to cast _activatedInterface to IAudioClient");
             try
             {
-                var audioClient = (IAudioClient)_activatedInterface;
-                LoggerService.LogDebug($"GetActivatedInterface: Successfully cast to IAudioClient");
+                LoggerService.LogDebug($"GetActivatedInterface: Converting Ptr 0x{_activatedInterfacePtr:X} to RCW on current thread");
 
-                // Add a reference to keep the COM object alive
-                Marshal.AddRef(Marshal.GetIUnknownForObject(audioClient));
-                LoggerService.LogDebug($"GetActivatedInterface: Added reference to keep COM object alive");
+                // ここで（メインスレッド上で）ポインタから COM オブジェクト（RCW）を生成する
+                var obj = Marshal.GetObjectForIUnknown(_activatedInterfacePtr);
+                LoggerService.LogDebug($"GetActivatedInterface: Marshal.GetObjectForIUnknown returned {obj?.GetType().Name ?? "null"}");
+
+                // 変換できたら IAudioClient にキャスト
+                var audioClient = (IAudioClient)obj;
+                LoggerService.LogDebug("GetActivatedInterface: Successfully cast to IAudioClient");
 
                 return audioClient;
             }
             catch (InvalidCastException castEx)
             {
-                LoggerService.LogError($"GetActivatedInterface: Cast failed - {castEx.Message}");
-
-                // Try QueryInterface approach
-                try
-                {
-                    var iid = new Guid("1CB9AD4C-DBFA-4c32-B178-C2F568A703B2"); // IAudioClient IID
-                    var hr = Marshal.QueryInterface(Marshal.GetIUnknownForObject(_activatedInterface), in iid, out var pAudioClient);
-                    if (hr == 0 && pAudioClient != IntPtr.Zero)
-                    {
-                        var audioClient = (IAudioClient)Marshal.GetObjectForIUnknown(pAudioClient);
-                        Marshal.Release(pAudioClient);
-                        LoggerService.LogDebug($"GetActivatedInterface: QueryInterface succeeded");
-                        return audioClient;
-                    }
-                    else
-                    {
-                        LoggerService.LogError($"GetActivatedInterface: QueryInterface failed, HRESULT=0x{hr:X8}");
-                    }
-                }
-                catch (Exception qiEx)
-                {
-                    LoggerService.LogError($"GetActivatedInterface: QueryInterface exception - {qiEx.Message}");
-                }
-
+                LoggerService.LogError($"GetActivatedInterface: Cast to IAudioClient failed - {castEx.Message}");
                 throw;
+            }
+            finally
+            {
+                // Marshal.GetObjectForIUnknown は参照カウントを増やすため、
+                // GetActivateResult で受け取った分の参照カウントはここで解放する
+                Marshal.Release(_activatedInterfacePtr);
+                _activatedInterfacePtr = IntPtr.Zero;
             }
         }
     }

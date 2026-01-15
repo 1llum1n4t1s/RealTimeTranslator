@@ -736,4 +736,45 @@ public sealed class ProcessLoopbackCaptureTests
         );
     }
 
+    [TestMethod]
+    [TestCategory("Unit")]
+    public void ComInterfaceDefinition_ShouldUseIntPtrForSafety()
+    {
+        // Arrange
+        var assembly = typeof(RealTimeTranslator.Core.Services.LoggerService).Assembly;
+        var captureType = assembly.GetType("RealTimeTranslator.Core.Services.ProcessLoopbackCapture");
+        Assert.IsNotNull(captureType, "ProcessLoopbackCapture type should be found");
+
+        // 内部インターフェース IActivateAudioInterfaceAsyncOperation を取得
+        var interfaceType = captureType.GetNestedType("IActivateAudioInterfaceAsyncOperation", BindingFlags.NonPublic);
+        Assert.IsNotNull(interfaceType, "IActivateAudioInterfaceAsyncOperation interface should be defined");
+
+        // GetActivateResult メソッドを取得
+        var method = interfaceType.GetMethod("GetActivateResult");
+        Assert.IsNotNull(method, "GetActivateResult method should be defined");
+
+        // Act
+        var parameters = method.GetParameters();
+
+        // Assert
+        Assert.AreEqual(2, parameters.Length, "GetActivateResult should have 2 parameters");
+
+        // 2番目のパラメータ (out IntPtr activatedInterface) をチェック
+        var interfaceParam = parameters[1];
+
+        // ここが重要： 'object' ではなく 'IntPtr' であるべき
+        // object だと自動的に RCW (Runtime Callable Wrapper) が作成され、
+        // スレッドアフィニティの問題 (E_NOINTERFACE / InvalidCastException) を引き起こす
+        var isIntPtr = interfaceParam.ParameterType.GetElementType() == typeof(IntPtr);
+
+        Assert.IsTrue(isIntPtr,
+            "The 'activatedInterface' parameter MUST be defined as 'out IntPtr', not 'out object'. " +
+            "Using 'object' causes implicit RCW creation on the wrong thread, leading to InvalidCastException/E_NOINTERFACE.");
+
+        // 参考情報：パラメータの詳細ログ出力
+        var paramType = interfaceParam.ParameterType;
+        LoggerService.LogDebug($"ComInterfaceDefinition: activatedInterface parameter type = {paramType.Name} ({paramType.FullName})");
+        LoggerService.LogDebug("ComInterfaceDefinition: COM definitions using 'out IntPtr' enable safe marshalling control across threads");
+    }
+
 }
