@@ -196,9 +196,20 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
                 WaveFormat = WaveFormat.CreateIeeeFloatWaveFormat(processLoopbackFormat.SampleRate, processLoopbackFormat.Channels);
                 LoggerService.LogDebug($"ProcessLoopbackCapture: WaveFormat property set: {WaveFormat}");
 
-                // Process Loopback クライアントを初期化
-                // Windows のオーディオエンジンが自動的に変換してくれる
-                InitializeAudioClient(formatPointer, WaveFormat);
+                // 物理デバイスから処理周期を取得する (Process Loopback クライアントからは取得できないため)
+                var defaultDevicePeriod = 100000L; // デフォルト 10ms (100ns単位)
+                try
+                {
+                    defaultDevicePeriod = device!.AudioClient.DefaultDevicePeriod;
+                    LoggerService.LogDebug($"ProcessLoopbackCapture: Got device period: {defaultDevicePeriod}");
+                }
+                catch (Exception ex)
+                {
+                    LoggerService.LogWarning($"ProcessLoopbackCapture: Failed to get device period: {ex.Message}. Using default 10ms.");
+                }
+
+                // Process Loopback クライアントを初期化（デバイス周期を渡す）
+                InitializeAudioClient(formatPointer, WaveFormat, defaultDevicePeriod);
             }
             finally
             {
@@ -464,14 +475,13 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
     /// オーディオクライアントを初期化
     /// Process Loopback API 使用時は Loopback フラグは不要
     /// </summary>
-    private void InitializeAudioClient(IntPtr formatPointer, WaveFormat waveFormat)
+    private void InitializeAudioClient(IntPtr formatPointer, WaveFormat waveFormat, long defaultDevicePeriod)
     {
-        // 修正: EventCallback フラグを削除して AutoConvertPcm のみにする
-        // ポーリングモード(Thread.Sleep)で実装されているため、EventCallback は必須ではなく有害です
+        // 修正: ポーリングモードなので AutoConvertPcm のみ（EventCallback は外す）
         var streamFlags = AudioClientStreamFlags.AutoConvertPcm;
         var bufferDuration = HundredNanosecondsPerSecond * AudioBufferDurationMs / 1000;
 
-        // 修正: ref 引数のためにローカル変数を定義
+        // ref 引数のためにローカル変数を定義
         var sessionGuid = Guid.Empty;
 
         try
@@ -491,13 +501,9 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
             // AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED: バッファサイズが非整列
             LoggerService.LogWarning($"InitializeAudioClient: Buffer alignment failed (AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED). Retrying with aligned buffer size.");
 
-            // デバイスの処理周期を取得
-            ThrowOnError(_audioClient.GetDevicePeriod(out var defaultDevicePeriod, out var minimumDevicePeriod));
-            LoggerService.LogDebug($"InitializeAudioClient: Device period - default={defaultDevicePeriod}, minimum={minimumDevicePeriod}");
-
-            // 要求サイズを処理周期の倍数に切り上げる
+            // 修正: Process Loopback クライアントではなく、引数で渡された物理デバイスの周期を使用
             var alignedBufferDuration = ((bufferDuration + defaultDevicePeriod - 1) / defaultDevicePeriod) * defaultDevicePeriod;
-            LoggerService.LogDebug($"InitializeAudioClient: Adjusting buffer duration from {bufferDuration} to {alignedBufferDuration}");
+            LoggerService.LogDebug($"InitializeAudioClient: Retrying with aligned buffer duration: {alignedBufferDuration} (DefaultPeriod: {defaultDevicePeriod})");
 
             ThrowOnError(_audioClient.Initialize(
                 AudioClientShareMode.Shared,
