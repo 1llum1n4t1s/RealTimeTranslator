@@ -541,20 +541,20 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
         catch (COMException ex) when ((uint)ex.ErrorCode == 0x88890021)
         {
             // AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED: バッファサイズが非整列
-            LoggerService.LogWarning($"InitializeAudioClient: Buffer alignment failed (AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED). Retrying with aligned buffer size.");
+            LoggerService.LogWarning($"InitializeAudioClient: Buffer alignment failed (AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED). Retrying with system default buffer size (0).");
 
-            // 修正: Process Loopback クライアントではなく、引数で渡された物理デバイスの周期を使用
-            var alignedBufferDuration = ((bufferDuration + defaultDevicePeriod - 1) / defaultDevicePeriod) * defaultDevicePeriod;
-            LoggerService.LogDebug($"InitializeAudioClient: Retrying with aligned buffer duration: {alignedBufferDuration} (DefaultPeriod: {defaultDevicePeriod})");
+            // 修正: 計算値ではなく '0' を指定して、OSに最適なバッファサイズを決定させる
+            // Process Loopback と AutoConvertPcm の組み合わせではこれが最も安全です
+            var fallbackBufferDuration = 0L;
 
             ThrowOnError(_audioClient.Initialize(
                 AudioClientShareMode.Shared,
                 streamFlags,
-                alignedBufferDuration,
+                fallbackBufferDuration,
                 0,
                 formatPointer,
                 ref sessionGuid));
-            LoggerService.LogDebug("InitializeAudioClient: Initialize succeeded with aligned buffer duration");
+            LoggerService.LogDebug("InitializeAudioClient: Initialize succeeded with default buffer duration");
         }
     }
 
