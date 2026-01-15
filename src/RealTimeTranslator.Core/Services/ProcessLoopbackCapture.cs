@@ -466,10 +466,44 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
     /// </summary>
     private void InitializeAudioClient(IntPtr formatPointer, WaveFormat waveFormat)
     {
-        // AutoConvertPcm を指定して、バッファサイズのアライメント調整をOSに任せる
-        var streamFlags = AudioClientStreamFlags.AutoConvertPcm;
+        // AutoConvertPcm と EventCallback フラグを組み合わせてバッファサイズの問題を回避
+        var streamFlags = AudioClientStreamFlags.EventCallback | AudioClientStreamFlags.AutoConvertPcm;
         var bufferDuration = HundredNanosecondsPerSecond * AudioBufferDurationMs / 1000;
-        ThrowOnError(_audioClient.Initialize(AudioClientShareMode.Shared, streamFlags, bufferDuration, 0, formatPointer, Guid.Empty));
+
+        try
+        {
+            LoggerService.LogDebug($"InitializeAudioClient: Attempting Initialize with streamFlags={streamFlags:X}, bufferDuration={bufferDuration}");
+            ThrowOnError(_audioClient.Initialize(
+                AudioClientShareMode.Shared,
+                streamFlags,
+                bufferDuration,
+                0,
+                formatPointer,
+                Guid.Empty));
+            LoggerService.LogDebug("InitializeAudioClient: Initialize succeeded");
+        }
+        catch (COMException ex) when ((uint)ex.ErrorCode == 0x88890021)
+        {
+            // AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED: バッファサイズが非整列
+            LoggerService.LogWarning($"InitializeAudioClient: Buffer alignment failed (AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED). Retrying with aligned buffer size.");
+
+            // デバイスの処理周期を取得
+            ThrowOnError(_audioClient.GetDevicePeriod(out var defaultDevicePeriod, out var minimumDevicePeriod));
+            LoggerService.LogDebug($"InitializeAudioClient: Device period - default={defaultDevicePeriod}, minimum={minimumDevicePeriod}");
+
+            // 要求サイズを処理周期の倍数に切り上げる
+            var alignedBufferDuration = ((bufferDuration + defaultDevicePeriod - 1) / defaultDevicePeriod) * defaultDevicePeriod;
+            LoggerService.LogDebug($"InitializeAudioClient: Adjusting buffer duration from {bufferDuration} to {alignedBufferDuration}");
+
+            ThrowOnError(_audioClient.Initialize(
+                AudioClientShareMode.Shared,
+                streamFlags,
+                alignedBufferDuration,
+                0,
+                formatPointer,
+                Guid.Empty));
+            LoggerService.LogDebug("InitializeAudioClient: Initialize succeeded with aligned buffer duration");
+        }
     }
 
     private void CaptureThread()
@@ -699,6 +733,7 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
     private enum AudioClientStreamFlags : uint
     {
         None = 0x0,
+        CrossProcess = 0x00010000,
         Loopback = 0x00020000,
         EventCallback = 0x00040000,
         AutoConvertPcm = 0x80000000
