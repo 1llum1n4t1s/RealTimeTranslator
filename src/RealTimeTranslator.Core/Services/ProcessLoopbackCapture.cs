@@ -92,8 +92,8 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
     // ProcessLoopbackMode
     private enum ProcessLoopbackMode : uint
     {
-        IncludeTargetProcessTree = 0,
-        ExcludeTargetProcessTree = 1
+        TargetProcessOnly = 0,
+        IncludeTargetProcessTree = 1
     }
 
     // AudioClientProcessLoopbackParams
@@ -466,8 +466,8 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
     /// </summary>
     private void InitializeAudioClient(IntPtr formatPointer, WaveFormat waveFormat)
     {
-        // Process Loopback モードでは AudioClientStreamFlags.Loopback は使わない
-        var streamFlags = AudioClientStreamFlags.None;
+        // AutoConvertPcm を指定して、バッファサイズのアライメント調整をOSに任せる
+        var streamFlags = AudioClientStreamFlags.AutoConvertPcm;
         var bufferDuration = HundredNanosecondsPerSecond * AudioBufferDurationMs / 1000;
         ThrowOnError(_audioClient.Initialize(AudioClientShareMode.Shared, streamFlags, bufferDuration, 0, formatPointer, Guid.Empty));
     }
@@ -696,11 +696,12 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
     }
 
     [Flags]
-    private enum AudioClientStreamFlags
+    private enum AudioClientStreamFlags : uint
     {
         None = 0x0,
-        EventCallback = 0x40000,
-        Loopback = 0x80000
+        Loopback = 0x00020000,
+        EventCallback = 0x00040000,
+        AutoConvertPcm = 0x80000000
     }
 
     [Flags]
