@@ -173,19 +173,53 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
                 }
 
                 // デバイスのフォーマット情報をベースに、Float 32-bit の形式を構築
-                // Process Loopback は自動変換機能があるため、指定フォーマットにデータを変換してくれる
-                var processLoopbackFormat = new WaveFormatEx
+                // 0x88890008 エラー対策: デバイスが Extensible 形式の場合、こちらも Extensible 構造体を使う必要がある
+                
+                // チャネル数に基づいてチャネルマスクを計算
+                var channelMask = 0x3; // Default: SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT
+                switch (deviceMixFormat.Channels)
                 {
-                    FormatTag = WaveFormatTag.IeeeFloat,
-                    Channels = (short)deviceMixFormat.Channels,
-                    SampleRate = deviceMixFormat.SampleRate,
-                    BitsPerSample = 32,
-                    BlockAlign = (short)(deviceMixFormat.Channels * 4), // Channels * BytesPerSample
-                    AvgBytesPerSec = deviceMixFormat.SampleRate * deviceMixFormat.Channels * 4, // SampleRate * BlockAlign
-                    Size = 0
+                    case 1:
+                        channelMask = 0x04; // SPEAKER_FRONT_CENTER
+                        break;
+                    case 2:
+                        channelMask = 0x03; // SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT
+                        break;
+                    case 4:
+                        channelMask = 0x33; // SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT | SPEAKER_BACK_LEFT | SPEAKER_BACK_RIGHT
+                        break;
+                    case 6:
+                        channelMask = 0x3F; // 5.1 channels
+                        break;
+                    case 8:
+                        channelMask = 0xFF; // 7.1 channels
+                        break;
+                    default:
+                        // 2チャネルをデフォルトに
+                        channelMask = 0x03;
+                        break;
+                }
+                LoggerService.LogDebug($"ProcessLoopbackCapture: Channels={deviceMixFormat.Channels}, ChannelMask={channelMask:X}");
+
+                // WaveFormatExtensible 構造体を使用する
+                var processLoopbackFormat = new WaveFormatExtensible
+                {
+                    Format = new WaveFormatEx
+                    {
+                        FormatTag = WaveFormatTag.Extensible,
+                        Channels = (short)deviceMixFormat.Channels,
+                        SampleRate = deviceMixFormat.SampleRate,
+                        BitsPerSample = 32,
+                        BlockAlign = (short)(deviceMixFormat.Channels * 4),
+                        AvgBytesPerSec = deviceMixFormat.SampleRate * deviceMixFormat.Channels * 4,
+                        Size = 22 // cbSize (Samples + ChannelMask + SubFormat = 2 + 4 + 16 = 22)
+                    },
+                    Samples = 32, // wValidBitsPerSample (32bit)
+                    ChannelMask = channelMask,
+                    SubFormat = AudioFormatSubType.IeeeFloat
                 };
 
-                LoggerService.LogDebug($"ProcessLoopbackCapture: Prepared format for Initialize: SampleRate={processLoopbackFormat.SampleRate}, Channels={processLoopbackFormat.Channels}, BitsPerSample={processLoopbackFormat.BitsPerSample}");
+                LoggerService.LogDebug($"ProcessLoopbackCapture: Prepared Extensible format for Initialize: SampleRate={processLoopbackFormat.Format.SampleRate}, Channels={processLoopbackFormat.Format.Channels}, BitsPerSample=32");
 
                 // アンマネージドメモリに構造体をコピー
                 var size = Marshal.SizeOf(processLoopbackFormat);
@@ -193,7 +227,7 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
                 Marshal.StructureToPtr(processLoopbackFormat, formatPointer, false);
 
                 // WaveFormat プロパティを設定
-                WaveFormat = WaveFormat.CreateIeeeFloatWaveFormat(processLoopbackFormat.SampleRate, processLoopbackFormat.Channels);
+                WaveFormat = WaveFormat.CreateIeeeFloatWaveFormat(processLoopbackFormat.Format.SampleRate, processLoopbackFormat.Format.Channels);
                 LoggerService.LogDebug($"ProcessLoopbackCapture: WaveFormat property set: {WaveFormat}");
 
                 // 物理デバイスから処理周期を取得する (Process Loopback クライアントからは取得できないため)
