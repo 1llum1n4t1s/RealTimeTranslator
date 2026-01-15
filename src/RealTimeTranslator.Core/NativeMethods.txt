@@ -1,0 +1,4 @@
+ActivateAudioInterfaceAsync
+IActivateAudioInterfaceCompletionHandler
+IActivateAudioInterfaceAsyncOperation
+

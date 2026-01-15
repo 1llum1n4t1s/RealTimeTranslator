@@ -9,6 +9,11 @@ namespace RealTimeTranslator.Core.Services;
 /// <summary>
 /// AudioClientActivationParams を用いたプロセス単位のループバックキャプチャ
 /// Windows 10 Build 20348以降で利用可能
+/// 
+/// 注記:
+/// - CsWin32パッケージ (Microsoft.Windows.CsWin32) を導入済み
+/// - AllowUnsafeBlocks が有効化済み (unsafe コンテキスト対応)
+/// - 将来的に手動定義のP/Invokeは CsWin32 生成コードに段階的に置き換え可能
 /// </summary>
 internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
 {
