@@ -521,41 +521,23 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
     {
         // 修正: ポーリングモードなので AutoConvertPcm のみ（EventCallback は外す）
         var streamFlags = AudioClientStreamFlags.AutoConvertPcm;
-        var bufferDuration = HundredNanosecondsPerSecond * AudioBufferDurationMs / 1000;
+        
+        // Process Loopback モードでは、バッファサイズを 0 に指定して OS に最適なサイズを決定させる
+        // これにより 0x88890021 (AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED) エラーを確実に回避できる
+        var bufferDuration = 0L;
 
         // ref 引数のためにローカル変数を定義
         var sessionGuid = Guid.Empty;
 
-        try
-        {
-            LoggerService.LogDebug($"InitializeAudioClient: Attempting Initialize with streamFlags={streamFlags:X}, bufferDuration={bufferDuration}");
-            ThrowOnError(_audioClient.Initialize(
-                AudioClientShareMode.Shared,
-                streamFlags,
-                bufferDuration,
-                0,
-                formatPointer,
-                ref sessionGuid));
-            LoggerService.LogDebug("InitializeAudioClient: Initialize succeeded");
-        }
-        catch (COMException ex) when ((uint)ex.ErrorCode == 0x88890021)
-        {
-            // AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED: バッファサイズが非整列
-            LoggerService.LogWarning($"InitializeAudioClient: Buffer alignment failed (AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED). Retrying with system default buffer size (0).");
-
-            // 修正: 計算値ではなく '0' を指定して、OSに最適なバッファサイズを決定させる
-            // Process Loopback と AutoConvertPcm の組み合わせではこれが最も安全です
-            var fallbackBufferDuration = 0L;
-
-            ThrowOnError(_audioClient.Initialize(
-                AudioClientShareMode.Shared,
-                streamFlags,
-                fallbackBufferDuration,
-                0,
-                formatPointer,
-                ref sessionGuid));
-            LoggerService.LogDebug("InitializeAudioClient: Initialize succeeded with default buffer duration");
-        }
+        LoggerService.LogDebug($"InitializeAudioClient: Attempting Initialize with streamFlags={streamFlags:X}, bufferDuration={bufferDuration} (system default)");
+        ThrowOnError(_audioClient.Initialize(
+            AudioClientShareMode.Shared,
+            streamFlags,
+            bufferDuration,
+            0,
+            formatPointer,
+            ref sessionGuid));
+        LoggerService.LogDebug("InitializeAudioClient: Initialize succeeded with system default buffer duration");
     }
 
     private void CaptureThread()
