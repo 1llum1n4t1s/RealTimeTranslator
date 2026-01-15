@@ -130,7 +130,28 @@ public partial class App : Application
         // 3. IOptionsパターンの登録
         services.Configure<AppSettings>(configuration);
 
-        // 4. 設定保存サービスの登録
+        // 4. AppSettingsを個別に登録（TranslationPipelineServiceの依存関係解決用）
+        services.AddSingleton<AppSettings>(sp =>
+        {
+            var appSettings = sp.GetRequiredService<IOptionsSnapshot<AppSettings>>().Value;
+            return appSettings;
+        });
+
+        // 5. TranslationSettingsを個別に登録（WhisperASRService/MistralTranslationServiceの依存関係解決用）
+        services.AddSingleton<TranslationSettings>(sp =>
+        {
+            var appSettings = sp.GetRequiredService<AppSettings>();
+            return appSettings.Translation;
+        });
+
+        // 6. AudioCaptureSettingsを個別に登録（AudioCaptureServiceの依存関係解決用）
+        services.AddSingleton<AudioCaptureSettings>(sp =>
+        {
+            var appSettings = sp.GetRequiredService<AppSettings>();
+            return appSettings.AudioCapture;
+        });
+
+        // 7. 設定保存サービスの登録
         services.AddSingleton<ISettingsService, SettingsService>();
 
         // HttpClient（シングルトン）

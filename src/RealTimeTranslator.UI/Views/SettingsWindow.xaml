@@ -257,7 +257,7 @@
 
         <StackPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
             <TextBlock Text="{Binding StatusMessage}" VerticalAlignment="Center" Margin="0,0,10,0"/>
-            <Button Content="保存" Width="120" Command="{Binding SaveCommand}"/>
+            <Button Content="保存" Width="120" Command="{Binding SaveAsyncCommand}"/>
             <Button Content="閉じる" Width="120" Margin="6,0,0,0" IsCancel="True"/>
         </StackPanel>
     </Grid>

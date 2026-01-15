@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Options;
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
 using RealTimeTranslator.Core.Interfaces;
@@ -18,13 +19,16 @@ public class VADService : IVADService, IDisposable
     private const int WindowSizeSamples = 512;
     private const int SampleRate = 16000;
 
-    private readonly AudioCaptureSettings _settings;
+    private AudioCaptureSettings _settings;
     private readonly ModelDownloadService _downloadService;
+    private readonly IDisposable? _settingsChangeSubscription;
     private readonly object _lock = new();
 
     // VADの状態
     private InferenceSession? _session;
     private bool _isModelLoaded = false;
+    private Task? _modelInitializationTask;
+    private bool _modelLoadWarningLogged = false;
     private readonly List<float> _audioBuffer = new();        // 入力バッファ（処理待ちデータ）
     private readonly List<float> _speechBuffer = new();       // 現在の発話データ蓄積用
     private float[] _vadState = new float[2 * 1 * 128];       // VADの内部ステート (2, batch, 128)
@@ -59,14 +63,35 @@ public class VADService : IVADService, IDisposable
     /// <summary>
     /// VADサービスのコンストラクタ
     /// </summary>
-    public VADService(AudioCaptureSettings settings, ModelDownloadService downloadService)
+    public VADService(IOptionsMonitor<AppSettings> optionsMonitor, ModelDownloadService downloadService)
     {
-        _settings = settings ?? throw new ArgumentNullException(nameof(settings));
         _downloadService = downloadService ?? throw new ArgumentNullException(nameof(downloadService));
+
+        // 現在の設定値を取得
+        _settings = optionsMonitor.CurrentValue.AudioCapture;
+
+        // 設定変更（ファイル保存時）のイベントを購読
+        _settingsChangeSubscription = optionsMonitor.OnChange(newSettings =>
+        {
+            LoggerService.LogInfo("Settings updated detected in VADService.");
+            ApplySettings(newSettings.AudioCapture);
+        });
+
         ApplySettings(_settings);
 
         // モデルの準備（非同期で開始）
-        Task.Run(InitializeModelAsync);
+        _modelInitializationTask = Task.Run(InitializeModelAsync);
+    }
+
+    /// <summary>
+    /// モデルのロード完了を待機
+    /// </summary>
+    public async Task EnsureModelLoadedAsync()
+    {
+        if (_modelInitializationTask != null)
+        {
+            await _modelInitializationTask.ConfigureAwait(false);
+        }
     }
 
     /// <summary>
@@ -92,6 +117,8 @@ public class VADService : IVADService, IDisposable
         {
             // モデルファイルのパス解決とダウンロード
             var modelPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "models", "vad");
+            LoggerService.LogDebug($"[VAD] InitializeModelAsync: modelPath={modelPath}");
+            
             var resolvedPath = await _downloadService.EnsureModelAsync(
                 modelPath,
                 ModelFileName,
@@ -100,8 +127,11 @@ public class VADService : IVADService, IDisposable
                 "Silero VAD Model"
             );
 
+            LoggerService.LogDebug($"[VAD] EnsureModelAsync returned: {resolvedPath ?? "null"}");
+
             if (!string.IsNullOrEmpty(resolvedPath) && File.Exists(resolvedPath))
             {
+                LoggerService.LogDebug($"[VAD] Model file exists, loading session...");
                 lock (_lock)
                 {
                     var options = new SessionOptions();
@@ -109,14 +139,20 @@ public class VADService : IVADService, IDisposable
                     options.LogSeverityLevel = OrtLoggingLevel.ORT_LOGGING_LEVEL_ERROR;
                     _session = new InferenceSession(resolvedPath, options);
                     _isModelLoaded = true;
+                    _modelLoadWarningLogged = false;
                     LoggerService.LogInfo("Silero VAD model loaded successfully.");
                     ResetState();
                 }
+            }
+            else
+            {
+                LoggerService.LogError($"[VAD] Model file not available. resolvedPath={resolvedPath ?? "null"}, exists={resolvedPath != null && File.Exists(resolvedPath)}");
             }
         }
         catch (Exception ex)
         {
             LoggerService.LogError($"Failed to initialize Silero VAD model: {ex.Message}");
+            LoggerService.LogDebug($"[VAD] Exception StackTrace: {ex.StackTrace}");
         }
     }
 
@@ -130,6 +166,18 @@ public class VADService : IVADService, IDisposable
 
         lock (_lock)
         {
+            // モデル未ロードの警告（1回のみ）
+            if (!_isModelLoaded && !_modelLoadWarningLogged)
+            {
+                LoggerService.LogWarning("[VAD] VADモデルがまだロードされていません。音声検出を開始できません。");
+                _modelLoadWarningLogged = true;
+            }
+
+            if (!_isModelLoaded)
+            {
+                yield break;
+            }
+
             // 入力データをバッファに追加
             _audioBuffer.AddRange(audioData);
 
@@ -302,6 +350,7 @@ public class VADService : IVADService, IDisposable
     /// </summary>
     public void Dispose()
     {
+        _settingsChangeSubscription?.Dispose();
         _session?.Dispose();
     }
 }

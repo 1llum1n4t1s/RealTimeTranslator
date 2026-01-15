@@ -41,6 +41,12 @@ public interface IVADService
     /// </summary>
     /// <param name="settings">音声キャプチャ設定</param>
     void ApplySettings(AudioCaptureSettings settings);
+
+    /// <summary>
+    /// モデルのロード完了を待機
+    /// </summary>
+    /// <returns>非同期操作のタスク</returns>
+    Task EnsureModelLoadedAsync();
 }
 
 /// <summary>

@@ -3,6 +3,7 @@ using System.Windows;
 using System.Windows.Media;
 using System.Windows.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
+using Microsoft.Extensions.Options;
 using RealTimeTranslator.Core.Models;
 using RealTimeTranslator.Core.Services;
 
@@ -15,10 +16,11 @@ public partial class OverlayViewModel : ObservableObject, IDisposable
 {
     private const int CleanupIntervalMs = 500; // クリーンアップ間隔（ミリ秒）
 
-    private readonly OverlaySettings _settings;
+    private OverlaySettings _settings;
     private readonly DispatcherTimer _cleanupTimer;
     private readonly object _subtitlesLock = new();
     private bool _isDisposed;
+    private readonly IDisposable? _settingsChangeSubscription;
 
     [ObservableProperty]
     private ObservableCollection<SubtitleDisplayItem> _subtitles = new();
@@ -35,9 +37,24 @@ public partial class OverlayViewModel : ObservableObject, IDisposable
     [ObservableProperty]
     private double _bottomMarginPercent = 10;
 
-    public OverlayViewModel(OverlaySettings? settings = null)
+    public OverlayViewModel(IOptionsMonitor<AppSettings>? optionsMonitor = null)
     {
-        _settings = settings ?? new OverlaySettings();
+        if (optionsMonitor != null)
+        {
+            _settings = optionsMonitor.CurrentValue.Overlay;
+
+            // 設定変更のイベントを購読
+            _settingsChangeSubscription = optionsMonitor.OnChange(newSettings =>
+            {
+                LoggerService.LogInfo("Settings updated detected in OverlayViewModel.");
+                _settings = newSettings.Overlay;
+                ReloadSettings();
+            });
+        }
+        else
+        {
+            _settings = new OverlaySettings();
+        }
 
         FontFamily = _settings.FontFamily;
         FontSize = _settings.FontSize;
@@ -58,6 +75,7 @@ public partial class OverlayViewModel : ObservableObject, IDisposable
         if (_isDisposed)
             return;
 
+        _settingsChangeSubscription?.Dispose();
         _cleanupTimer.Stop();
         _cleanupTimer.Tick -= CleanupOldSubtitles;
         _isDisposed = true;

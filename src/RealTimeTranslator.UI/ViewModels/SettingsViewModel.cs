@@ -4,7 +4,9 @@ using System.Collections.ObjectModel;
 using System.Linq;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using Microsoft.Extensions.Options;
 using RealTimeTranslator.Core.Models;
+using RealTimeTranslator.Core.Services;
 
 namespace RealTimeTranslator.UI.ViewModels;
 
@@ -13,16 +15,16 @@ namespace RealTimeTranslator.UI.ViewModels;
 /// </summary>
 public partial class SettingsViewModel : ObservableObject
 {
-    private readonly AppSettings _settings;
-    private readonly string _settingsPath;
+    private AppSettings _settings;
+    private readonly ISettingsService _settingsService;
     private readonly OverlayViewModel _overlayViewModel;
 
     public event EventHandler<SettingsSavedEventArgs>? SettingsSaved;
 
-    public SettingsViewModel(AppSettings settings, string settingsPath, OverlayViewModel overlayViewModel)
+    public SettingsViewModel(IOptionsSnapshot<AppSettings> options, ISettingsService settingsService, OverlayViewModel overlayViewModel)
     {
-        _settings = settings;
-        _settingsPath = settingsPath;
+        _settings = options.Value;
+        _settingsService = settingsService;
         _overlayViewModel = overlayViewModel;
         GpuTypes = new ReadOnlyCollection<GPUType>(Enum.GetValues<GPUType>());
         Languages = new ReadOnlyCollection<LanguageType>(Enum.GetValues<LanguageType>());
@@ -152,10 +154,10 @@ public partial class SettingsViewModel : ObservableObject
     }
 
     [RelayCommand]
-    private void Save()
+    private async Task SaveAsync()
     {
         _settings.GameProfiles = GameProfiles.ToList();
-        _settings.Save(_settingsPath);
+        await _settingsService.SaveAsync(_settings);
         _overlayViewModel.ReloadSettings();
         SettingsSaved?.Invoke(this, new SettingsSavedEventArgs(_settings));
         StatusMessage = $"設定を保存しました: {DateTime.Now:HH:mm:ss}";

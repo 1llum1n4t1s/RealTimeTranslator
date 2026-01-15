@@ -67,6 +67,7 @@ public class ModelDownloadService : IDisposable
         }
 
         var resolvedPath = ResolveModelPath(modelPath, defaultFileName);
+        LoggerService.LogDebug($"[{serviceName}] Resolved path: {resolvedPath}");
         System.Diagnostics.Debug.WriteLine($"[{serviceName}] Resolved path: {resolvedPath}");
         if (string.IsNullOrWhiteSpace(resolvedPath))
         {
@@ -75,6 +76,7 @@ public class ModelDownloadService : IDisposable
                 modelLabel,
                 ModelStatusType.LoadFailed,
                 "モデルパスの解決に失敗しました。"));
+            LoggerService.LogError($"[{serviceName}] Failed to resolve model path. Input: {modelPath}, Default filename: {defaultFileName}");
             System.Diagnostics.Debug.WriteLine($"[{serviceName}] Failed to resolve model path. Input: {modelPath}, Default filename: {defaultFileName}");
             return null;
         }
@@ -87,6 +89,7 @@ public class ModelDownloadService : IDisposable
                 modelLabel,
                 ModelStatusType.Info,
                 $"モデルファイルを検出しました ({fileInfo.Length} bytes)。読み込み中..."));
+            LoggerService.LogDebug($"[{serviceName}] Model file found at: {resolvedPath} (Size: {fileInfo.Length} bytes)");
             System.Diagnostics.Debug.WriteLine($"[{serviceName}] Model file found at: {resolvedPath} (Size: {fileInfo.Length} bytes)");
 
             // ファイルの整合性を検証
@@ -112,13 +115,16 @@ public class ModelDownloadService : IDisposable
             }
         }
 
+        LoggerService.LogDebug($"[{serviceName}] Model file not found at {resolvedPath}. Will attempt to download from {downloadUrl}");
         System.Diagnostics.Debug.WriteLine($"[{serviceName}] Model file not found at {resolvedPath}. Will attempt to download from {downloadUrl}");
         System.Diagnostics.Debug.WriteLine($"[{serviceName}] AppContext.BaseDirectory: {AppContext.BaseDirectory}");
         System.Diagnostics.Debug.WriteLine($"[{serviceName}] Current directory: {Directory.GetCurrentDirectory()}");
 
         // URLを検証
+        LoggerService.LogDebug($"[{serviceName}] Validating download URL: {downloadUrl}");
         if (!IsValidDownloadUrl(downloadUrl))
         {
+            LoggerService.LogError($"[{serviceName}] Download URL validation failed: {downloadUrl}");
             OnStatusChanged(new ModelStatusChangedEventArgs(
                 serviceName,
                 modelLabel,
@@ -126,6 +132,7 @@ public class ModelDownloadService : IDisposable
                 "ダウンロードURLが不正です。"));
             return null;
         }
+        LoggerService.LogDebug($"[{serviceName}] Download URL validation passed");
 
         var targetDirectory = Path.GetDirectoryName(resolvedPath);
         if (!string.IsNullOrWhiteSpace(targetDirectory))
@@ -445,17 +452,20 @@ public class ModelDownloadService : IDisposable
     {
         if (string.IsNullOrWhiteSpace(url))
         {
+            LoggerService.LogDebug($"IsValidDownloadUrl: URL is null or empty");
             return false;
         }
 
         if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
         {
+            LoggerService.LogDebug($"IsValidDownloadUrl: Failed to parse URL: {url}");
             return false;
         }
 
         // HTTPSのみ許可（セキュリティ向上）
         if (uri.Scheme != Uri.UriSchemeHttps)
         {
+            LoggerService.LogDebug($"IsValidDownloadUrl: URL scheme is not HTTPS: {uri.Scheme}");
             return false;
         }
 
@@ -468,8 +478,15 @@ public class ModelDownloadService : IDisposable
             "github.com"
         };
 
-        return trustedHosts.Any(host => uri.Host.Equals(host, StringComparison.OrdinalIgnoreCase) ||
+        var isHostTrusted = trustedHosts.Any(host => uri.Host.Equals(host, StringComparison.OrdinalIgnoreCase) ||
                                         uri.Host.EndsWith($".{host}", StringComparison.OrdinalIgnoreCase));
+        
+        if (!isHostTrusted)
+        {
+            LoggerService.LogDebug($"IsValidDownloadUrl: Host is not trusted: {uri.Host}");
+        }
+        
+        return isHostTrusted;
     }
 
     private void OnDownloadProgress(ModelDownloadProgressEventArgs args)

@@ -10,6 +10,7 @@ using System.Windows.Media;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 using NAudio.CoreAudioApi;
 using RealTimeTranslator.Core.Interfaces;
 using RealTimeTranslator.Core.Models;
@@ -30,11 +31,11 @@ public partial class MainViewModel : ObservableObject, IDisposable
     private readonly IAudioCaptureService _audioCaptureService;
     private readonly IVADService _vadService;
     private readonly OverlayViewModel _overlayViewModel;
-    private readonly AppSettings _settings;
+    private AppSettings _settings;
     private readonly IUpdateService _updateService;
     private readonly IServiceProvider _serviceProvider;
-    private readonly SettingsFilePath _settingsFilePath;
     private readonly SettingsViewModel _settingsViewModel;
+    private readonly IDisposable? _settingsChangeSubscription;
     private readonly Queue<string> _logLines = new();
     private readonly object _logLock = new();
     private string? _lastLogMessage;
@@ -95,20 +96,26 @@ public partial class MainViewModel : ObservableObject, IDisposable
         IAudioCaptureService audioCaptureService,
         IVADService vadService,
         OverlayViewModel overlayViewModel,
-        AppSettings settings,
+        IOptionsMonitor<AppSettings> optionsMonitor,
         IUpdateService updateService,
         IServiceProvider serviceProvider,
-        SettingsFilePath settingsFilePath,
         SettingsViewModel settingsViewModel)
     {
         _pipelineService = pipelineService;
         _audioCaptureService = audioCaptureService;
         _vadService = vadService;
         _overlayViewModel = overlayViewModel;
-        _settings = settings;
+        _settings = optionsMonitor.CurrentValue;
+
+        // 設定変更のイベントを購読
+        _settingsChangeSubscription = optionsMonitor.OnChange(newSettings =>
+        {
+            LoggerService.LogInfo("Settings updated detected in MainViewModel.");
+            _settings = newSettings;
+        });
+
         _updateService = updateService;
         _serviceProvider = serviceProvider;
-        _settingsFilePath = settingsFilePath;
         _settingsViewModel = settingsViewModel;
 
         _pipelineService.SubtitleGenerated += OnSubtitleGenerated;
@@ -752,8 +759,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
         }
 
         _settings.LastSelectedProcessName = process.Name;
-        _settings.Save(_settingsFilePath.Value);
-        Log($"選択プロセス '{process.DisplayName}' を設定ファイルに保存しました");
+        Log($"選択プロセス '{process.DisplayName}' を設定に保存しました");
     }
 
     /// <summary>
@@ -890,6 +896,8 @@ public partial class MainViewModel : ObservableObject, IDisposable
         _processingCancellation?.Dispose();
         _processingCancellation = null;
         LoggerService.LogInfo("MainViewModel.Dispose: 処理パイプライン停止完了");
+
+        _settingsChangeSubscription?.Dispose();
 
         _pipelineService.SubtitleGenerated -= OnSubtitleGenerated;
         _pipelineService.StatsUpdated -= OnPipelineStatsUpdated;
