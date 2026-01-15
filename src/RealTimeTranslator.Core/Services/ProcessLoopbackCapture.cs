@@ -521,23 +521,38 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
     {
         // 修正: ポーリングモードなので AutoConvertPcm のみ（EventCallback は外す）
         var streamFlags = AudioClientStreamFlags.AutoConvertPcm;
-        
-        // Process Loopback モードでは、バッファサイズを 0 に指定して OS に最適なサイズを決定させる
-        // これにより 0x88890021 (AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED) エラーを確実に回避できる
+
+        // Process Loopback では 0 を渡すと AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED が返るケースがあるため
+        // まず 0 を試し、失敗時はデバイス周期に合わせた値で再試行する
         var bufferDuration = 0L;
 
         // ref 引数のためにローカル変数を定義
         var sessionGuid = Guid.Empty;
 
         LoggerService.LogDebug($"InitializeAudioClient: Attempting Initialize with streamFlags={streamFlags:X}, bufferDuration={bufferDuration} (system default)");
-        ThrowOnError(_audioClient.Initialize(
+        var hResult = _audioClient.Initialize(
             AudioClientShareMode.Shared,
             streamFlags,
             bufferDuration,
             0,
             formatPointer,
-            ref sessionGuid));
-        LoggerService.LogDebug("InitializeAudioClient: Initialize succeeded with system default buffer duration");
+            ref sessionGuid);
+
+        if (hResult == unchecked((int)0x88890021)) // AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED
+        {
+            var alignedDuration = defaultDevicePeriod > 0 ? defaultDevicePeriod : 100000L;
+            LoggerService.LogWarning($"InitializeAudioClient: Buffer size not aligned with system default. Retrying with bufferDuration={alignedDuration}.");
+            hResult = _audioClient.Initialize(
+                AudioClientShareMode.Shared,
+                streamFlags,
+                alignedDuration,
+                0,
+                formatPointer,
+                ref sessionGuid);
+        }
+
+        ThrowOnError(hResult);
+        LoggerService.LogDebug("InitializeAudioClient: Initialize succeeded");
     }
 
     private void CaptureThread()
