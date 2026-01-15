@@ -14,73 +14,6 @@
 
         <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto">
             <StackPanel>
-                <GroupBox Header="ASR設定" Padding="10" Margin="0,0,0,10">
-                    <Grid>
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="160"/>
-                            <ColumnDefinition Width="*"/>
-                        </Grid.ColumnDefinitions>
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="Auto"/>
-                        </Grid.RowDefinitions>
-
-                        <TextBlock Grid.Row="0" Grid.Column="0" Text="低遅延モデル"/>
-                        <TextBox Grid.Row="0" Grid.Column="1"
-                                 Text="{Binding Settings.ASR.FastModelPath, UpdateSourceTrigger=PropertyChanged}"/>
-
-                        <TextBlock Grid.Row="1" Grid.Column="0" Text="高精度モデル" Margin="0,6,0,0"/>
-                        <TextBox Grid.Row="1" Grid.Column="1" Margin="0,6,0,0"
-                                 Text="{Binding Settings.ASR.AccurateModelPath, UpdateSourceTrigger=PropertyChanged}"/>
-
-                        <TextBlock Grid.Row="2" Grid.Column="0" Text="言語" Margin="0,6,0,0"/>
-                        <ComboBox Grid.Row="2" Grid.Column="1" Margin="0,6,0,0"
-                                  ItemsSource="{Binding Languages}"
-                                  SelectedItem="{Binding Settings.ASR.Language}"/>
-
-                        <CheckBox Grid.Row="3" Grid.Column="1" Margin="0,6,0,0"
-                                  Content="Beam Searchを有効化"
-                                  IsChecked="{Binding Settings.ASR.UseBeamSearch}"/>
-
-                        <TextBlock Grid.Row="4" Grid.Column="0" Text="Beamサイズ" Margin="0,6,0,0"/>
-                        <ComboBox Grid.Row="4" Grid.Column="1" Margin="0,6,0,0"
-                                  ItemsSource="{Binding BeamSizes}"
-                                  SelectedItem="{Binding Settings.ASR.BeamSize}"/>
-                    </Grid>
-                </GroupBox>
-
-                <GroupBox Header="GPU設定" Padding="10" Margin="0,0,0,10">
-                    <Grid>
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="160"/>
-                            <ColumnDefinition Width="*"/>
-                        </Grid.ColumnDefinitions>
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="Auto"/>
-                        </Grid.RowDefinitions>
-
-                        <CheckBox Grid.Row="0" Grid.Column="1"
-                                  Content="GPUを有効化"
-                                  IsChecked="{Binding Settings.ASR.GPU.Enabled}"/>
-
-                        <TextBlock Grid.Row="1" Grid.Column="0" Text="GPUタイプ" Margin="0,6,0,0"/>
-                        <ComboBox Grid.Row="1" Grid.Column="1" Margin="0,6,0,0"
-                                  ItemsSource="{Binding GpuTypes}"
-                                  SelectedItem="{Binding Settings.ASR.GPU.Type}"/>
-
-                        <TextBlock Grid.Row="2" Grid.Column="0" Text="GPUデバイスID" Margin="0,6,0,0"/>
-                        <ComboBox Grid.Row="2" Grid.Column="1" Margin="0,6,0,0"
-                                  ItemsSource="{Binding DeviceIds}"
-                                  SelectedItem="{Binding Settings.ASR.GPU.DeviceId}"/>
-                    </Grid>
-                </GroupBox>
-
                 <GroupBox Header="翻訳設定" Padding="10" Margin="0,0,0,10">
                     <Grid>
                         <Grid.ColumnDefinitions>
@@ -88,7 +21,6 @@
                             <ColumnDefinition Width="*"/>
                         </Grid.ColumnDefinitions>
                         <Grid.RowDefinitions>
-                            <RowDefinition Height="Auto"/>
                             <RowDefinition Height="Auto"/>
                             <RowDefinition Height="Auto"/>
                         </Grid.RowDefinitions>
@@ -102,84 +34,6 @@
                         <ComboBox Grid.Row="1" Grid.Column="1" Margin="0,6,0,0"
                                   ItemsSource="{Binding Languages}"
                                   SelectedItem="{Binding Settings.Translation.TargetLanguage}"/>
-
-                        <TextBlock Grid.Row="2" Grid.Column="0" Text="キャッシュサイズ" Margin="0,6,0,0"/>
-                        <ComboBox Grid.Row="2" Grid.Column="1" Margin="0,6,0,0"
-                                  ItemsSource="{Binding CacheSizes}"
-                                  SelectedItem="{Binding Settings.Translation.CacheSize}"/>
-                    </Grid>
-                </GroupBox>
-
-                <GroupBox Header="ゲームプロファイル設定" Padding="10" Margin="0,0,0,10">
-                    <Grid>
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="160"/>
-                            <ColumnDefinition Width="*"/>
-                        </Grid.ColumnDefinitions>
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="Auto"/>
-                        </Grid.RowDefinitions>
-
-                        <TextBlock Grid.Row="0" Grid.Column="0" Text="プロファイル"/>
-                        <StackPanel Grid.Row="0" Grid.Column="1" Orientation="Horizontal">
-                            <ComboBox Width="220"
-                                      ItemsSource="{Binding GameProfiles}"
-                                      DisplayMemberPath="Name"
-                                      SelectedItem="{Binding SelectedGameProfile}"/>
-                            <Button Content="追加" Width="70" Margin="6,0,0,0"
-                                    Command="{Binding AddProfileCommand}"/>
-                            <Button Content="削除" Width="70" Margin="6,0,0,0"
-                                    Command="{Binding RemoveProfileCommand}"/>
-                        </StackPanel>
-
-                        <TextBlock Grid.Row="1" Grid.Column="0" Text="プロファイル名" Margin="0,6,0,0"/>
-                        <TextBox Grid.Row="1" Grid.Column="1" Margin="0,6,0,0"
-                                 Text="{Binding SelectedGameProfile.Name, UpdateSourceTrigger=PropertyChanged}"/>
-
-                        <TextBlock Grid.Row="2" Grid.Column="0" Text="プロセス名" Margin="0,6,0,0"/>
-                        <TextBox Grid.Row="2" Grid.Column="1" Margin="0,6,0,0"
-                                 Text="{Binding SelectedGameProfile.ProcessName, UpdateSourceTrigger=PropertyChanged}"/>
-
-                        <TextBlock Grid.Row="3" Grid.Column="0" Text="ホットワード" Margin="0,6,0,0"/>
-                        <TextBox Grid.Row="3" Grid.Column="1" Margin="0,6,0,0"
-                                 AcceptsReturn="True"
-                                 Height="70"
-                                 Text="{Binding HotwordsText, UpdateSourceTrigger=PropertyChanged}"
-                                 ToolTip="1行に1語で入力"/>
-
-                        <TextBlock Grid.Row="4" Grid.Column="0" Text="ASR補正辞書" Margin="0,6,0,0"/>
-                        <TextBox Grid.Row="4" Grid.Column="1" Margin="0,6,0,0"
-                                 AcceptsReturn="True"
-                                 Height="80"
-                                 Text="{Binding ASRCorrectionDictionaryText, UpdateSourceTrigger=PropertyChanged}"
-                                 ToolTip="key=value 形式で1行に1エントリ"/>
-
-                        <TextBlock Grid.Row="5" Grid.Column="0" Text="翻訳前辞書" Margin="0,6,0,0"/>
-                        <TextBox Grid.Row="5" Grid.Column="1" Margin="0,6,0,0"
-                                 AcceptsReturn="True"
-                                 Height="80"
-                                 Text="{Binding PreTranslationDictionaryText, UpdateSourceTrigger=PropertyChanged}"
-                                 ToolTip="key=value 形式で1行に1エントリ"/>
-
-                        <TextBlock Grid.Row="6" Grid.Column="0" Text="翻訳後辞書" Margin="0,6,0,0"/>
-                        <TextBox Grid.Row="6" Grid.Column="1" Margin="0,6,0,0"
-                                 AcceptsReturn="True"
-                                 Height="80"
-                                 Text="{Binding PostTranslationDictionaryText, UpdateSourceTrigger=PropertyChanged}"
-                                 ToolTip="key=value 形式で1行に1エントリ"/>
-
-                        <TextBlock Grid.Row="7" Grid.Column="0" Text="初期プロンプト" Margin="0,6,0,0"/>
-                        <TextBox Grid.Row="7" Grid.Column="1" Margin="0,6,0,0"
-                                 AcceptsReturn="True"
-                                 Height="80"
-                                 Text="{Binding InitialPromptText, UpdateSourceTrigger=PropertyChanged}"/>
                     </Grid>
                 </GroupBox>
 
@@ -199,8 +53,9 @@
                         </Grid.RowDefinitions>
 
                         <TextBlock Grid.Row="0" Grid.Column="0" Text="フォント"/>
-                        <TextBox Grid.Row="0" Grid.Column="1"
-                                 Text="{Binding Settings.Overlay.FontFamily, UpdateSourceTrigger=PropertyChanged}"/>
+                        <ComboBox Grid.Row="0" Grid.Column="1"
+                                  ItemsSource="{Binding FontFamilies}"
+                                  SelectedItem="{Binding Settings.Overlay.FontFamily}"/>
 
                         <TextBlock Grid.Row="1" Grid.Column="0" Text="フォントサイズ" Margin="0,6,0,0"/>
                         <ComboBox Grid.Row="1" Grid.Column="1" Margin="0,6,0,0"
@@ -208,16 +63,25 @@
                                   SelectedItem="{Binding Settings.Overlay.FontSize}"/>
 
                         <TextBlock Grid.Row="2" Grid.Column="0" Text="仮字幕色" Margin="0,6,0,0"/>
-                        <TextBox Grid.Row="2" Grid.Column="1" Margin="0,6,0,0"
-                                 Text="{Binding Settings.Overlay.PartialTextColor, UpdateSourceTrigger=PropertyChanged}"/>
+                        <ComboBox Grid.Row="2" Grid.Column="1" Margin="0,6,0,0"
+                                  ItemsSource="{Binding TextColorOptions}"
+                                  DisplayMemberPath="Name"
+                                  SelectedValuePath="Value"
+                                  SelectedValue="{Binding Settings.Overlay.PartialTextColor}"/>
 
                         <TextBlock Grid.Row="3" Grid.Column="0" Text="確定字幕色" Margin="0,6,0,0"/>
-                        <TextBox Grid.Row="3" Grid.Column="1" Margin="0,6,0,0"
-                                 Text="{Binding Settings.Overlay.FinalTextColor, UpdateSourceTrigger=PropertyChanged}"/>
+                        <ComboBox Grid.Row="3" Grid.Column="1" Margin="0,6,0,0"
+                                  ItemsSource="{Binding TextColorOptions}"
+                                  DisplayMemberPath="Name"
+                                  SelectedValuePath="Value"
+                                  SelectedValue="{Binding Settings.Overlay.FinalTextColor}"/>
 
                         <TextBlock Grid.Row="4" Grid.Column="0" Text="背景色" Margin="0,6,0,0"/>
-                        <TextBox Grid.Row="4" Grid.Column="1" Margin="0,6,0,0"
-                                 Text="{Binding Settings.Overlay.BackgroundColor, UpdateSourceTrigger=PropertyChanged}"/>
+                        <ComboBox Grid.Row="4" Grid.Column="1" Margin="0,6,0,0"
+                                  ItemsSource="{Binding BackgroundColorOptions}"
+                                  DisplayMemberPath="Name"
+                                  SelectedValuePath="Value"
+                                  SelectedValue="{Binding Settings.Overlay.BackgroundColor}"/>
 
                         <TextBlock Grid.Row="5" Grid.Column="0" Text="最大行数" Margin="0,6,0,0"/>
                         <ComboBox Grid.Row="5" Grid.Column="1" Margin="0,6,0,0"
@@ -226,32 +90,6 @@
                     </Grid>
                 </GroupBox>
 
-                <GroupBox Header="音声キャプチャ設定" Padding="10">
-                    <Grid>
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="160"/>
-                            <ColumnDefinition Width="*"/>
-                        </Grid.ColumnDefinitions>
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="Auto"/>
-                        </Grid.RowDefinitions>
-
-                        <TextBlock Grid.Row="0" Grid.Column="0" Text="サンプルレート"/>
-                        <ComboBox Grid.Row="0" Grid.Column="1"
-                                  ItemsSource="{Binding SampleRates}"
-                                  SelectedItem="{Binding Settings.AudioCapture.SampleRate}"/>
-
-                        <TextBlock Grid.Row="1" Grid.Column="0" Text="VAD感度" Margin="0,6,0,0"/>
-                        <TextBox Grid.Row="1" Grid.Column="1" Margin="0,6,0,0"
-                                 Text="{Binding Settings.AudioCapture.VADSensitivity, UpdateSourceTrigger=PropertyChanged}"/>
-
-                        <TextBlock Grid.Row="2" Grid.Column="0" Text="最小発話長(秒)" Margin="0,6,0,0"/>
-                        <TextBox Grid.Row="2" Grid.Column="1" Margin="0,6,0,0"
-                                 Text="{Binding Settings.AudioCapture.MinSpeechDuration, UpdateSourceTrigger=PropertyChanged}"/>
-                    </Grid>
-                </GroupBox>
             </StackPanel>
         </ScrollViewer>
 
