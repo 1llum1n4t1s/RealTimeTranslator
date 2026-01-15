@@ -31,10 +31,10 @@
   },
   "AudioCapture": {
     "SampleRate": 16000,
-    "VADSensitivity": 0.5,
-    "MinSpeechDuration": 0.3,
-    "MaxSpeechDuration": 2.5,
-    "SilenceThreshold": 0.2
+    "VADSensitivity": 0.995,
+    "MinSpeechDuration": 0.4,
+    "MaxSpeechDuration": 8.0,
+    "SilenceThreshold": 1.2
   },
   "LastSelectedProcessName": "",
   "Update": {

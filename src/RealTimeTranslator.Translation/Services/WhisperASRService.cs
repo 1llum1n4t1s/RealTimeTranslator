@@ -64,6 +64,7 @@ public class WhisperASRService : IASRService
         {
             // モデルファイルをダウンロード/確認
             // パフォーマンス最適化: base モデルを使用（mediumより5-10倍高速、リアルタイム翻訳に最適）
+            // 英語音声認識用（kotoba-whisperは日本語特化のため英語音声には不適切）
             const string defaultModelFileName = "ggml-base.bin";
             const string downloadUrl = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin";
 
@@ -183,6 +184,21 @@ public class WhisperASRService : IASRService
                 };
             }
 
+            if (IsBlankAudioText(recognizedText))
+            {
+                LogDebug($"[TranscribeInternalAsync] [BLANK_AUDIO] を検出したため結果を破棄します");
+                sw.Stop();
+                return new TranscriptionResult
+                {
+                    SegmentId = segment.Id,
+                    Text = string.Empty,
+                    IsFinal = !isFast,
+                    Confidence = 0f,
+                    DetectedLanguage = "en",
+                    ProcessingTimeMs = sw.ElapsedMilliseconds
+                };
+            }
+
             LogDebug($"[TranscribeInternalAsync] 認識完了: {recognizedText}");
 
             // 誤変換補正辞書を適用
@@ -245,6 +261,18 @@ public class WhisperASRService : IASRService
             text = text.Replace(kvp.Key, kvp.Value, StringComparison.OrdinalIgnoreCase);
         }
         return text;
+    }
+
+    /// <summary>
+    /// 空白の音声判定（Whisperのプレースホルダーを除外）
+    /// </summary>
+    /// <param name="text">判定対象のテキスト</param>
+    /// <returns>空白の音声なら true</returns>
+    private static bool IsBlankAudioText(string text)
+    {
+        var normalized = text.Trim();
+        return normalized.Equals("[BLANK_AUDIO]", StringComparison.OrdinalIgnoreCase)
+            || normalized.Equals("[BLANK AUDIO]", StringComparison.OrdinalIgnoreCase);
     }
 
     private void LoadModelFromPath(string modelPath)

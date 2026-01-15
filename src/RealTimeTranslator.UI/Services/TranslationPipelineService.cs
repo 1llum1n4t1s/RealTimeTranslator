@@ -207,6 +207,11 @@ public class TranslationPipelineService : ITranslationPipelineService
             var asrResult = await _asrService.TranscribeAccurateAsync(item.Segment);
             if (string.IsNullOrWhiteSpace(asrResult.Text))
                 return;
+            if (IsBlankAudioText(asrResult.Text))
+            {
+                LoggerService.LogDebug("[Pipeline] [BLANK_AUDIO] を検出したため翻訳と字幕をスキップします");
+                return;
+            }
 
             // ステップ2: 翻訳
             string translatedText = asrResult.Text;
@@ -249,6 +254,18 @@ public class TranslationPipelineService : ITranslationPipelineService
     /// 音声セグメント作業項目
     /// </summary>
     private sealed record SpeechSegmentWorkItem(long Sequence, SpeechSegment Segment);
+
+    /// <summary>
+    /// 空白の音声判定（Whisperのプレースホルダーを除外）
+    /// </summary>
+    /// <param name="text">判定対象のテキスト</param>
+    /// <returns>空白の音声なら true</returns>
+    private static bool IsBlankAudioText(string text)
+    {
+        var normalized = text.Trim();
+        return normalized.Equals("[BLANK_AUDIO]", StringComparison.OrdinalIgnoreCase)
+            || normalized.Equals("[BLANK AUDIO]", StringComparison.OrdinalIgnoreCase);
+    }
 
     /// <summary>
     /// TranslationPipelineService のディスポーズ

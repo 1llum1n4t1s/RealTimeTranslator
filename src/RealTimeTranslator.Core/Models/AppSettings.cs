@@ -270,7 +270,7 @@ public class AudioCaptureSettings
     /// <summary>
     /// VAD感度（0.0〜1.0）
     /// </summary>
-    public float VADSensitivity { get; set; } = 0.6f;
+    public float VADSensitivity { get; set; } = 0.95f;
 
     /// <summary>
     /// 最小発話長（秒）

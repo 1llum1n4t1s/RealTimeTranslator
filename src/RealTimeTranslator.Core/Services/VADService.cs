@@ -1,3 +1,5 @@
+using System.Linq;
+using System.Reflection;
 using Microsoft.Extensions.Options;
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
@@ -13,11 +15,13 @@ namespace RealTimeTranslator.Core.Services;
 public class VADService : IVADService, IDisposable
 {
     private const string ModelFileName = "silero_vad.onnx";
-    private const string ModelDownloadUrl = "https://github.com/snakers4/silero-vad/raw/master/files/silero_vad.onnx";
+    private const string ModelDownloadUrl = "https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.onnx";
 
     // Silero VAD v4 は以下のチャンクサイズ(16kHz時)をサポート: 512, 1024, 1536
     private const int WindowSizeSamples = 512;
     private const int SampleRate = 16000;
+    // 平滑化に使う履歴数
+    private const int ProbHistorySize = 12;
 
     private AudioCaptureSettings _settings;
     private readonly ModelDownloadService _downloadService;
@@ -33,12 +37,21 @@ public class VADService : IVADService, IDisposable
     private readonly List<float> _speechBuffer = new();       // 現在の発話データ蓄積用
     private float[] _vadState = new float[2 * 1 * 128];       // VADの内部ステート (2, batch, 128)
     private bool _isSpeaking = false;
-    private float _speechStartTimestamp = 0;
-    private float _currentTimestamp = 0;
-    private float _silenceDuration = 0;
+    private double _speechStartTimestamp = 0;
+    private double _currentTimestamp = 0;
+    private double _silenceDuration = 0;
+    private readonly Queue<float> _probHistory = new();       // VAD確率の履歴
+    private float _probHistorySum = 0f;                       // VAD確率の合計（平均用）
+    private int _inferenceCount = 0;                           // 推論回数（ログ用）
 
     // パラメータ
     private float _threshold = 0.5f;
+    // 継続判定の閾値スケール
+    private const float ContinueThresholdScale = 0.5f;
+    // 継続判定の最小閾値
+    private const float MinContinueThreshold = 0.002f;
+    // 近接発話判定のスケール（無音カウント抑制）
+    private const float NearSpeechScale = 0.5f;
 
     /// <summary>
     /// VADの感度（0.0～1.0）
@@ -46,8 +59,8 @@ public class VADService : IVADService, IDisposable
     /// </summary>
     public float Sensitivity
     {
-        get => _threshold;
-        set => _threshold = Math.Clamp(1.0f - value, 0.1f, 0.9f); // 感度が高いほど閾値を下げる
+        get => 1.0f - _threshold;
+        set => _threshold = Math.Clamp(1.0f - value, 0.001f, 0.99f); // 感度が高いほど閾値を下げる
     }
 
     /// <summary>
@@ -135,12 +148,77 @@ public class VADService : IVADService, IDisposable
                 lock (_lock)
                 {
                     var options = new SessionOptions();
-                    options.RegisterOrtExtensions(); // 必要に応じて
                     options.LogSeverityLevel = OrtLoggingLevel.ORT_LOGGING_LEVEL_ERROR;
+                    
+                    // GPUプロバイダーを追加（Windows環境ではDirectMLを使用）
+                    bool dmlAdded = false;
+                    try
+                    {
+                        // DirectMLプロバイダーを追加（デバイスID 0 = デフォルトGPU）
+                        // ONNX Runtime 1.20.1のDirectMLパッケージでは、拡張メソッドとして提供される
+                        var sessionOptionsType = typeof(SessionOptions);
+                        var assembly = sessionOptionsType.Assembly;
+                        
+                        // すべてのアセンブリからDirectML拡張メソッドを探す
+                        var allAssemblies = AppDomain.CurrentDomain.GetAssemblies();
+                        foreach (var asm in allAssemblies)
+                        {
+                            try
+                            {
+                                var dmlTypes = asm.GetTypes()
+                                    .Where(t => t.IsSealed && t.IsAbstract && t.IsClass)
+                                    .Where(t => t.Namespace?.Contains("OnnxRuntime") == true || 
+                                                t.Namespace?.Contains("DirectML") == true);
+                                
+                                foreach (var dmlType in dmlTypes)
+                                {
+                                    var dmlMethod = dmlType.GetMethods(BindingFlags.Public | BindingFlags.Static)
+                                        .FirstOrDefault(m => m.Name == "AppendExecutionProvider_DML" && 
+                                                            m.GetParameters().Length >= 1 &&
+                                                            m.GetParameters()[0].ParameterType == typeof(SessionOptions));
+                                    
+                                    if (dmlMethod != null)
+                                    {
+                                        var parameters = dmlMethod.GetParameters();
+                                        if (parameters.Length == 1)
+                                        {
+                                            dmlMethod.Invoke(null, new object[] { options });
+                                        }
+                                        else if (parameters.Length == 2 && parameters[1].ParameterType == typeof(int))
+                                        {
+                                            dmlMethod.Invoke(null, new object[] { options, 0 });
+                                        }
+                                        LoggerService.LogInfo($"[VAD] DirectML GPU provider added for Silero VAD via {dmlType.FullName}");
+                                        dmlAdded = true;
+                                        break;
+                                    }
+                                }
+                                
+                                if (dmlAdded)
+                                    break;
+                            }
+                            catch
+                            {
+                                // アセンブリの読み込みに失敗した場合はスキップ
+                                continue;
+                            }
+                        }
+                    }
+                    catch (Exception dmlEx)
+                    {
+                        LoggerService.LogWarning($"[VAD] DirectML provider not available: {dmlEx.Message}, using CPU");
+                    }
+                    
+                    if (!dmlAdded)
+                    {
+                        LoggerService.LogDebug("[VAD] DirectML provider not found, using CPU execution provider");
+                    }
+                    
+                    LoggerService.LogDebug($"[VAD] Creating InferenceSession with model: {resolvedPath}");
                     _session = new InferenceSession(resolvedPath, options);
                     _isModelLoaded = true;
                     _modelLoadWarningLogged = false;
-                    LoggerService.LogInfo("Silero VAD model loaded successfully.");
+                    LoggerService.LogInfo("Silero VAD model loaded successfully (GPU acceleration enabled if available).");
                     ResetState();
                 }
             }
@@ -174,9 +252,7 @@ public class VADService : IVADService, IDisposable
             }
 
             if (!_isModelLoaded)
-            {
                 yield break;
-            }
 
             // 入力データをバッファに追加
             _audioBuffer.AddRange(audioData);
@@ -190,13 +266,26 @@ public class VADService : IVADService, IDisposable
 
                 // 推論実行
                 float prob = RunInference(chunk);
+                float smoothedProb = UpdateSmoothedProbability(prob);
 
                 // 時間更新 (16kHzで512サンプル = 32ms)
-                float chunkDuration = (float)WindowSizeSamples / SampleRate;
+                double chunkDuration = (double)WindowSizeSamples / SampleRate;
                 _currentTimestamp += chunkDuration;
 
+                // デバッグ：確率値のログ出力（定期的に）
+                // 100回に1回、または確率が0.01以上の場合にログ出力
+                _inferenceCount++;
+                if (_inferenceCount % 100 == 0 || smoothedProb >= 0.01f)
+                {
+                    // ログ出力用の実効閾値
+                    var effectiveThreshold = _isSpeaking ? GetContinueThreshold() : _threshold;
+                    LoggerService.LogDebug($"[VAD] Inference #{_inferenceCount}: prob={prob:F3}, smoothed={smoothedProb:F3}, threshold={effectiveThreshold:F3}, speaking={_isSpeaking}");
+                }
+
                 // 判定ロジック
-                if (prob >= _threshold)
+                // 発話判定に使う実効閾値
+                var speechThreshold = _isSpeaking ? GetContinueThreshold() : _threshold;
+                if (smoothedProb >= speechThreshold)
                 {
                     // 発話検出
                     if (!_isSpeaking)
@@ -204,7 +293,7 @@ public class VADService : IVADService, IDisposable
                         _isSpeaking = true;
                         _speechStartTimestamp = _currentTimestamp - chunkDuration;
                         _speechBuffer.Clear();
-                        LoggerService.LogDebug($"[VAD] Speech started (Prob: {prob:F2})");
+                        LoggerService.LogDebug($"[VAD] Speech started (Prob: {smoothedProb:F2})");
                     }
 
                     _speechBuffer.AddRange(chunk);
@@ -216,7 +305,10 @@ public class VADService : IVADService, IDisposable
                     if (_isSpeaking)
                     {
                         _speechBuffer.AddRange(chunk);
-                        _silenceDuration += chunkDuration;
+                        if (smoothedProb < speechThreshold * NearSpeechScale)
+                        {
+                            _silenceDuration += chunkDuration;
+                        }
 
                         // 無音が一定時間続いたら発話終了とみなす
                         if (_silenceDuration > _settings.SilenceThreshold)
@@ -231,7 +323,7 @@ public class VADService : IVADService, IDisposable
                 // 最大発話長チェック
                 if (_isSpeaking)
                 {
-                    float currentDuration = _currentTimestamp - _speechStartTimestamp;
+                    double currentDuration = _currentTimestamp - _speechStartTimestamp;
                     if (currentDuration >= MaxSpeechDuration)
                     {
                         var segment = FinalizeSegment();
@@ -253,6 +345,14 @@ public class VADService : IVADService, IDisposable
 
         try
         {
+            // 音声データの振幅を確認（デバッグ用）
+            if (_inferenceCount % 500 == 0)
+            {
+                float maxAmp = chunk.Max(Math.Abs);
+                float avgAmp = chunk.Average(Math.Abs);
+                LoggerService.LogDebug($"[VAD] Chunk amplitude check: max={maxAmp:F3}, avg={avgAmp:F3}, samples={chunk.Length}");
+            }
+            
             // Input tensor: [batch, samples] -> [1, 512]
             var inputTensor = new DenseTensor<float>(new Memory<float>(chunk), new[] { 1, WindowSizeSamples });
 
@@ -300,11 +400,12 @@ public class VADService : IVADService, IDisposable
         if (_speechBuffer.Count == 0)
             return null;
 
-        float duration = (float)_speechBuffer.Count / SampleRate;
+        double duration = (double)_speechBuffer.Count / SampleRate;
 
         // 最小発話長チェック
         if (duration < MinSpeechDuration)
         {
+            LoggerService.LogDebug($"[VAD] Segment discarded (too short): {duration:F2}s < {MinSpeechDuration:F2}s");
             _speechBuffer.Clear();
             return null;
         }
@@ -313,13 +414,37 @@ public class VADService : IVADService, IDisposable
 
         var segment = new SpeechSegment
         {
-            StartTime = _speechStartTimestamp,
-            EndTime = _currentTimestamp,
+            StartTime = (float)_speechStartTimestamp,
+            EndTime = (float)_currentTimestamp,
             AudioData = _speechBuffer.ToArray()
         };
 
         _speechBuffer.Clear();
         return segment;
+    }
+
+    /// <summary>
+    /// 継続判定用の閾値を取得
+    /// </summary>
+    private float GetContinueThreshold()
+    {
+        return Math.Max(_threshold * ContinueThresholdScale, MinContinueThreshold);
+    }
+
+    /// <summary>
+    /// VAD確率の移動平均を更新
+    /// </summary>
+    /// <param name="prob">最新の確率</param>
+    /// <returns>平滑化後の確率</returns>
+    private float UpdateSmoothedProbability(float prob)
+    {
+        _probHistory.Enqueue(prob);
+        _probHistorySum += prob;
+        while (_probHistory.Count > ProbHistorySize)
+        {
+            _probHistorySum -= _probHistory.Dequeue();
+        }
+        return _probHistory.Count == 0 ? 0f : _probHistorySum / _probHistory.Count;
     }
 
     /// <summary>
@@ -341,6 +466,8 @@ public class VADService : IVADService, IDisposable
         Array.Clear(_vadState, 0, _vadState.Length);
         _audioBuffer.Clear();
         _speechBuffer.Clear();
+        _probHistory.Clear();
+        _probHistorySum = 0f;
         _isSpeaking = false;
         _silenceDuration = 0;
     }

@@ -135,14 +135,20 @@ public class ModelDownloadService : IDisposable
         LoggerService.LogDebug($"[{serviceName}] Download URL validation passed");
 
         var targetDirectory = Path.GetDirectoryName(resolvedPath);
+        LoggerService.LogDebug($"[{serviceName}] Target directory: {targetDirectory}");
         if (!string.IsNullOrWhiteSpace(targetDirectory))
         {
+            LoggerService.LogDebug($"[{serviceName}] Creating directory: {targetDirectory}");
             Directory.CreateDirectory(targetDirectory);
+            LoggerService.LogDebug($"[{serviceName}] Directory created successfully");
         }
 
+        LoggerService.LogDebug($"[{serviceName}] Waiting for download semaphore...");
         await _downloadSemaphore.WaitAsync(cancellationToken);
+        LoggerService.LogDebug($"[{serviceName}] Download semaphore acquired");
         try
         {
+            LoggerService.LogDebug($"[{serviceName}] Checking if file exists after semaphore: {File.Exists(resolvedPath)}");
             if (File.Exists(resolvedPath))
             {
                 if (await ValidateModelFileAsync(resolvedPath, downloadUrl, serviceName, modelLabel, cancellationToken))
@@ -169,8 +175,10 @@ public class ModelDownloadService : IDisposable
 
             try
             {
+                LoggerService.LogInfo($"[{serviceName}] Starting model download from {downloadUrl}");
                 System.Diagnostics.Debug.WriteLine($"[{serviceName}] Starting model download...");
                 await DownloadModelAsync(resolvedPath, downloadUrl, serviceName, modelLabel, cancellationToken);
+                LoggerService.LogInfo($"[{serviceName}] Model download completed");
                 System.Diagnostics.Debug.WriteLine($"[{serviceName}] Model download completed.");
             }
             catch (OperationCanceledException ex)
@@ -207,6 +215,8 @@ public class ModelDownloadService : IDisposable
             }
             catch (Exception ex)
             {
+                LoggerService.LogError($"[{serviceName}] Unexpected error during download: {ex.GetType().Name}: {ex.Message}");
+                LoggerService.LogDebug($"[{serviceName}] Exception StackTrace: {ex.StackTrace}");
                 System.Diagnostics.Debug.WriteLine($"[{serviceName}] Unexpected error during download: {ex.GetType().Name}: {ex.Message}");
                 OnStatusChanged(new ModelStatusChangedEventArgs(
                     serviceName,
@@ -219,19 +229,24 @@ public class ModelDownloadService : IDisposable
         }
         finally
         {
+            LoggerService.LogDebug($"[{serviceName}] Releasing download semaphore");
             _downloadSemaphore.Release();
         }
 
+        LoggerService.LogDebug($"[{serviceName}] Performing final check...");
         var finalCheck = File.Exists(resolvedPath);
         if (!finalCheck)
         {
+            LoggerService.LogError($"[{serviceName}] ERROR: Model file still does not exist after download attempt. Path: {resolvedPath}");
             System.Diagnostics.Debug.WriteLine($"[{serviceName}] ERROR: Model file still does not exist after download attempt. Path: {resolvedPath}");
         }
         else
         {
             var fileInfo = new FileInfo(resolvedPath);
+            LoggerService.LogInfo($"[{serviceName}] Download completed successfully. File size: {fileInfo.Length} bytes");
             System.Diagnostics.Debug.WriteLine($"[{serviceName}] Download completed successfully. File size: {fileInfo.Length} bytes");
         }
+        LoggerService.LogDebug($"[{serviceName}] EnsureModelAsync returning: {(finalCheck ? resolvedPath : "null")}");
         return finalCheck ? resolvedPath : null;
     }
 
@@ -242,12 +257,18 @@ public class ModelDownloadService : IDisposable
         string modelLabel,
         CancellationToken cancellationToken)
     {
+        LoggerService.LogDebug($"[{serviceName}] DownloadModelAsync: Starting download: URL={downloadUrl}, Target={targetPath}");
         System.Diagnostics.Debug.WriteLine($"[{serviceName}] Starting download: URL={downloadUrl}, Target={targetPath}");
 
+        LoggerService.LogDebug($"[{serviceName}] DownloadModelAsync: Sending HTTP GET request...");
         using var response = await _httpClient.GetAsync(downloadUrl, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+        LoggerService.LogDebug($"[{serviceName}] DownloadModelAsync: HTTP response received, Status={response.StatusCode}");
         response.EnsureSuccessStatusCode();
+        LoggerService.LogDebug($"[{serviceName}] DownloadModelAsync: Status code validated successfully");
 
+        LoggerService.LogDebug($"[{serviceName}] DownloadModelAsync: Reading response stream...");
         await using var httpStream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        LoggerService.LogDebug($"[{serviceName}] DownloadModelAsync: Creating file stream at {targetPath}");
         await using var fileStream = new FileStream(
             targetPath,
             FileMode.Create,
@@ -255,12 +276,14 @@ public class ModelDownloadService : IDisposable
             FileShare.None,
             bufferSize: DefaultBufferSize,
             useAsync: true);
+        LoggerService.LogDebug($"[{serviceName}] DownloadModelAsync: File stream created successfully");
 
         var totalBytes = response.Content.Headers.ContentLength;
         var buffer = new byte[DefaultBufferSize];
         long totalRead = 0;
         int bytesRead;
 
+        LoggerService.LogInfo($"[{serviceName}] DownloadModelAsync: Content-Length: {totalBytes} bytes");
         System.Diagnostics.Debug.WriteLine($"[{serviceName}] Content-Length: {totalBytes} bytes");
 
         OnStatusChanged(new ModelStatusChangedEventArgs(
@@ -269,6 +292,7 @@ public class ModelDownloadService : IDisposable
             ModelStatusType.Downloading,
             "モデルのダウンロードを開始しました。"));
 
+        LoggerService.LogDebug($"[{serviceName}] DownloadModelAsync: Starting download loop...");
         while ((bytesRead = await httpStream.ReadAsync(buffer, cancellationToken)) > 0)
         {
             await fileStream.WriteAsync(buffer.AsMemory(0, bytesRead), cancellationToken);
@@ -284,6 +308,7 @@ public class ModelDownloadService : IDisposable
                 progress));
         }
 
+        LoggerService.LogInfo($"[{serviceName}] DownloadModelAsync: Download loop completed. Total bytes written: {totalRead}");
         Console.WriteLine($"Downloaded model to: {targetPath}");
         System.Diagnostics.Debug.WriteLine($"[{serviceName}] Download complete: {totalRead} bytes written to {targetPath}");
         OnStatusChanged(new ModelStatusChangedEventArgs(
