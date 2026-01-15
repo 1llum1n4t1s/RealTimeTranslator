@@ -175,7 +175,16 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
                 // デバイスのフォーマット情報をベースに、Float 32-bit の形式を構築
                 // 0x88890008 エラー対策: デバイスが Extensible 形式の場合、こちらも Extensible 構造体を使う必要がある
                 
+                // デバイスが Extensible 形式かどうかを確認
+                var isExtensible = deviceMixFormat is NAudio.Wave.WaveFormatExtensible;
+                if (isExtensible)
+                {
+                    LoggerService.LogDebug($"ProcessLoopbackCapture: Device format is Extensible (WAVEFORMATEXTENSIBLE)");
+                }
+                
                 // チャネル数に基づいてチャネルマスクを計算
+                // 注: NAudio の WaveFormatExtensible には ChannelMask プロパティがないため、
+                // チャネル数から適切なマスクを計算します
                 var channelMask = 0x3; // Default: SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT
                 switch (deviceMixFormat.Channels)
                 {
@@ -195,7 +204,6 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
                         channelMask = 0xFF; // 7.1 channels
                         break;
                     default:
-                        // 2チャネルをデフォルトに
                         channelMask = 0x03;
                         break;
                 }
