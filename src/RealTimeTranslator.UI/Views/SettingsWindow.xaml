@@ -28,12 +28,12 @@
                         <TextBlock Grid.Row="0" Grid.Column="0" Text="ソース言語"/>
                         <ComboBox Grid.Row="0" Grid.Column="1"
                                   ItemsSource="{Binding Languages}"
-                                  SelectedItem="{Binding Settings.Translation.SourceLanguage}"/>
+                                  SelectedItem="{Binding Settings.Translation.SourceLanguage, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
 
                         <TextBlock Grid.Row="1" Grid.Column="0" Text="ターゲット言語" Margin="0,6,0,0"/>
                         <ComboBox Grid.Row="1" Grid.Column="1" Margin="0,6,0,0"
                                   ItemsSource="{Binding Languages}"
-                                  SelectedItem="{Binding Settings.Translation.TargetLanguage}"/>
+                                  SelectedItem="{Binding Settings.Translation.TargetLanguage, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
                     </Grid>
                 </GroupBox>
 
@@ -55,38 +55,38 @@
                         <TextBlock Grid.Row="0" Grid.Column="0" Text="フォント"/>
                         <ComboBox Grid.Row="0" Grid.Column="1"
                                   ItemsSource="{Binding FontFamilies}"
-                                  SelectedItem="{Binding Settings.Overlay.FontFamily}"/>
+                                  SelectedItem="{Binding Settings.Overlay.FontFamily, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
 
                         <TextBlock Grid.Row="1" Grid.Column="0" Text="フォントサイズ" Margin="0,6,0,0"/>
                         <ComboBox Grid.Row="1" Grid.Column="1" Margin="0,6,0,0"
                                   ItemsSource="{Binding FontSizes}"
-                                  SelectedItem="{Binding Settings.Overlay.FontSize}"/>
+                                  SelectedItem="{Binding Settings.Overlay.FontSize, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
 
                         <TextBlock Grid.Row="2" Grid.Column="0" Text="仮字幕色" Margin="0,6,0,0"/>
                         <ComboBox Grid.Row="2" Grid.Column="1" Margin="0,6,0,0"
                                   ItemsSource="{Binding TextColorOptions}"
                                   DisplayMemberPath="Name"
                                   SelectedValuePath="Value"
-                                  SelectedValue="{Binding Settings.Overlay.PartialTextColor}"/>
+                                  SelectedValue="{Binding Settings.Overlay.PartialTextColor, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
 
                         <TextBlock Grid.Row="3" Grid.Column="0" Text="確定字幕色" Margin="0,6,0,0"/>
                         <ComboBox Grid.Row="3" Grid.Column="1" Margin="0,6,0,0"
                                   ItemsSource="{Binding TextColorOptions}"
                                   DisplayMemberPath="Name"
                                   SelectedValuePath="Value"
-                                  SelectedValue="{Binding Settings.Overlay.FinalTextColor}"/>
+                                  SelectedValue="{Binding Settings.Overlay.FinalTextColor, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
 
                         <TextBlock Grid.Row="4" Grid.Column="0" Text="背景色" Margin="0,6,0,0"/>
                         <ComboBox Grid.Row="4" Grid.Column="1" Margin="0,6,0,0"
                                   ItemsSource="{Binding BackgroundColorOptions}"
                                   DisplayMemberPath="Name"
                                   SelectedValuePath="Value"
-                                  SelectedValue="{Binding Settings.Overlay.BackgroundColor}"/>
+                                  SelectedValue="{Binding Settings.Overlay.BackgroundColor, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
 
                         <TextBlock Grid.Row="5" Grid.Column="0" Text="最大行数" Margin="0,6,0,0"/>
                         <ComboBox Grid.Row="5" Grid.Column="1" Margin="0,6,0,0"
                                   ItemsSource="{Binding MaxLinesList}"
-                                  SelectedItem="{Binding Settings.Overlay.MaxLines}"/>
+                                  SelectedItem="{Binding Settings.Overlay.MaxLines, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
                     </Grid>
                 </GroupBox>
 
