@@ -157,7 +157,16 @@ public class VADService : IVADService, IDisposable
                     }
                     
                     LoggerService.LogDebug($"[VAD] Creating InferenceSession with model: {resolvedPath}");
-                    _session = new InferenceSession(resolvedPath, options);
+                    try
+                    {
+                        _session = new InferenceSession(resolvedPath, options);
+                    }
+                    catch (Exception sessionEx)
+                    {
+                        LoggerService.LogError($"[VAD] InferenceSession creation failed: {sessionEx.GetType().Name} - {sessionEx.Message}");
+                        LoggerService.LogDebug($"[VAD] InferenceSession StackTrace: {sessionEx.StackTrace}");
+                        throw;
+                    }
                     _isModelLoaded = true;
                     _modelLoadWarningLogged = false;
                     LoggerService.LogInfo("Silero VAD model loaded successfully (GPU acceleration enabled if available).");
