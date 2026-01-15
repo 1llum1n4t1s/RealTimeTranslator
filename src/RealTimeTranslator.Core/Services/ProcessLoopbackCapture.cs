@@ -29,6 +29,8 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
     private const int AudioBufferDurationMs = 100; // オーディオバッファの長さ（ミリ秒）
     private const int CaptureThreadSleepMs = 5; // キャプチャスレッドのスリープ時間（ミリ秒）
     private const long HundredNanosecondsPerSecond = 10000000L; // 1秒あたりの100ナノ秒単位数
+    private const int AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED = unchecked((int)0x88890021); // AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED
+    private const long DefaultBufferDuration10ms = 100000L; // デフォルトバッファ期間（10ms、100ns単位）
 
     // CLSCTX constants
     private static class CLSCTX
@@ -529,6 +531,16 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
         // ref 引数のためにローカル変数を定義
         var sessionGuid = Guid.Empty;
 
+        // _audioClient.Initialize の呼び出しをラップするローカル関数
+        int InitializeWithDuration(long duration) =>
+            _audioClient.Initialize(
+                AudioClientShareMode.Shared,
+                streamFlags,
+                duration,
+                0,
+                formatPointer,
+                ref sessionGuid);
+
         var sharedModePeriod = GetSharedModePeriodHns(formatPointer, waveFormat.SampleRate);
         if (sharedModePeriod.HasValue)
         {
@@ -539,38 +551,20 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
         int hResult;
         try
         {
-            hResult = _audioClient.Initialize(
-                AudioClientShareMode.Shared,
-                streamFlags,
-                bufferDuration,
-                0,
-                formatPointer,
-                ref sessionGuid);
+            hResult = InitializeWithDuration(bufferDuration);
         }
-        catch (COMException ex) when (ex.HResult == unchecked((int)0x88890021))
+        catch (COMException ex) when (ex.HResult == AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED)
         {
-            var alignedDuration = sharedModePeriod ?? (defaultDevicePeriod > 0 ? defaultDevicePeriod : 100000L);
+            var alignedDuration = sharedModePeriod ?? (defaultDevicePeriod > 0 ? defaultDevicePeriod : DefaultBufferDuration10ms);
             LoggerService.LogWarning($"InitializeAudioClient: Buffer size not aligned (COMException). Retrying with bufferDuration={alignedDuration}.");
-            hResult = _audioClient.Initialize(
-                AudioClientShareMode.Shared,
-                streamFlags,
-                alignedDuration,
-                0,
-                formatPointer,
-                ref sessionGuid);
+            hResult = InitializeWithDuration(alignedDuration);
         }
 
-        if (hResult == unchecked((int)0x88890021)) // AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED
+        if (hResult == AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED)
         {
-            var alignedDuration = sharedModePeriod ?? (defaultDevicePeriod > 0 ? defaultDevicePeriod : 100000L);
+            var alignedDuration = sharedModePeriod ?? (defaultDevicePeriod > 0 ? defaultDevicePeriod : DefaultBufferDuration10ms);
             LoggerService.LogWarning($"InitializeAudioClient: Buffer size not aligned with system default. Retrying with bufferDuration={alignedDuration}.");
-            hResult = _audioClient.Initialize(
-                AudioClientShareMode.Shared,
-                streamFlags,
-                alignedDuration,
-                0,
-                formatPointer,
-                ref sessionGuid);
+            hResult = InitializeWithDuration(alignedDuration);
         }
 
         ThrowOnError(hResult);
