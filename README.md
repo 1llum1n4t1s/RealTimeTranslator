@@ -47,6 +47,46 @@ Windows向けのローカル完結型・リアルタイム字幕翻訳アプリ�
 | [Velopack](https://github.com/velopack/velopack) | 自動更新 |
 | [CommunityToolkit.Mvvm](https://github.com/CommunityToolkit/dotnet) | MVVM |
 
+## テスト
+
+プロジェクトには主要なユニットテストスイートが含まれており、Process Loopback APIの修正を確認できます。
+
+### テスト実行
+
+```bash
+# すべてのテストを実行
+dotnet test
+
+# 統合テストを除外してユニットテストのみ実行
+dotnet test --filter "TestCategory!=Integration"
+
+# ビルドとテストを自動実行
+.\build-and-test.ps1
+```
+
+### テストカテゴリ
+
+| カテゴリ | 内容 |
+| --- | --- |
+| Unit | メモリレイアウト、GUID検証、PROPVARIANT構築などの基本機能 |
+| Integration | Windowsオーディオサブシステムが必要なテスト（通常スキップ） |
+| Performance | メモリ割り当てパフォーマンスの検証 |
+
+### CI/CD
+
+PowerShellスクリプト `build-and-test.ps1` で自動ビルド・テストを実行できます：
+
+```powershell
+# 基本的なビルドとテスト
+.\build-and-test.ps1
+
+# 統合テストをスキップ
+.\build-and-test.ps1 -SkipIntegrationTests
+
+# 詳細出力
+.\build-and-test.ps1 -Verbose
+```
+
 ## セットアップ手順
 
 1. リポジトリをクローン

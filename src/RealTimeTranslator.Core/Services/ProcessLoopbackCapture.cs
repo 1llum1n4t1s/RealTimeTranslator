@@ -18,6 +18,11 @@ namespace RealTimeTranslator.Core.Services;
 internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
 {
     /// <summary>
+    /// Process Loopback 用のデバイスインターフェースパス GUID
+    /// 完全なパスは \\?\SWD#MMDEVAPI#{GUID} 形式
+    /// </summary>
+    internal const string ProcessLoopbackDeviceInterfaceGuid = "{2eef81be-33fa-4800-9670-1cd474972c3f}";
+    /// <summary>
     /// Process Loopback 用の仮想オーディオデバイスID
     /// </summary>
     private const string VirtualAudioDeviceProcessLoopback = "{2eef81be-33fa-4800-9670-1cd474972c3f}";
@@ -25,7 +30,82 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
     private const int CaptureThreadSleepMs = 5; // キャプチャスレッドのスリープ時間（ミリ秒）
     private const long HundredNanosecondsPerSecond = 10000000L; // 1秒あたりの100ナノ秒単位数
 
-    private readonly IAudioClient3 _audioClient;
+    // CLSCTX constants
+    private static class CLSCTX
+    {
+        public const int CLSCTX_INPROC_SERVER = 0x1;
+        public const int CLSCTX_INPROC_HANDLER = 0x2;
+        public const int CLSCTX_LOCAL_SERVER = 0x4;
+        public const int CLSCTX_INPROC_SERVER16 = 0x8;
+        public const int CLSCTX_REMOTE_SERVER = 0x10;
+        public const int CLSCTX_INPROC_HANDLER16 = 0x20;
+        public const int CLSCTX_RESERVED1 = 0x40;
+        public const int CLSCTX_RESERVED2 = 0x80;
+        public const int CLSCTX_RESERVED3 = 0x100;
+        public const int CLSCTX_RESERVED4 = 0x200;
+        public const int CLSCTX_NO_CODE_DOWNLOAD = 0x400;
+        public const int CLSCTX_RESERVED5 = 0x800;
+        public const int CLSCTX_NO_CUSTOM_MARSHAL = 0x1000;
+        public const int CLSCTX_ENABLE_CODE_DOWNLOAD = 0x2000;
+        public const int CLSCTX_NO_FAILURE_LOG = 0x4000;
+        public const int CLSCTX_DISABLE_AAA = 0x8000;
+        public const int CLSCTX_ENABLE_AAA = 0x10000;
+        public const int CLSCTX_FROM_DEFAULT_CONTEXT = 0x20000;
+        public const int CLSCTX_ACTIVATE_X86_SERVER = 0x40000;
+        public const int CLSCTX_ACTIVATE_64_BIT_SERVER = 0x80000;
+        public const int CLSCTX_ENABLE_CLOAKING = 0x100000;
+        public const int CLSCTX_APPCONTAINER = 0x400000;
+        public const int CLSCTX_ACTIVATE_AAA_AS_IU = 0x800000;
+        public const int CLSCTX_RESERVED6 = 0x1000000;
+        public const int CLSCTX_ACTIVATE_ARM32_SERVER = 0x2000000;
+        public const uint CLSCTX_PS_DLL = 0x80000000;
+        public const int CLSCTX_ALL = CLSCTX_INPROC_SERVER | CLSCTX_INPROC_HANDLER | CLSCTX_LOCAL_SERVER | CLSCTX_REMOTE_SERVER;
+    }
+
+    // AUDCLNT_SHAREMODE
+    private enum AUDCLNT_SHAREMODE
+    {
+        AUDCLNT_SHAREMODE_SHARED = 0,
+        AUDCLNT_SHAREMODE_EXCLUSIVE = 1
+    }
+
+    // AUDCLNT_STREAMFLAGS
+    [Flags]
+    private enum AUDCLNT_STREAMFLAGS : uint
+    {
+        AUDCLNT_STREAMFLAGS_CROSSPROCESS = 0x00010000,
+        AUDCLNT_STREAMFLAGS_LOOPBACK = 0x00020000,
+        AUDCLNT_STREAMFLAGS_EVENTCALLBACK = 0x00040000,
+        AUDCLNT_STREAMFLAGS_NOPERSIST = 0x00080000,
+        AUDCLNT_STREAMFLAGS_RATEADJUST = 0x00100000,
+        AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY = 0x08000000,
+        AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM = 0x80000000
+    }
+
+    // AudioClientActivationType
+    private enum AudioClientActivationType : uint
+    {
+        Default = 0,
+        ProcessLoopback = 1
+    }
+
+    // ProcessLoopbackMode
+    private enum ProcessLoopbackMode : uint
+    {
+        IncludeTargetProcessTree = 0,
+        ExcludeTargetProcessTree = 1
+    }
+
+    // AudioClientProcessLoopbackParams
+    [StructLayout(LayoutKind.Sequential)]
+    private struct AudioClientProcessLoopbackParams
+    {
+        public uint TargetProcessId;
+        public ProcessLoopbackMode ProcessLoopbackMode;
+    }
+
+
+    private readonly IAudioClient _audioClient;
     private readonly IAudioCaptureClient _captureClient;
     private readonly object _captureLock = new();
     private Thread? _captureThread;
@@ -50,7 +130,7 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
     {
         _targetProcessId = targetProcessId;
         MMDevice? device = null;
-        IAudioClient3? audioClient = null;
+        IAudioClient? audioClient = null;
         IAudioCaptureClient? captureClient = null;
         var formatPointer = IntPtr.Zero;
 
@@ -61,7 +141,7 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
 
             try
             {
-                audioClient = ActivateProcessAudioClient(targetProcessId);
+                audioClient = ActivateProcessAudioClient(device, targetProcessId);
             }
             catch (Exception activationEx)
             {
@@ -71,10 +151,13 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
             }
 
             _audioClient = audioClient;
+            LoggerService.LogDebug($"ProcessLoopbackCapture: audioClient assigned to _audioClient, Type={audioClient?.GetType().Name}");
 
             try
             {
+                LoggerService.LogDebug($"ProcessLoopbackCapture: Calling GetMixFormat on IAudioClient");
                 ThrowOnError(_audioClient.GetMixFormat(out formatPointer));
+                LoggerService.LogDebug($"ProcessLoopbackCapture: GetMixFormat succeeded, formatPointer=0x{formatPointer:X}");
                 WaveFormat = CreateWaveFormat(formatPointer);
                 InitializeAudioClient(formatPointer, WaveFormat);
             }
@@ -169,111 +252,174 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
 
     /// <summary>
     /// プロセス単位のオーディオクライアントをアクティベート
+    /// 重要：このメソッドは COM 初期化されたスレッド（通常は UI スレッド）から呼ぶ必要がある
     /// </summary>
-    private static IAudioClient3 ActivateProcessAudioClient(int targetProcessId)
+    private static unsafe IAudioClient ActivateProcessAudioClient(MMDevice device, int targetProcessId)
     {
+        LoggerService.LogDebug($"ActivateProcessAudioClient: Activating IAudioClient for device {device.ID}");
+
+        // Create process loopback parameters
+        var paramsSize = sizeof(AudioClientActivationParams);
+        LoggerService.LogDebug($"ActivateProcessAudioClient: paramsSize={paramsSize}, expected 12");
+
         var activationParams = new AudioClientActivationParams
         {
             ActivationType = AudioClientActivationType.ProcessLoopback,
-            TargetProcessId = (uint)targetProcessId,
-            ProcessLoopbackMode = ProcessLoopbackMode.IncludeTargetProcessTree
+            ProcessLoopbackParams = new AudioClientProcessLoopbackParams
+            {
+                TargetProcessId = (uint)targetProcessId,
+                ProcessLoopbackMode = ProcessLoopbackMode.IncludeTargetProcessTree
+            }
         };
 
-        var paramsSize = Marshal.SizeOf<AudioClientActivationParams>();
-        LoggerService.LogDebug($"ActivateProcessAudioClient: paramsSize={paramsSize}, expected 12");
-        LoggerService.LogDebug($"ActivateProcessAudioClient: ActivationType={activationParams.ActivationType} ({(int)activationParams.ActivationType}), TargetProcessId={activationParams.TargetProcessId}, ProcessLoopbackMode={activationParams.ProcessLoopbackMode} ({(int)activationParams.ProcessLoopbackMode})");
+        LoggerService.LogDebug($"ActivateProcessAudioClient: ActivationType=ProcessLoopback ({(int)activationParams.ActivationType}), TargetProcessId={targetProcessId}, ProcessLoopbackMode=IncludeTargetProcessTree ({(int)activationParams.ProcessLoopbackParams.ProcessLoopbackMode})");
 
-        // Windows バージョン情報をログ出力
-        var osVersion = Environment.OSVersion;
-        LoggerService.LogDebug($"ActivateProcessAudioClient: OS Version={osVersion.Version}, Platform={osVersion.Platform}");
-
-        if (paramsSize != 12)
-        {
-            LoggerService.LogError($"ActivateProcessAudioClient: AudioClientActivationParams has invalid size {paramsSize}, expected 12");
-        }
-
+        // Marshal the parameters to unmanaged memory
         var paramsPtr = Marshal.AllocHGlobal(paramsSize);
         try
         {
             Marshal.StructureToPtr(activationParams, paramsPtr, false);
-            
-            // メモリダンプをログ出力（デバッグ用）
-            var dumpBytes = new byte[paramsSize];
-            Marshal.Copy(paramsPtr, dumpBytes, 0, paramsSize);
-            LoggerService.LogDebug($"ActivateProcessAudioClient: Memory dump = {BitConverter.ToString(dumpBytes)}");
+            LoggerService.LogDebug($"ActivateProcessAudioClient: AudioClientActivationParams marshaled successfully");
 
-            var activationParamsPtr = new PropVariant
+            // Dump memory for debugging
+            var paramsBytes = new byte[paramsSize];
+            Marshal.Copy(paramsPtr, paramsBytes, 0, paramsSize);
+            LoggerService.LogDebug($"ActivateProcessAudioClient: Params memory dump = {BitConverter.ToString(paramsBytes).Replace("-", "")}");
+
+            // Create PROPVARIANT with the parameters
+            Span<byte> propVariantSpan = stackalloc byte[24];
+            fixed (byte* propVariantPtr = propVariantSpan)
             {
-                vt = 0x41, // VT_BLOB
-                blobSize = (uint)paramsSize,
-                pointerValue = paramsPtr
-            };
+                for (var i = 0; i < 24; i++)
+                {
+                    propVariantPtr[i] = 0;
+                }
 
-            LoggerService.LogDebug($"ActivateProcessAudioClient: PropVariant size={Marshal.SizeOf<PropVariant>()}, vt={activationParamsPtr.vt}, blobSize={activationParamsPtr.blobSize}, pointerValue=0x{activationParamsPtr.pointerValue:X}");
+                *(ushort*)propVariantPtr = 0x41; // VT_BLOB
+                *(uint*)(propVariantPtr + 8) = (uint)paramsSize; // cbSize
+                *(IntPtr*)(propVariantPtr + 16) = paramsPtr; // pBlobData (aligned for x64)
 
-            var iid = typeof(IAudioClient3).GUID;
-            ActivateAudioInterface(VirtualAudioDeviceProcessLoopback, ref iid, ref activationParamsPtr, out var audioClient);
-            return audioClient;
+                LoggerService.LogDebug($"ActivateProcessAudioClient: PROPVARIANT Layout:");
+                LoggerService.LogDebug($"  [0-1]   vt=0x{(*(ushort*)propVariantPtr):X4} (VT_BLOB)");
+                LoggerService.LogDebug($"  [2-3]   reserved1=0x{(*(ushort*)(propVariantPtr + 2)):X4}");
+                LoggerService.LogDebug($"  [4-5]   reserved2=0x{(*(ushort*)(propVariantPtr + 4)):X4}");
+                LoggerService.LogDebug($"  [6-7]   reserved3=0x{(*(ushort*)(propVariantPtr + 6)):X4}");
+                LoggerService.LogDebug($"  [8-11]  BLOB.cbSize={(uint)paramsSize}");
+                LoggerService.LogDebug($"  [12-15] padding=0x{(*(uint*)(propVariantPtr + 12)):X8}");
+                LoggerService.LogDebug($"  [16-23] BLOB.pBlobData=0x{(*(IntPtr*)(propVariantPtr + 16)):X}");
+
+                var propVariantHex = BitConverter.ToString(propVariantSpan.ToArray()).Replace("-", "");
+                LoggerService.LogDebug($"ActivateProcessAudioClient: PROPVARIANT hex dump = {propVariantHex}");
+
+                var iid = IID_IAudioClient;
+                LoggerService.LogDebug($"ActivateProcessAudioClient: Using IID_IAudioClient={iid:B}");
+                LoggerService.LogDebug($"ActivateProcessAudioClient: Device ID={device.ID}");
+
+                // Build the complete device interface path: \\?\SWD#MMDEVAPI#{ProcessLoopbackGUID}
+                // 正しい形式：Process Loopback GUID のみを使用する
+                var deviceInterfacePath = $@"\\?\SWD#MMDEVAPI#{ProcessLoopbackDeviceInterfaceGuid}";
+                LoggerService.LogDebug($"ActivateProcessAudioClient: Device interface path={deviceInterfacePath}");
+
+                return ActivateAudioInterface(deviceInterfacePath, ref iid, (IntPtr)propVariantPtr, out var audioClient);
+            }
         }
         finally
         {
-            Marshal.FreeHGlobal(paramsPtr);
+            if (paramsPtr != IntPtr.Zero)
+            {
+                Marshal.FreeHGlobal(paramsPtr);
+            }
         }
     }
 
     /// <summary>
-    /// オーディオインターフェースを非同期でアクティベート
+    /// オーディオインターフェースをアクティベート
     /// </summary>
-    private static void ActivateAudioInterface(string deviceInterfacePath, ref Guid iid, ref PropVariant activationParams, out IAudioClient3 audioClient)
+    private static IAudioClient ActivateAudioInterface(string deviceInterfacePath, ref Guid iid, IntPtr activationParams, out IAudioClient audioClient)
     {
+        LoggerService.LogDebug($"ActivateAudioInterface: Called with deviceInterfacePath={deviceInterfacePath}, iid={iid:B}, activationParams=0x{activationParams:X}");
+
+        // Create completion handler
         var completionHandler = new ActivateCompletionHandler();
+        var gcHandle = GCHandle.Alloc(completionHandler);
         try
         {
-            var paramsSize = Marshal.SizeOf<AudioClientActivationParams>();
-            LoggerService.LogDebug($"ActivateAudioInterfaceAsync: deviceInterfacePath={deviceInterfacePath}, ParamsSize={paramsSize}, ParamsPtrSize={Marshal.SizeOf<PropVariant>()}");
+            var completionHandlerPtr = Marshal.GetComInterfaceForObject(completionHandler, typeof(IActivateAudioInterfaceCompletionHandler));
+            LoggerService.LogDebug($"ActivateAudioInterface: GetComInterfaceForObject returned ptr=0x{completionHandlerPtr:X}");
 
-            var hr = ActivateAudioInterfaceAsync(deviceInterfacePath, ref iid, ref activationParams, completionHandler, out var result);
-            if (hr != 0)
+            try
             {
-                var errorMessage = $"ActivateAudioInterfaceAsync failed: HRESULT=0x{hr:X8}";
-                if (hr == unchecked((int)0x80070057)) // E_INVALIDARG
-                {
-                    errorMessage += " (E_INVALIDARG: Invalid arguments)";
-                }
-                else if (hr == unchecked((int)0x80004005)) // E_FAIL
-                {
-                    errorMessage += " (E_FAIL: Unspecified failure)";
-                }
-                else if (hr == unchecked((int)0x80070005)) // E_ACCESSDENIED
-                {
-                    errorMessage += " (E_ACCESSDENIED: Access denied)";
-                }
-                LoggerService.LogError(errorMessage);
-                Marshal.ThrowExceptionForHR(hr);
-            }
+                LoggerService.LogDebug($"ActivateAudioInterface: Calling ActivateAudioInterfaceAsync P/Invoke");
+                LoggerService.LogDebug($"  deviceInterfacePath={deviceInterfacePath}");
+                LoggerService.LogDebug($"  riid={iid:B}");
+                LoggerService.LogDebug($"  activationParams=0x{activationParams:X}");
+                LoggerService.LogDebug($"  completionHandlerPtr=0x{completionHandlerPtr:X}");
 
-            completionHandler.WaitForCompletion();
-            audioClient = completionHandler.GetActivatedInterface();
-            Marshal.ReleaseComObject(result);
-            LoggerService.LogInfo("ActivateAudioInterfaceAsync: Success");
+                var hr = ActivateAudioInterfaceAsync(deviceInterfacePath, ref iid, activationParams, completionHandlerPtr, out var resultPtr);
+                LoggerService.LogDebug($"ActivateAudioInterface: P/Invoke returned HRESULT=0x{hr:X8}, resultPtr=0x{resultPtr:X}");
+
+                if (hr != 0)
+                {
+                    var ex = new COMException("ActivateAudioInterfaceAsync failed", hr);
+                    LoggerService.LogError($"ActivateAudioInterface: Exception - {ex.Message}");
+                    throw ex;
+                }
+
+                LoggerService.LogDebug($"ActivateAudioInterface: Waiting for completion...");
+                completionHandler.WaitForCompletion();
+                LoggerService.LogDebug($"ActivateAudioInterface: Completion handler completed");
+
+                audioClient = completionHandler.GetActivatedInterface();
+                LoggerService.LogDebug($"ActivateAudioInterface: GetActivatedInterface returned, audioClient is null: {audioClient == null}");
+
+                if (audioClient != null && resultPtr != IntPtr.Zero)
+                {
+                    LoggerService.LogDebug($"ActivateAudioInterface: Releasing resultPtr=0x{resultPtr:X}");
+                    Marshal.Release(resultPtr);
+                }
+                if (audioClient == null)
+                {
+                    throw new InvalidOperationException("ActivateAudioInterface: audioClient is null after activation");
+                }
+                LoggerService.LogInfo("ActivateAudioInterface: Success");
+                return audioClient;
+            }
+            finally
+            {
+                LoggerService.LogDebug($"ActivateAudioInterface: Releasing completionHandlerPtr=0x{completionHandlerPtr:X}");
+                Marshal.Release(completionHandlerPtr);
+                LoggerService.LogDebug("ActivateAudioInterface: completionHandlerPtr released successfully");
+            }
         }
-        catch (TimeoutException tex)
+        finally
         {
-            LoggerService.LogError($"Audio client activation timeout: {tex.Message}");
-            throw;
+            LoggerService.LogDebug("ActivateAudioInterface: Freeing GCHandle");
+            gcHandle.Free();
+            LoggerService.LogDebug("ActivateAudioInterface: GCHandle freed");
+        }
+
+        // This should never be reached, but compiler requires it
+        throw new InvalidOperationException("Unexpected code path in ActivateAudioInterface");
+    }
+
+    private static IAudioCaptureClient GetCaptureClient(IAudioClient audioClient)
+    {
+        LoggerService.LogDebug($"GetCaptureClient: Called with audioClient Type={audioClient.GetType().Name}");
+        var iid = typeof(IAudioCaptureClient).GUID;
+        LoggerService.LogDebug($"GetCaptureClient: IAudioCaptureClient IID={iid:B}");
+        try
+        {
+            ThrowOnError(audioClient.GetService(ref iid, out var captureClient));
+            LoggerService.LogDebug($"GetCaptureClient: GetService succeeded, captureClient Type={captureClient!.GetType().Name}");
+            var result = (IAudioCaptureClient)captureClient;
+            LoggerService.LogDebug($"GetCaptureClient: Cast to IAudioCaptureClient succeeded");
+            return result;
         }
         catch (Exception ex)
         {
-            LoggerService.LogError($"Audio client activation error: {ex.GetType().Name} - {ex.Message}");
+            LoggerService.LogError($"GetCaptureClient: Failed - {ex.GetType().Name}: {ex.Message}");
             throw;
         }
-    }
-
-    private static IAudioCaptureClient GetCaptureClient(IAudioClient3 audioClient)
-    {
-        var iid = typeof(IAudioCaptureClient).GUID;
-        ThrowOnError(audioClient.GetService(ref iid, out var captureClient));
-        return (IAudioCaptureClient)captureClient;
     }
 
     /// <summary>
@@ -380,13 +526,19 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
         return new WaveFormat((int)format.SampleRate, format.BitsPerSample, format.Channels);
     }
 
-    [DllImport("Mmdevapi.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    [DllImport("mmdevapi.dll", CallingConvention = CallingConvention.Winapi)]
     private static extern int ActivateAudioInterfaceAsync(
         string deviceInterfacePath,
-        ref Guid riid,
-        ref PropVariant activationParams,
-        IActivateAudioInterfaceCompletionHandler? completionHandler,
-        out IActivateAudioInterfaceAsyncOperation asyncOperation);
+        ref Guid iid,
+        IntPtr activationParams,
+        IntPtr completionHandler,
+        out IntPtr asyncOperation);
+
+    /// <summary>
+    /// IAudioClient インターフェースのGUID (基本)
+    /// Process Loopback API は IAudioClient を要求する
+    /// </summary>
+    private static readonly Guid IID_IAudioClient = new("1CB9AD4C-DBFA-4c32-B178-C2F568A703B2");
 
     [ComImport]
     [Guid("41D949AB-9862-444A-80F6-C261334DA5EB")]
@@ -404,6 +556,57 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
         void GetActivateResult(out int activateResult, [MarshalAs(UnmanagedType.IUnknown)] out object activatedInterface);
     }
 
+    /// <summary>
+    /// IAudioClient インターフェース (基本)
+    /// Windows Vista以降で使用可能
+    /// </summary>
+    [ComImport]
+    [Guid("1CB9AD4C-DBFA-4c32-B178-C2F568A703B2")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IAudioClient
+    {
+        /// <summary>オーディオストリームを初期化</summary>
+        int Initialize(AudioClientShareMode shareMode, AudioClientStreamFlags streamFlags, long hnsBufferDuration, long hnsPeriodicity, IntPtr format, ref Guid audioSessionGuid);
+
+        /// <summary>バッファサイズを取得</summary>
+        int GetBufferSize(out uint bufferSize);
+
+        /// <summary>ストリーム遅延を取得</summary>
+        int GetStreamLatency(out long latency);
+
+        /// <summary>現在のパディングを取得</summary>
+        int GetCurrentPadding(out uint currentPadding);
+
+        /// <summary>フォーマットがサポートされているか確認</summary>
+        int IsFormatSupported(AudioClientShareMode shareMode, IntPtr format, out IntPtr closestMatch);
+
+        /// <summary>ミックスフォーマットを取得</summary>
+        int GetMixFormat(out IntPtr deviceFormat);
+
+        /// <summary>デバイス期間を取得</summary>
+        int GetDevicePeriod(out long defaultDevicePeriod, out long minimumDevicePeriod);
+
+        /// <summary>オーディオストリームを開始</summary>
+        int Start();
+
+        /// <summary>オーディオストリームを停止</summary>
+        int Stop();
+
+        /// <summary>オーディオストリームをリセット</summary>
+        int Reset();
+
+        /// <summary>イベントハンドルを設定</summary>
+        int SetEventHandle(IntPtr eventHandle);
+
+        /// <summary>サービスを取得</summary>
+        int GetService(ref Guid riid, [MarshalAs(UnmanagedType.IUnknown)] out object service);
+    }
+
+    /// <summary>
+    /// IAudioClient3 インターフェース (拡張)
+    /// Windows 10以降で使用可能
+    /// 注意: Process Loopback APIでは使用されない場合がある
+    /// </summary>
     [ComImport]
     [Guid("7ED4EE07-8E67-4CD4-8C1A-2B7A5987AD42")]
     [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
@@ -440,33 +643,11 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
     [StructLayout(LayoutKind.Sequential)]
     private struct AudioClientActivationParams
     {
-        /// <summary>
-        /// アクティベーションタイプ（ProcessLoopback = 1）
-        /// </summary>
         public AudioClientActivationType ActivationType;
-
-        /// <summary>
-        /// ターゲットプロセスID
-        /// </summary>
-        public uint TargetProcessId;
-
-        /// <summary>
-        /// ループバックモード
-        /// </summary>
-        public ProcessLoopbackMode ProcessLoopbackMode;
+        public AudioClientProcessLoopbackParams ProcessLoopbackParams;
     }
 
-    private enum AudioClientActivationType
-    {
-        Default = 0,
-        ProcessLoopback = 1
-    }
 
-    private enum ProcessLoopbackMode
-    {
-        IncludeTargetProcessTree = 0,
-        ExcludeTargetProcessTree = 1
-    }
 
     private enum AudioClientShareMode
     {
@@ -489,51 +670,6 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
         Silent = 0x2
     }
 
-    /// <summary>
-    /// PROPVARIANT 構造体（VT_BLOB用）
-    /// Windows APIの標準レイアウトに完全に準拠
-    /// BLOB構造: cbSize(4bytes) + pBlobData(8bytes) が offset 8 から連続配置
-    /// </summary>
-    [StructLayout(LayoutKind.Explicit, Size = 24)]
-    private struct PropVariant
-    {
-        /// <summary>
-        /// Variant Type: VT_BLOB = 0x41 = 65
-        /// </summary>
-        [FieldOffset(0)]
-        public ushort vt;
-
-        /// <summary>
-        /// Reserved field 1
-        /// </summary>
-        [FieldOffset(2)]
-        public ushort wReserved1;
-
-        /// <summary>
-        /// Reserved field 2
-        /// </summary>
-        [FieldOffset(4)]
-        public ushort wReserved2;
-
-        /// <summary>
-        /// Reserved field 3
-        /// </summary>
-        [FieldOffset(6)]
-        public ushort wReserved3;
-
-        /// <summary>
-        /// BLOB size in bytes (4バイト、offset 8)
-        /// </summary>
-        [FieldOffset(8)]
-        public uint blobSize;
-
-        /// <summary>
-        /// Pointer to BLOB data (8バイト、offset 12)
-        /// BLOB構造ではcbSizeの直後にpBlobDataが配置される
-        /// </summary>
-        [FieldOffset(12)]
-        public IntPtr pointerValue;
-    }
 
     [StructLayout(LayoutKind.Sequential)]
     private struct WaveFormatEx
@@ -563,29 +699,41 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
         Extensible = unchecked((short)0xFFFE)
     }
 
-    private static class AudioFormatSubType
-    {
-        public static readonly Guid IeeeFloat = new("00000003-0000-0010-8000-00aa00389b71");
-    }
-
+    /// <summary>
+    /// COMコールバックハンドラ
+    /// COM Callable Wrapper として正しく機能するために ComVisible と ClassInterface 属性が必要
+    /// </summary>
+    [ComVisible(true)]
+    [ClassInterface(ClassInterfaceType.None)]
     private sealed class ActivateCompletionHandler : IActivateAudioInterfaceCompletionHandler
     {
-        private const int ActivationTimeoutMs = 5000; // アクティベーションタイムアウト（5秒）
+        private const int ActivationTimeoutMs = 5000;
         private readonly ManualResetEventSlim _completedEvent = new(false);
         private int _activateResult;
-        private IAudioClient3? _audioClient;
+        private object? _activatedInterface;
 
         public void ActivateCompleted(IActivateAudioInterfaceAsyncOperation operation)
         {
             try
             {
                 operation.GetActivateResult(out _activateResult, out var activatedInterface);
+                LoggerService.LogDebug($"ActivateCompleted: GetActivateResult returned HRESULT=0x{_activateResult:X8}, Interface={activatedInterface?.GetType().Name ?? "null"}");
                 if (_activateResult == 0)
                 {
-                    _audioClient = (IAudioClient3)activatedInterface;
+                    if (activatedInterface != null)
+                    {
+                        LoggerService.LogDebug($"ActivateCompleted: Storing activatedInterface, InterfaceType={activatedInterface.GetType().Name}");
+                        _activatedInterface = activatedInterface;
+                        LoggerService.LogDebug("ActivateCompleted: Successfully stored activatedInterface");
+                    }
+                    else
+                    {
+                        LoggerService.LogError("ActivateCompleted: activatedInterface is null despite HRESULT success");
+                    }
                 }
                 else if (activatedInterface != null)
                 {
+                    LoggerService.LogDebug($"ActivateCompleted: HRESULT indicates failure (0x{_activateResult:X8}), releasing interface");
                     Marshal.ReleaseComObject(activatedInterface);
                 }
             }
@@ -643,9 +791,62 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
             }
         }
 
-        public IAudioClient3 GetActivatedInterface()
+        public IAudioClient GetActivatedInterface()
         {
-            return _audioClient ?? throw new InvalidOperationException("Audio client activation failed.");
+            LoggerService.LogDebug($"GetActivatedInterface: _activatedInterface is {(_activatedInterface == null ? "null" : "not null")}, _activateResult=0x{_activateResult:X8}");
+            if (_activatedInterface == null)
+            {
+                var errorMsg = $"Audio client activation failed: _activatedInterface is null, _activateResult=0x{_activateResult:X8}";
+                LoggerService.LogError(errorMsg);
+                throw new InvalidOperationException(errorMsg);
+            }
+
+            LoggerService.LogDebug($"GetActivatedInterface: Attempting to cast _activatedInterface to IAudioClient");
+            try
+            {
+                var audioClient = (IAudioClient)_activatedInterface;
+                LoggerService.LogDebug($"GetActivatedInterface: Successfully cast to IAudioClient");
+
+                // Add a reference to keep the COM object alive
+                Marshal.AddRef(Marshal.GetIUnknownForObject(audioClient));
+                LoggerService.LogDebug($"GetActivatedInterface: Added reference to keep COM object alive");
+
+                return audioClient;
+            }
+            catch (InvalidCastException castEx)
+            {
+                LoggerService.LogError($"GetActivatedInterface: Cast failed - {castEx.Message}");
+
+                // Try QueryInterface approach
+                try
+                {
+                    var iid = new Guid("1CB9AD4C-DBFA-4c32-B178-C2F568A703B2"); // IAudioClient IID
+                    var hr = Marshal.QueryInterface(Marshal.GetIUnknownForObject(_activatedInterface), in iid, out var pAudioClient);
+                    if (hr == 0 && pAudioClient != IntPtr.Zero)
+                    {
+                        var audioClient = (IAudioClient)Marshal.GetObjectForIUnknown(pAudioClient);
+                        Marshal.Release(pAudioClient);
+                        LoggerService.LogDebug($"GetActivatedInterface: QueryInterface succeeded");
+                        return audioClient;
+                    }
+                    else
+                    {
+                        LoggerService.LogError($"GetActivatedInterface: QueryInterface failed, HRESULT=0x{hr:X8}");
+                    }
+                }
+                catch (Exception qiEx)
+                {
+                    LoggerService.LogError($"GetActivatedInterface: QueryInterface exception - {qiEx.Message}");
+                }
+
+                throw;
+            }
         }
     }
+
+    private static class AudioFormatSubType
+    {
+        public static readonly Guid IeeeFloat = new("00000003-0000-0010-8000-00aa00389b71");
+    }
+
 }

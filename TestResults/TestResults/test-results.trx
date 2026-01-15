@@ -1,0 +1,96 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TestRun id="2338800d-34c3-4dc4-ab2a-83283a818ec3" name="yule@RYZENX3D 2026-01-16 02:04:53" runUser="RyzenX3D\yule" xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010">
+  <Times creation="2026-01-16T02:04:53.6990750+09:00" queuing="2026-01-16T02:04:53.6990751+09:00" start="2026-01-16T02:04:53.3203646+09:00" finish="2026-01-16T02:04:53.7027411+09:00" />
+  <TestSettings name="default" id="edab1a11-c65d-40b0-b5dc-8102ed8110a4">
+    <Deployment runDeploymentRoot="yule_RYZENX3D_2026-01-16_02_04_53" />
+  </TestSettings>
+  <Results>
+    <UnitTestResult executionId="4342ef66-ac79-465a-83c8-a0bd74fd9d0c" testId="12554969-20d1-8780-82a2-d204de9518fe" testName="LogParsing_ShouldIdentifyCommonErrorPatterns" computerName="RYZENX3D" duration="00:00:00.0041541" startTime="2026-01-16T02:04:53.6115988+09:00" endTime="2026-01-16T02:04:53.6273448+09:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="4342ef66-ac79-465a-83c8-a0bd74fd9d0c" />
+    <UnitTestResult executionId="811f01a5-f43f-42e3-b287-2ac1e85f36da" testId="180715e5-4258-846f-ac6a-0033be3f3c36" testName="ProcessLoopbackGuid_ShouldBeValidFormat" computerName="RYZENX3D" duration="00:00:00.0041338" startTime="2026-01-16T02:04:53.6116055+09:00" endTime="2026-01-16T02:04:53.6273348+09:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="811f01a5-f43f-42e3-b287-2ac1e85f36da" />
+    <UnitTestResult executionId="0fc5598a-22f0-4e55-8e03-776e589d8306" testId="170b5ed7-a85c-8caa-8b06-f48e4d46c04f" testName="GuidConstants_ShouldBeCorrect" computerName="RYZENX3D" duration="00:00:00.0041271" startTime="2026-01-16T02:04:53.6116099+09:00" endTime="2026-01-16T02:04:53.6273449+09:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="0fc5598a-22f0-4e55-8e03-776e589d8306" />
+    <UnitTestResult executionId="d5a4c849-c14f-4729-945a-a40198a6e4c9" testId="18ad59b5-3e01-8df2-9c7b-228ce41908a0" testName="MemoryLayoutValidation_ShouldMatchWindowsApi" computerName="RYZENX3D" duration="00:00:00.0000583" startTime="2026-01-16T02:04:53.6304928+09:00" endTime="2026-01-16T02:04:53.6314005+09:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="d5a4c849-c14f-4729-945a-a40198a6e4c9" />
+    <UnitTestResult executionId="6ddbd562-14b9-45ef-b7d1-23da696bdb58" testId="12860045-2fbc-8fa4-804e-696de7d9714d" testName="StructSizes_ShouldBeCorrect" computerName="RYZENX3D" duration="00:00:00.0041375" startTime="2026-01-16T02:04:53.6115944+09:00" endTime="2026-01-16T02:04:53.6273291+09:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="6ddbd562-14b9-45ef-b7d1-23da696bdb58" />
+    <UnitTestResult executionId="fa1eb4dd-59eb-4334-8c49-a81fb441858c" testId="18885302-ebfe-8758-98c5-0c42d8fb947e" testName="BasicTest_ShouldPass" computerName="RYZENX3D" duration="00:00:00.0041426" startTime="2026-01-16T02:04:53.6115795+09:00" endTime="2026-01-16T02:04:53.6273288+09:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="fa1eb4dd-59eb-4334-8c49-a81fb441858c" />
+    <UnitTestResult executionId="4802ee57-2bda-44aa-9144-c5b17efd1a88" testId="119a5610-77e9-8ff9-a6e4-508275efcd5e" testName="PropVariantConstruction_ShouldFollowCorrectLayout" computerName="RYZENX3D" duration="00:00:00.0041422" startTime="2026-01-16T02:04:53.6115739+09:00" endTime="2026-01-16T02:04:53.6273395+09:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="4802ee57-2bda-44aa-9144-c5b17efd1a88" />
+    <UnitTestResult executionId="10e87ebd-4507-43af-8d5e-91c29b0a8321" testId="1ed1af18-ee09-800c-95e0-bde282810786" testName="MemoryAllocation_ShouldBeEfficient" computerName="RYZENX3D" duration="00:00:00.0041316" startTime="2026-01-16T02:04:53.6115869+09:00" endTime="2026-01-16T02:04:53.6273281+09:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="10e87ebd-4507-43af-8d5e-91c29b0a8321" />
+  </Results>
+  <TestDefinitions>
+    <UnitTest name="LogParsing_ShouldIdentifyCommonErrorPatterns" storage="c:\users\yule\documents\source\realtimetranslator\src\realtimetranslator.tests\bin\debug\net10.0-windows8.0\realtimetranslator.tests.dll" id="12554969-20d1-8780-82a2-d204de9518fe">
+      <TestCategory>
+        <TestCategoryItem TestCategory="Unit" />
+      </TestCategory>
+      <Execution id="4342ef66-ac79-465a-83c8-a0bd74fd9d0c" />
+      <TestMethod codeBase="C:\Users\yule\Documents\Source\RealTimeTranslator\src\RealTimeTranslator.Tests\bin\Debug\net10.0-windows8.0\RealTimeTranslator.Tests.dll" adapterTypeName="executor://mstestadapter/v4" className="RealTimeTranslator.Tests.ProcessLoopbackCaptureTests" name="LogParsing_ShouldIdentifyCommonErrorPatterns" />
+    </UnitTest>
+    <UnitTest name="MemoryAllocation_ShouldBeEfficient" storage="c:\users\yule\documents\source\realtimetranslator\src\realtimetranslator.tests\bin\debug\net10.0-windows8.0\realtimetranslator.tests.dll" id="1ed1af18-ee09-800c-95e0-bde282810786">
+      <TestCategory>
+        <TestCategoryItem TestCategory="Performance" />
+      </TestCategory>
+      <Execution id="10e87ebd-4507-43af-8d5e-91c29b0a8321" />
+      <TestMethod codeBase="C:\Users\yule\Documents\Source\RealTimeTranslator\src\RealTimeTranslator.Tests\bin\Debug\net10.0-windows8.0\RealTimeTranslator.Tests.dll" adapterTypeName="executor://mstestadapter/v4" className="RealTimeTranslator.Tests.ProcessLoopbackCaptureTests" name="MemoryAllocation_ShouldBeEfficient" />
+    </UnitTest>
+    <UnitTest name="ProcessLoopbackGuid_ShouldBeValidFormat" storage="c:\users\yule\documents\source\realtimetranslator\src\realtimetranslator.tests\bin\debug\net10.0-windows8.0\realtimetranslator.tests.dll" id="180715e5-4258-846f-ac6a-0033be3f3c36">
+      <TestCategory>
+        <TestCategoryItem TestCategory="Unit" />
+      </TestCategory>
+      <Execution id="811f01a5-f43f-42e3-b287-2ac1e85f36da" />
+      <TestMethod codeBase="C:\Users\yule\Documents\Source\RealTimeTranslator\src\RealTimeTranslator.Tests\bin\Debug\net10.0-windows8.0\RealTimeTranslator.Tests.dll" adapterTypeName="executor://mstestadapter/v4" className="RealTimeTranslator.Tests.ProcessLoopbackCaptureTests" name="ProcessLoopbackGuid_ShouldBeValidFormat" />
+    </UnitTest>
+    <UnitTest name="PropVariantConstruction_ShouldFollowCorrectLayout" storage="c:\users\yule\documents\source\realtimetranslator\src\realtimetranslator.tests\bin\debug\net10.0-windows8.0\realtimetranslator.tests.dll" id="119a5610-77e9-8ff9-a6e4-508275efcd5e">
+      <TestCategory>
+        <TestCategoryItem TestCategory="Unit" />
+      </TestCategory>
+      <Execution id="4802ee57-2bda-44aa-9144-c5b17efd1a88" />
+      <TestMethod codeBase="C:\Users\yule\Documents\Source\RealTimeTranslator\src\RealTimeTranslator.Tests\bin\Debug\net10.0-windows8.0\RealTimeTranslator.Tests.dll" adapterTypeName="executor://mstestadapter/v4" className="RealTimeTranslator.Tests.ProcessLoopbackCaptureTests" name="PropVariantConstruction_ShouldFollowCorrectLayout" />
+    </UnitTest>
+    <UnitTest name="StructSizes_ShouldBeCorrect" storage="c:\users\yule\documents\source\realtimetranslator\src\realtimetranslator.tests\bin\debug\net10.0-windows8.0\realtimetranslator.tests.dll" id="12860045-2fbc-8fa4-804e-696de7d9714d">
+      <TestCategory>
+        <TestCategoryItem TestCategory="Unit" />
+      </TestCategory>
+      <Execution id="6ddbd562-14b9-45ef-b7d1-23da696bdb58" />
+      <TestMethod codeBase="C:\Users\yule\Documents\Source\RealTimeTranslator\src\RealTimeTranslator.Tests\bin\Debug\net10.0-windows8.0\RealTimeTranslator.Tests.dll" adapterTypeName="executor://mstestadapter/v4" className="RealTimeTranslator.Tests.ProcessLoopbackCaptureTests" name="StructSizes_ShouldBeCorrect" />
+    </UnitTest>
+    <UnitTest name="MemoryLayoutValidation_ShouldMatchWindowsApi" storage="c:\users\yule\documents\source\realtimetranslator\src\realtimetranslator.tests\bin\debug\net10.0-windows8.0\realtimetranslator.tests.dll" id="18ad59b5-3e01-8df2-9c7b-228ce41908a0">
+      <TestCategory>
+        <TestCategoryItem TestCategory="Unit" />
+      </TestCategory>
+      <Execution id="d5a4c849-c14f-4729-945a-a40198a6e4c9" />
+      <TestMethod codeBase="C:\Users\yule\Documents\Source\RealTimeTranslator\src\RealTimeTranslator.Tests\bin\Debug\net10.0-windows8.0\RealTimeTranslator.Tests.dll" adapterTypeName="executor://mstestadapter/v4" className="RealTimeTranslator.Tests.ProcessLoopbackCaptureTests" name="MemoryLayoutValidation_ShouldMatchWindowsApi" />
+    </UnitTest>
+    <UnitTest name="BasicTest_ShouldPass" storage="c:\users\yule\documents\source\realtimetranslator\src\realtimetranslator.tests\bin\debug\net10.0-windows8.0\realtimetranslator.tests.dll" id="18885302-ebfe-8758-98c5-0c42d8fb947e">
+      <TestCategory>
+        <TestCategoryItem TestCategory="Unit" />
+      </TestCategory>
+      <Execution id="fa1eb4dd-59eb-4334-8c49-a81fb441858c" />
+      <TestMethod codeBase="C:\Users\yule\Documents\Source\RealTimeTranslator\src\RealTimeTranslator.Tests\bin\Debug\net10.0-windows8.0\RealTimeTranslator.Tests.dll" adapterTypeName="executor://mstestadapter/v4" className="RealTimeTranslator.Tests.ProcessLoopbackCaptureTests" name="BasicTest_ShouldPass" />
+    </UnitTest>
+    <UnitTest name="GuidConstants_ShouldBeCorrect" storage="c:\users\yule\documents\source\realtimetranslator\src\realtimetranslator.tests\bin\debug\net10.0-windows8.0\realtimetranslator.tests.dll" id="170b5ed7-a85c-8caa-8b06-f48e4d46c04f">
+      <TestCategory>
+        <TestCategoryItem TestCategory="Unit" />
+      </TestCategory>
+      <Execution id="0fc5598a-22f0-4e55-8e03-776e589d8306" />
+      <TestMethod codeBase="C:\Users\yule\Documents\Source\RealTimeTranslator\src\RealTimeTranslator.Tests\bin\Debug\net10.0-windows8.0\RealTimeTranslator.Tests.dll" adapterTypeName="executor://mstestadapter/v4" className="RealTimeTranslator.Tests.ProcessLoopbackCaptureTests" name="GuidConstants_ShouldBeCorrect" />
+    </UnitTest>
+  </TestDefinitions>
+  <TestEntries>
+    <TestEntry testId="12554969-20d1-8780-82a2-d204de9518fe" executionId="4342ef66-ac79-465a-83c8-a0bd74fd9d0c" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="180715e5-4258-846f-ac6a-0033be3f3c36" executionId="811f01a5-f43f-42e3-b287-2ac1e85f36da" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="170b5ed7-a85c-8caa-8b06-f48e4d46c04f" executionId="0fc5598a-22f0-4e55-8e03-776e589d8306" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="18ad59b5-3e01-8df2-9c7b-228ce41908a0" executionId="d5a4c849-c14f-4729-945a-a40198a6e4c9" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="12860045-2fbc-8fa4-804e-696de7d9714d" executionId="6ddbd562-14b9-45ef-b7d1-23da696bdb58" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="18885302-ebfe-8758-98c5-0c42d8fb947e" executionId="fa1eb4dd-59eb-4334-8c49-a81fb441858c" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="119a5610-77e9-8ff9-a6e4-508275efcd5e" executionId="4802ee57-2bda-44aa-9144-c5b17efd1a88" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="1ed1af18-ee09-800c-95e0-bde282810786" executionId="10e87ebd-4507-43af-8d5e-91c29b0a8321" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+  </TestEntries>
+  <TestLists>
+    <TestList name="一覧に存在しない結果" id="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestList name="読み込まれたすべての結果" id="19431567-8539-422a-85d7-44ee4e166bda" />
+  </TestLists>
+  <ResultSummary outcome="Completed">
+    <Counters total="8" executed="8" passed="8" failed="0" error="0" timeout="0" aborted="0" inconclusive="0" passedButRunAborted="0" notRunnable="0" notExecuted="0" disconnected="0" warning="0" completed="0" inProgress="0" pending="0" />
+    <Output>
+      <StdOut>C:\Users\yule\Documents\Source\RealTimeTranslator\src\RealTimeTranslator.Tests\bin\Debug\net10.0-windows8.0\RealTimeTranslator.Tests.dll でテスト並列処理が有効にされています (Workers: 8、Scope: MethodLevel)。&#xD;
+</StdOut>
+    </Output>
+  </ResultSummary>
+</TestRun>
