@@ -1,17 +1,19 @@
-using System.Buffers;
-using System.Collections.Concurrent;
-using System.Diagnostics;
-using System.Runtime.InteropServices;
+using NAudio.CoreAudioApi;
 using NAudio.Wave;
+
 using RealTimeTranslator.Core.Interfaces;
 using RealTimeTranslator.Core.Models;
 using RealTimeTranslator.Core.Services;
+
+using System.Buffers;
+using System.Collections.Concurrent;
+using System.Diagnostics;
 
 namespace RealTimeTranslator.Core.Services;
 
 /// <summary>
 /// 音声キャプチャサービス
-/// プロセス単位のループバックキャプチャを実装
+/// WasapiCapture を使用したプロセス単位のオーディオキャプチャを実装
 /// </summary>
 public class AudioCaptureService : IAudioCaptureService
 {
@@ -24,8 +26,6 @@ public class AudioCaptureService : IAudioCaptureService
     private const int BitsPerSample16 = 16;
     private const int BitsPerSample32 = 32;
     private const int RetryIntervalMs = 1000; // リトライ間隔（ミリ秒）
-    private const int FileNotFoundHResult = unchecked((int)0x80070002);
-    private const int InvalidArgumentHResult = unchecked((int)0x80070057); // E_INVALIDARG
     private const int MaxBufferSize = 48000; // 最大バッファサイズ（1秒分の48kHzオーディオ）
 
     private IWaveIn? _capture;
@@ -87,7 +87,7 @@ public class AudioCaptureService : IAudioCaptureService
     }
 
     /// <summary>
-    /// 指定したプロセスIDの音声キャプチャを開始
+    /// 指定したプロセスIDの音声キャプチャを開始（同期版）
     /// </summary>
     public void StartCapture(int processId)
     {
@@ -100,7 +100,6 @@ public class AudioCaptureService : IAudioCaptureService
         _targetProcessId = processId;
         _audioBuffer.Clear();
 
-        // Windows Core Audio API(AudioClientActivationParams/IAudioClient3)で対象プロセスのみを初期化する
         _capture = new ProcessLoopbackCapture(_targetProcessId);
         _capture.DataAvailable += OnDataAvailable;
         _capture.RecordingStopped += OnRecordingStopped;
@@ -111,9 +110,8 @@ public class AudioCaptureService : IAudioCaptureService
     }
 
     /// <summary>
-    /// 指定したプロセスIDの音声キャプチャを開始（オーディオセッションが見つかるまで待機）
-    /// Process Loopback のプロセスツリーモードを使用することで、子プロセスの音声も自動的にキャプチャ
-    /// リモートオーディオデバイスの場合はデスクトップ全体のキャプチャにフォールバック
+    /// 指定したプロセスIDの音声キャプチャを開始（リトライ付き）
+    /// ProcessLoopbackCapture を使用してプロセス単位のキャプチャを実現
     /// </summary>
     public async Task<bool> StartCaptureWithRetryAsync(int processId, CancellationToken cancellationToken)
     {
@@ -126,88 +124,64 @@ public class AudioCaptureService : IAudioCaptureService
         _targetProcessId = processId;
         _audioBuffer.Clear();
 
-        // リモートオーディオデバイスの判定
-        var isRemoteAudio = IsRemoteAudioDevice();
-        if (isRemoteAudio)
-        {
-            LoggerService.LogInfo("StartCaptureWithRetryAsync: Remote audio device detected, using desktop loopback capture instead of process loopback");
-            return await StartDesktopCaptureAsync(cancellationToken);
-        }
-
         var retryCount = 0;
         var retryStopwatch = Stopwatch.StartNew();
+        var maxRetries = 30;
 
-        LoggerService.LogDebug($"StartCaptureWithRetryAsync: Will start process loopback capture with process tree mode for PID {processId}");
+        LoggerService.LogDebug($"StartCaptureWithRetryAsync: Starting process capture for PID {processId}");
 
-        while (!cancellationToken.IsCancellationRequested)
+        while (retryCount < maxRetries && !cancellationToken.IsCancellationRequested)
         {
             try
             {
-                // Process Loopback のプロセスツリーモードを使用することで、
-                // メインプロセスを指定するだけで、子プロセス（レンダラーなど）の音声も
-                // OSが自動的にまとめてキャプチャしてくれる
-                _capture = new ProcessLoopbackCapture(processId);
+                // WasapiCapture.CreateForProcessCaptureAsync でプロセス単位のキャプチャを開始
+                // includeTree=true により、子プロセスの音声も含める
+                _capture = await WasapiCapture.CreateForProcessCaptureAsync(processId, true);
                 _capture.DataAvailable += OnDataAvailable;
                 _capture.RecordingStopped += OnRecordingStopped;
 
                 _capture.StartRecording();
                 _isCapturing = true;
-                _targetProcessId = processId;
                 StartProcessingTask();
 
                 OnCaptureStatusChanged("音声キャプチャを開始しました。", false);
-                LoggerService.LogInfo($"StartCaptureWithRetryAsync: Successfully started capture for process {processId} (process tree mode)");
+                LoggerService.LogInfo($"StartCaptureWithRetryAsync: Successfully started capture for process {processId}");
                 return true;
             }
-            catch (COMException ex) when (ex.HResult == FileNotFoundHResult)
+            catch (ArgumentException argEx)
             {
-                // このプロセスではオーディオセッションが見つからない
-                // プロセスがまだ音を出していない可能性がある
-                LoggerService.LogWarning($"StartCaptureWithRetryAsync: Audio session not found (HRESULT 0x80070002) for process {processId}");
+                // プロセスがまだ音を出していない可能性
+                LoggerService.LogWarning($"StartCaptureWithRetryAsync: Process not found or not outputting audio - {argEx.Message}");
                 CleanupCapture();
             }
-            catch (COMException ex) when (ex.HResult == InvalidArgumentHResult)
+            catch (InvalidOperationException opEx)
             {
-                // E_INVALIDARG: Process Loopbackが無効な引数を受けた
-                // リモートオーディオまたはサポートされていないデバイスの可能性
-                LoggerService.LogWarning($"StartCaptureWithRetryAsync: Process loopback not supported (E_INVALIDARG) for process {processId}, attempting fallback to desktop capture");
+                // WasapiCapture がサポートされていない環境の可能性
+                LoggerService.LogWarning($"StartCaptureWithRetryAsync: WasapiCapture not supported - {opEx.Message}");
                 CleanupCapture();
-                // デスクトップ全体のキャプチャにフォールバック
-                try
-                {
-                    return await StartDesktopCaptureAsync(cancellationToken);
-                }
-                catch (Exception fallbackEx)
-                {
-                    LoggerService.LogError($"StartCaptureWithRetryAsync: Desktop capture fallback failed: {fallbackEx.Message}");
-                    // フォールバックも失敗した場合はリトライ継続
-                }
-            }
-            catch (FileNotFoundException fex)
-            {
-                // このプロセスではオーディオセッションが見つからない
-                LoggerService.LogError($"StartCaptureWithRetryAsync: FileNotFoundException for process {processId}: {fex.Message}");
-                CleanupCapture();
-            }
-            catch (TimeoutException tex)
-            {
-                // このプロセスではタイムアウト
-                Debug.WriteLine($"StartCaptureWithRetryAsync: Activation timeout for process {processId}: {tex.Message}");
-                CleanupCapture();
+                return false;
             }
             catch (Exception ex)
             {
                 LoggerService.LogError($"StartCaptureWithRetryAsync: Error for process {processId} - {ex.GetType().Name}: {ex.Message}");
-                Debug.WriteLine($"StartCaptureWithRetryAsync: Error for process {processId} - {ex.GetType().Name}: {ex.Message}");
+                LoggerService.LogDebug($"StartCaptureWithRetryAsync: StackTrace: {ex.StackTrace}");
                 CleanupCapture();
             }
 
-            // リトライ待機
+            // リトライ前に最大試行回数をチェック
             retryCount++;
+            if (retryCount >= maxRetries)
+            {
+                LoggerService.LogError($"StartCaptureWithRetryAsync: Max retries ({maxRetries}) exceeded for process {processId}");
+                OnCaptureStatusChanged("音声キャプチャの開始に失敗しました。", false);
+                return false;
+            }
+
+            // リトライ待機
             var elapsedSeconds = Math.Round(retryStopwatch.Elapsed.TotalSeconds, 1);
             var statusMessage = $"音声の再生を待機中... ({elapsedSeconds}秒, 試行: {retryCount})";
             OnCaptureStatusChanged(statusMessage, true);
-            Debug.WriteLine($"StartCaptureWithRetryAsync: No audio session found, waiting... (attempt {retryCount}, elapsed {elapsedSeconds}s)");
+            LoggerService.LogDebug($"StartCaptureWithRetryAsync: Waiting for audio session (attempt {retryCount}/{maxRetries}, elapsed {elapsedSeconds}s)");
 
             try
             {
@@ -222,91 +196,6 @@ public class AudioCaptureService : IAudioCaptureService
 
         OnCaptureStatusChanged("音声キャプチャがキャンセルされました。", false);
         return false;
-    }
-
-    /// <summary>
-    /// リモートオーディオデバイスであるかを判定
-    /// Remote Desktop ConnectionやHyper-Vなどの仮想環境では Process Loopback が動作しない
-    /// </summary>
-    private static bool IsRemoteAudioDevice()
-    {
-        try
-        {
-            using var enumerator = new NAudio.CoreAudioApi.MMDeviceEnumerator();
-            var device = enumerator.GetDefaultAudioEndpoint(NAudio.CoreAudioApi.DataFlow.Render, NAudio.CoreAudioApi.Role.Multimedia);
-            var isRemote = device.FriendlyName.Contains("リモート", StringComparison.OrdinalIgnoreCase) ||
-                          device.FriendlyName.Contains("Remote", StringComparison.OrdinalIgnoreCase) ||
-                          device.FriendlyName.Contains("Stereo Mix", StringComparison.OrdinalIgnoreCase);
-            LoggerService.LogDebug($"IsRemoteAudioDevice: Device={device.FriendlyName}, IsRemote={isRemote}");
-            return isRemote;
-        }
-        catch (Exception ex)
-        {
-            LoggerService.LogError($"IsRemoteAudioDevice: Failed to check device - {ex.Message}");
-            return false;
-        }
-    }
-
-    /// <summary>
-    /// デスクトップ全体の音声をキャプチャ（Process Loopback のフォールバック）
-    /// </summary>
-    private async Task<bool> StartDesktopCaptureAsync(CancellationToken cancellationToken)
-    {
-        try
-        {
-            var retryCount = 0;
-            var maxRetries = 30; // 最大30秒間リトライ
-
-            while (retryCount < maxRetries && !cancellationToken.IsCancellationRequested)
-            {
-                try
-                {
-                    using var enumerator = new NAudio.CoreAudioApi.MMDeviceEnumerator();
-                    var device = enumerator.GetDefaultAudioEndpoint(NAudio.CoreAudioApi.DataFlow.Render, NAudio.CoreAudioApi.Role.Multimedia);
-
-                    // WasapiLoopbackCapture でデスクトップ全体をキャプチャ
-                    _capture = new NAudio.Wave.WasapiLoopbackCapture(device);
-                    _capture.DataAvailable += OnDataAvailable;
-                    _capture.RecordingStopped += OnRecordingStopped;
-
-                    _capture.StartRecording();
-                    _isCapturing = true;
-                    StartProcessingTask();
-
-                    OnCaptureStatusChanged("デスクトップ音声キャプチャを開始しました（リモートオーディオモード）。", false);
-                    LoggerService.LogInfo("StartDesktopCaptureAsync: Desktop audio capture started successfully");
-                    return true;
-                }
-                catch (Exception ex)
-                {
-                    retryCount++;
-                    if (retryCount >= maxRetries)
-                    {
-                        LoggerService.LogError($"StartDesktopCaptureAsync: Max retries exceeded - {ex.Message}");
-                        OnCaptureStatusChanged("デスクトップ音声キャプチャの開始に失敗しました。", false);
-                        return false;
-                    }
-
-                    LoggerService.LogDebug($"StartDesktopCaptureAsync: Retry {retryCount}/{maxRetries} - {ex.Message}");
-                    try
-                    {
-                        await Task.Delay(1000, cancellationToken);
-                    }
-                    catch (OperationCanceledException)
-                    {
-                        return false;
-                    }
-                }
-            }
-
-            return false;
-        }
-        catch (Exception ex)
-        {
-            LoggerService.LogError($"StartDesktopCaptureAsync: Failed to start desktop capture - {ex.Message}");
-            OnCaptureStatusChanged("デスクトップ音声キャプチャの初期化に失敗しました。", false);
-            return false;
-        }
     }
 
     /// <summary>
@@ -432,7 +321,6 @@ public class AudioCaptureService : IAudioCaptureService
             var samplesPerChunk = targetSampleRate * AudioChunkDurationMs / 1000;
             while (_audioBuffer.Count >= samplesPerChunk)
             {
-                // Take().ToArray() + RemoveRange() の代わりに、直接配列にコピーして削除
                 var chunk = new float[samplesPerChunk];
                 _audioBuffer.CopyTo(0, chunk, 0, samplesPerChunk);
                 _audioBuffer.RemoveRange(0, samplesPerChunk);
@@ -447,9 +335,7 @@ public class AudioCaptureService : IAudioCaptureService
         _isCapturing = false;
         if (e.Exception != null)
         {
-            // エラーログ（WPFアプリではDebug出力を使用）
-            System.Diagnostics.Debug.WriteLine($"Recording stopped with error: {e.Exception.Message}");
-            System.Diagnostics.Debug.WriteLine($"Stack trace: {e.Exception.StackTrace}");
+            LoggerService.LogError($"Recording stopped with error: {e.Exception.Message}");
         }
     }
 
@@ -507,7 +393,6 @@ public class AudioCaptureService : IAudioCaptureService
         double ratio = (double)targetSampleRate / sourceSampleRate;
         int newLength = (int)(samples.Length * ratio);
 
-        // ArrayPool を使用してメモリ割り当てを最適化
         var rentedArray = ArrayPool<float>.Shared.Rent(newLength);
         try
         {
@@ -527,7 +412,6 @@ public class AudioCaptureService : IAudioCaptureService
                 }
             }
 
-            // 必要なサイズだけコピーして返す
             var result = new float[newLength];
             Array.Copy(rentedArray, result, newLength);
             return result;
@@ -545,7 +429,6 @@ public class AudioCaptureService : IAudioCaptureService
 
         int monoLength = samples.Length / channels;
 
-        // ArrayPool を使用してメモリ割り当てを最適化
         var rentedArray = ArrayPool<float>.Shared.Rent(monoLength);
         try
         {
@@ -559,7 +442,6 @@ public class AudioCaptureService : IAudioCaptureService
                 rentedArray[i] = sum / channels;
             }
 
-            // 必要なサイズだけコピーして返す
             var result = new float[monoLength];
             Array.Copy(rentedArray, result, monoLength);
             return result;
@@ -568,18 +450,6 @@ public class AudioCaptureService : IAudioCaptureService
         {
             ArrayPool<float>.Shared.Return(rentedArray);
         }
-    }
-
-    public void Dispose()
-    {
-        if (_isDisposed)
-            return;
-
-        _isDisposed = true;
-        StopCapture();
-        StopProcessingTask();
-        _debugRawAudioWriter?.Dispose();
-        _debugResampledAudioWriter?.Dispose();
     }
 
     /// <summary>
@@ -700,9 +570,6 @@ public class AudioCaptureService : IAudioCaptureService
             {
                 LoggerService.LogError($"ProcessAudioData: Failed to write debug audio file - {ex.Message}");
             }
-
-            // イベントを発火
-            AudioDataAvailable?.Invoke(this, new AudioDataEventArgs(samples, DateTime.Now));
         }
         catch (Exception ex)
         {
@@ -728,5 +595,20 @@ public class AudioCaptureService : IAudioCaptureService
             SourceSampleRate = sourceSampleRate;
             TargetSampleRate = targetSampleRate;
         }
+    }
+
+    /// <summary>
+    /// リソースを破棄
+    /// </summary>
+    public void Dispose()
+    {
+        if (_isDisposed)
+            return;
+
+        _isDisposed = true;
+        StopCapture();
+        StopProcessingTask();
+        _debugRawAudioWriter?.Dispose();
+        _debugResampledAudioWriter?.Dispose();
     }
 }
