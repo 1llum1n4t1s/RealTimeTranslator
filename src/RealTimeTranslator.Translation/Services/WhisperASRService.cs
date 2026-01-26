@@ -341,10 +341,42 @@ public class WhisperASRService : IASRService
         }
     }
 
+    private bool _disposed = false;
+
     public void Dispose()
     {
-        _processor?.Dispose();
-        _factory?.Dispose();
-        _transcribeLock.Dispose();
+        if (_disposed)
+            return;
+
+        _disposed = true;
+
+        try
+        {
+            _processor?.Dispose();
+        }
+        catch (Exception ex)
+        {
+            LoggerService.LogError($"WhisperASRService.Dispose: Error disposing processor: {ex.Message}");
+        }
+
+        try
+        {
+            _factory?.Dispose();
+        }
+        catch (Exception ex)
+        {
+            LoggerService.LogError($"WhisperASRService.Dispose: Error disposing factory: {ex.Message}");
+        }
+
+        try
+        {
+            _transcribeLock.Dispose();
+        }
+        catch (Exception ex)
+        {
+            LoggerService.LogError($"WhisperASRService.Dispose: Error disposing transcribe lock: {ex.Message}");
+        }
+
+        GC.SuppressFinalize(this);
     }
 }

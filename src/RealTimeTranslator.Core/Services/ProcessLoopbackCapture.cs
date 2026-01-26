@@ -329,11 +329,44 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
         if (_isDisposed)
             return;
 
-        StopRecording();
-        Marshal.ReleaseComObject(_captureClient);
-        Marshal.ReleaseComObject(_audioClient);
         _isDisposed = true;
-        GC.SuppressFinalize(this);
+
+        try
+        {
+            StopRecording();
+        }
+        catch (Exception ex)
+        {
+            LoggerService.LogError($"ProcessLoopbackCapture.Dispose: Error stopping recording: {ex.Message}");
+        }
+        finally
+        {
+            try
+            {
+                if (_captureClient != null)
+                {
+                    Marshal.ReleaseComObject(_captureClient);
+                }
+            }
+            catch (Exception ex)
+            {
+                LoggerService.LogError($"ProcessLoopbackCapture.Dispose: Error releasing capture client: {ex.Message}");
+            }
+
+            try
+            {
+                if (_audioClient != null)
+                {
+                    Marshal.ReleaseComObject(_audioClient);
+                }
+            }
+            catch (Exception ex)
+            {
+                LoggerService.LogError($"ProcessLoopbackCapture.Dispose: Error releasing audio client: {ex.Message}");
+            }
+
+            GC.SuppressFinalize(this);
+        }
     }
 
     private static MMDevice GetDefaultRenderDevice()
