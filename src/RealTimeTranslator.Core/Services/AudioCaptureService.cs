@@ -27,6 +27,7 @@ public class AudioCaptureService : IAudioCaptureService
     private const int BitsPerSample32 = 32;
     private const int RetryIntervalMs = 1000; // リトライ間隔（ミリ秒）
     private const int MaxBufferSize = 48000; // 最大バッファサイズ（1秒分の48kHzオーディオ）
+    private const int MaxProcessingQueueSize = 100; // 処理キューの最大サイズ
 
     private IWaveIn? _capture;
     private WaveFormat? _targetFormat;
@@ -295,8 +296,19 @@ public class AudioCaptureService : IAudioCaptureService
             LoggerService.LogError($"OnDataAvailable: Failed to write debug raw audio file - {ex.Message}");
         }
 
-        // 非同期処理キューに追加
+        // 非同期処理キューに追加（サイズ制限チェック）
         var processingTask = new AudioProcessingTask(samples, sourceFormat.SampleRate, targetSampleRate);
+
+        // キューが最大サイズを超えている場合、古いタスクを破棄
+        if (_processingQueue.Count >= MaxProcessingQueueSize)
+        {
+            // 古いタスクを1つデキューして破棄
+            if (_processingQueue.TryDequeue(out _))
+            {
+                LoggerService.LogWarning($"Audio processing queue overflow: discarded oldest task (queue size: {_processingQueue.Count})");
+            }
+        }
+
         _processingQueue.Enqueue(processingTask);
 
         // バッファに追加（VAD用）

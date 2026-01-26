@@ -466,12 +466,49 @@ public class VADService : IVADService, IDisposable
         }
     }
 
+    private bool _disposed = false;
+
     /// <summary>
     /// リソースを破棄
     /// </summary>
     public void Dispose()
     {
-        _settingsChangeSubscription?.Dispose();
-        _session?.Dispose();
+        if (_disposed)
+            return;
+
+        _disposed = true;
+
+        try
+        {
+            _settingsChangeSubscription?.Dispose();
+        }
+        catch (Exception ex)
+        {
+            LoggerService.LogError($"VADService.Dispose: Error disposing settings subscription: {ex.Message}");
+        }
+
+        try
+        {
+            _session?.Dispose();
+        }
+        catch (Exception ex)
+        {
+            LoggerService.LogError($"VADService.Dispose: Error disposing ONNX session: {ex.Message}");
+        }
+
+        // モデル初期化タスクが完了するまで待機（タイムアウト付き）
+        if (_modelInitializationTask != null && !_modelInitializationTask.IsCompleted)
+        {
+            try
+            {
+                _modelInitializationTask.Wait(TimeSpan.FromSeconds(5));
+            }
+            catch (Exception ex)
+            {
+                LoggerService.LogError($"VADService.Dispose: Error waiting for model initialization: {ex.Message}");
+            }
+        }
+
+        GC.SuppressFinalize(this);
     }
 }
