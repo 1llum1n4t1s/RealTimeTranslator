@@ -77,15 +77,28 @@ public partial class App : Application
             var optionsSnapshot = _serviceProvider.GetRequiredService<IOptionsSnapshot<AppSettings>>();
             updateService.UpdateSettings(optionsSnapshot.Value.Update);
             _updateCancellation = new CancellationTokenSource();
-            var updateApplied = updateService.CheckAndApplyStartupAsync(_updateCancellation.Token).GetAwaiter().GetResult();
-            if (updateApplied)
+
+            // 更新チェックと適用（タイムアウト付き待機でデッドロック防止）
+            var updateCheckTask = updateService.CheckAndApplyStartupAsync(_updateCancellation.Token);
+            if (!updateCheckTask.Wait(TimeSpan.FromSeconds(30)))
+            {
+                LoggerService.LogWarning("OnStartup: 更新チェックがタイムアウトしました。");
+            }
+            else if (updateCheckTask.Result)
             {
                 LoggerService.LogInfo("OnStartup: 更新適用のためアプリを再起動します。");
                 Current.Shutdown();
                 return;
             }
 
-            _ = updateService.StartAsync(_updateCancellation.Token);
+            // fire-and-forget Task の例外ハンドリングを追加
+            _ = updateService.StartAsync(_updateCancellation.Token).ContinueWith(t =>
+            {
+                if (t.IsFaulted)
+                {
+                    LoggerService.LogError($"OnStartup: 更新サービスエラー: {t.Exception}");
+                }
+            }, TaskScheduler.Default);
             LoggerService.LogInfo("OnStartup: 更新サービス開始");
 
             // オーバーレイウィンドウを表示
@@ -103,7 +116,19 @@ public partial class App : Application
             MainWindow = mainWindow;
 
             // モデルをバックグラウンドで初期化（UIスレッドで開始してawaitしない）
-            _ = mainViewModel.InitializeModelsAsync();
+            // fire-and-forget Task の例外ハンドリングを追加
+            _ = mainViewModel.InitializeModelsAsync().ContinueWith(t =>
+            {
+                if (t.IsFaulted)
+                {
+                    LoggerService.LogError($"OnStartup: モデル初期化エラー: {t.Exception}");
+                    Dispatcher.BeginInvoke(new Action(() =>
+                    {
+                        MessageBox.Show($"モデルの初期化に失敗しました:\n\n{t.Exception?.GetBaseException().Message}",
+                            "エラー", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    }));
+                }
+            }, TaskScheduler.Default);
             LoggerService.LogInfo("OnStartup: 起動完了");
         }
         catch (Exception ex)
