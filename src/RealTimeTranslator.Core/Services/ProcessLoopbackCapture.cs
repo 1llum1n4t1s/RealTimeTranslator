@@ -319,7 +319,11 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
             _isCapturing = false;
         }
 
-        _captureThread?.Join();
+        // タイムアウト付きでスレッドの終了を待機（デッドロック防止）
+        if (_captureThread != null && !_captureThread.Join(5000))
+        {
+            LoggerService.LogWarning("ProcessLoopbackCapture.StopRecording: Capture thread did not stop within timeout");
+        }
         ThrowOnError(_audioClient.Stop());
         RecordingStopped?.Invoke(this, new StoppedEventArgs());
     }
@@ -329,11 +333,44 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
         if (_isDisposed)
             return;
 
-        StopRecording();
-        Marshal.ReleaseComObject(_captureClient);
-        Marshal.ReleaseComObject(_audioClient);
         _isDisposed = true;
-        GC.SuppressFinalize(this);
+
+        try
+        {
+            StopRecording();
+        }
+        catch (Exception ex)
+        {
+            LoggerService.LogError($"ProcessLoopbackCapture.Dispose: Error stopping recording: {ex.Message}");
+        }
+        finally
+        {
+            try
+            {
+                if (_captureClient != null)
+                {
+                    Marshal.ReleaseComObject(_captureClient);
+                }
+            }
+            catch (Exception ex)
+            {
+                LoggerService.LogError($"ProcessLoopbackCapture.Dispose: Error releasing capture client: {ex.Message}");
+            }
+
+            try
+            {
+                if (_audioClient != null)
+                {
+                    Marshal.ReleaseComObject(_audioClient);
+                }
+            }
+            catch (Exception ex)
+            {
+                LoggerService.LogError($"ProcessLoopbackCapture.Dispose: Error releasing audio client: {ex.Message}");
+            }
+
+            GC.SuppressFinalize(this);
+        }
     }
 
     private static MMDevice GetDefaultRenderDevice()
@@ -613,10 +650,10 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
 
     private void CaptureThread()
     {
+        byte[]? rentedBuffer = null;
         try
         {
             var frameSize = WaveFormat.BlockAlign;
-            byte[]? rentedBuffer = null;
             int rentedSize = 0;
 
             while (_isCapturing)
@@ -658,16 +695,18 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
 
                 Thread.Sleep(CaptureThreadSleepMs);
             }
-
-            // 終了時にバッファを返却
-            if (rentedBuffer != null)
-            {
-                ArrayPool<byte>.Shared.Return(rentedBuffer);
-            }
         }
         catch (Exception ex)
         {
             RecordingStopped?.Invoke(this, new StoppedEventArgs(ex));
+        }
+        finally
+        {
+            // 終了時にバッファを返却（例外発生時でも確実に返却）
+            if (rentedBuffer != null)
+            {
+                ArrayPool<byte>.Shared.Return(rentedBuffer);
+            }
         }
     }
 

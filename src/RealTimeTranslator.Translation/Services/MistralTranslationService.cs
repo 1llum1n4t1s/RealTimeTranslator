@@ -45,6 +45,7 @@ public class MistralTranslationService : ITranslationService
     private Dictionary<string, string> _postTranslationDict = new();
     private readonly SemaphoreSlim _translateLock = new(1, 1);
     private readonly SemaphoreSlim _warmupLock = new(1, 1);
+    private readonly object _executorLock = new();
 
     public bool IsModelLoaded => _isModelLoaded;
 
@@ -288,8 +289,19 @@ public class MistralTranslationService : ITranslationService
                 {
                     return;
                 }
-                var executor = _executor ?? new StatelessExecutor(_model, _modelParams);
-                _executor ??= executor;
+
+                // スレッドセーフに_executorを初期化
+                if (_executor == null)
+                {
+                    lock (_executorLock)
+                    {
+                        if (_executor == null)
+                        {
+                            _executor = new StatelessExecutor(_model, _modelParams);
+                        }
+                    }
+                }
+                var executor = _executor;
 
                 var tokenCount = 0;
                 await foreach (var _ in executor.InferAsync(WarmupPrompt, warmupParams))
@@ -366,8 +378,19 @@ public class MistralTranslationService : ITranslationService
             {
                 throw new InvalidOperationException("Model parameters are not initialized");
             }
-            var executor = _executor ?? new StatelessExecutor(_model, _modelParams);
-            _executor ??= executor;
+
+            // スレッドセーフに_executorを初期化
+            if (_executor == null)
+            {
+                lock (_executorLock)
+                {
+                    if (_executor == null)
+                    {
+                        _executor = new StatelessExecutor(_model, _modelParams);
+                    }
+                }
+            }
+            var executor = _executor;
 
             var tokenCount = 0;
             var lastLogTime = inferenceStartTime;
@@ -700,10 +723,42 @@ public class MistralTranslationService : ITranslationService
         }
     }
 
+    private bool _disposed = false;
+
     public void Dispose()
     {
-        _model?.Dispose();
-        _translateLock.Dispose();
-        _warmupLock.Dispose();
+        if (_disposed)
+            return;
+
+        _disposed = true;
+
+        try
+        {
+            _model?.Dispose();
+        }
+        catch (Exception ex)
+        {
+            LoggerService.LogError($"MistralTranslationService.Dispose: Error disposing model: {ex.Message}");
+        }
+
+        try
+        {
+            _translateLock.Dispose();
+        }
+        catch (Exception ex)
+        {
+            LoggerService.LogError($"MistralTranslationService.Dispose: Error disposing translate lock: {ex.Message}");
+        }
+
+        try
+        {
+            _warmupLock.Dispose();
+        }
+        catch (Exception ex)
+        {
+            LoggerService.LogError($"MistralTranslationService.Dispose: Error disposing warmup lock: {ex.Message}");
+        }
+
+        GC.SuppressFinalize(this);
     }
 }

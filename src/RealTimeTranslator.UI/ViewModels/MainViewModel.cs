@@ -38,6 +38,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
     private readonly IDisposable? _settingsChangeSubscription;
     private readonly Queue<string> _logLines = new();
     private readonly object _logLock = new();
+    private readonly object _cancellationLock = new();
     private string? _lastLogMessage;
     private CancellationTokenSource? _processingCancellation;
 
@@ -178,24 +179,34 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
     private async void OnSettingsSaved(object? sender, SettingsSavedEventArgs e)
     {
-        _audioCaptureService.ApplySettings(e.Settings.AudioCapture);
-        _vadService.ApplySettings(e.Settings.AudioCapture);
-        _updateService.UpdateSettings(e.Settings.Update);
-        var sourceLanguage = e.Settings.Translation.SourceLanguage;
-        var targetLanguage = e.Settings.Translation.TargetLanguage;
-
-        if (IsRunning)
+        try
         {
-            await StopAsync();
-            StatusText = "設定変更のため停止しました。再開時に新しい設定が反映されます。";
-            StatusColor = Brushes.Orange;
-            Log($"設定変更を検知したため停止しました。再開時に新しい設定が反映されます。翻訳言語: {sourceLanguage}→{targetLanguage}");
-            return;
-        }
+            _audioCaptureService.ApplySettings(e.Settings.AudioCapture);
+            _vadService.ApplySettings(e.Settings.AudioCapture);
+            _updateService.UpdateSettings(e.Settings.Update);
+            var sourceLanguage = e.Settings.Translation.SourceLanguage;
+            var targetLanguage = e.Settings.Translation.TargetLanguage;
 
-        StatusText = "設定を更新しました。次回開始時に反映されます。";
-        StatusColor = Brushes.Gray;
-        Log($"設定変更を反映しました（次回開始時に適用）。翻訳言語: {sourceLanguage}→{targetLanguage}");
+            if (IsRunning)
+            {
+                await StopAsync();
+                StatusText = "設定変更のため停止しました。再開時に新しい設定が反映されます。";
+                StatusColor = Brushes.Orange;
+                Log($"設定変更を検知したため停止しました。再開時に新しい設定が反映されます。翻訳言語: {sourceLanguage}→{targetLanguage}");
+                return;
+            }
+
+            StatusText = "設定を更新しました。次回開始時に反映されます。";
+            StatusColor = Brushes.Gray;
+            Log($"設定変更を反映しました（次回開始時に適用）。翻訳言語: {sourceLanguage}→{targetLanguage}");
+        }
+        catch (Exception ex)
+        {
+            LoggerService.LogError($"OnSettingsSaved: Error applying settings: {ex.Message}");
+            Log($"設定の適用中にエラーが発生しました: {ex.Message}");
+            StatusText = "設定の適用中にエラーが発生しました";
+            StatusColor = Brushes.Red;
+        }
     }
 
     private void OnUpdateStatusChanged(object? sender, UpdateStatusChangedEventArgs e)
@@ -229,32 +240,40 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
     private async void OnUpdateReady(object? sender, UpdateReadyEventArgs e)
     {
-        await RunOnUiThreadAsync(async () =>
+        try
         {
-            Log($"更新: {e.Message}");
-            if (_settings.Update.AutoApply)
+            await RunOnUiThreadAsync(async () =>
             {
-                Log("更新を自動適用します。");
-                await _updateService.ApplyUpdateAsync(CancellationToken.None);
-                return;
-            }
+                Log($"更新: {e.Message}");
+                if (_settings.Update.AutoApply)
+                {
+                    Log("更新を自動適用します。");
+                    await _updateService.ApplyUpdateAsync(CancellationToken.None);
+                    return;
+                }
 
-            var result = MessageBox.Show(
-                "更新のダウンロードが完了しました。今すぐ適用しますか？",
-                "更新適用",
-                MessageBoxButton.YesNo,
-                MessageBoxImage.Question);
+                var result = MessageBox.Show(
+                    "更新のダウンロードが完了しました。今すぐ適用しますか？",
+                    "更新適用",
+                    MessageBoxButton.YesNo,
+                    MessageBoxImage.Question);
 
-            if (result == MessageBoxResult.Yes)
-            {
-                await _updateService.ApplyUpdateAsync(CancellationToken.None);
-            }
-            else
-            {
-                _updateService.DismissPendingUpdate();
-                Log("更新の適用を保留しました。");
-            }
-        });
+                if (result == MessageBoxResult.Yes)
+                {
+                    await _updateService.ApplyUpdateAsync(CancellationToken.None);
+                }
+                else
+                {
+                    _updateService.DismissPendingUpdate();
+                    Log("更新の適用を保留しました。");
+                }
+            });
+        }
+        catch (Exception ex)
+        {
+            LoggerService.LogError($"OnUpdateReady: Error handling update: {ex.Message}");
+            Log($"更新の処理中にエラーが発生しました: {ex.Message}");
+        }
     }
 
     private static void RunOnUiThread(Action action)
@@ -383,9 +402,13 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
         try
         {
-            _processingCancellation?.Cancel();
-            _processingCancellation?.Dispose();
-            _processingCancellation = new CancellationTokenSource();
+            // スレッドセーフにCancellationTokenSourceを置き換え
+            lock (_cancellationLock)
+            {
+                _processingCancellation?.Cancel();
+                _processingCancellation?.Dispose();
+                _processingCancellation = new CancellationTokenSource();
+            }
             IsRunning = true;
             StatusText = "起動中...";
             StatusColor = Brushes.Orange;
@@ -461,9 +484,13 @@ public partial class MainViewModel : ObservableObject, IDisposable
     [RelayCommand]
     private async Task StopAsync()
     {
-        _processingCancellation?.Cancel();
-        _processingCancellation?.Dispose();
-        _processingCancellation = null;
+        // スレッドセーフにCancellationTokenSourceをクリーンアップ
+        lock (_cancellationLock)
+        {
+            _processingCancellation?.Cancel();
+            _processingCancellation?.Dispose();
+            _processingCancellation = null;
+        }
         await _pipelineService.StopAsync();
         var pendingSegment = _vadService.FlushPendingSegment();
         if (pendingSegment != null)
@@ -657,11 +684,22 @@ public partial class MainViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(CanStart));
     }
 
+    private bool _modelsInitialized = false;
+
     /// <summary>
     /// モデルを初期化（起動時に呼び出される）
     /// </summary>
     public async Task InitializeModelsAsync()
     {
+        // 重複初期化を防ぐ
+        if (_modelsInitialized)
+        {
+            LoggerService.LogWarning("InitializeModelsAsync: Already initialized, skipping.");
+            return;
+        }
+
+        _modelsInitialized = true;
+
         try
         {
             IsLoading = true;
@@ -669,6 +707,12 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
             var asrService = _serviceProvider.GetRequiredService<IASRService>();
             var translationService = _serviceProvider.GetRequiredService<ITranslationService>();
+
+            // イベントハンドラを登録（重複を避けるため、先に解除してから登録）
+            asrService.ModelDownloadProgress -= OnModelDownloadProgress;
+            asrService.ModelStatusChanged -= OnModelStatusChanged;
+            translationService.ModelDownloadProgress -= OnModelDownloadProgress;
+            translationService.ModelStatusChanged -= OnModelStatusChanged;
 
             asrService.ModelDownloadProgress += OnModelDownloadProgress;
             asrService.ModelStatusChanged += OnModelStatusChanged;
@@ -912,9 +956,13 @@ public partial class MainViewModel : ObservableObject, IDisposable
             LoggerService.LogError($"MainViewModel.Dispose: 音声キャプチャ停止エラー: {ex.Message}");
         }
 
-        _processingCancellation?.Cancel();
-        _processingCancellation?.Dispose();
-        _processingCancellation = null;
+        // スレッドセーフにCancellationTokenSourceをクリーンアップ
+        lock (_cancellationLock)
+        {
+            _processingCancellation?.Cancel();
+            _processingCancellation?.Dispose();
+            _processingCancellation = null;
+        }
         LoggerService.LogInfo("MainViewModel.Dispose: 処理パイプライン停止完了");
 
         _settingsChangeSubscription?.Dispose();

@@ -267,12 +267,50 @@ public class TranslationPipelineService : ITranslationPipelineService
             || normalized.Equals("[BLANK AUDIO]", StringComparison.OrdinalIgnoreCase);
     }
 
+    private bool _disposed = false;
+
     /// <summary>
     /// TranslationPipelineService のディスポーズ
     /// </summary>
     public void Dispose()
     {
+        if (_disposed)
+            return;
+
+        _disposed = true;
         _audioCaptureService.AudioDataAvailable -= OnAudioDataAvailable;
-        StopAsync().Wait();
+
+        // デッドロック回避: GetAwaiter().GetResult()を使用し、タイムアウト付きで待機
+        try
+        {
+            _processingCancellation?.Cancel();
+            _translationChannel?.Writer.TryComplete();
+
+            if (_translationProcessingTask != null && !_translationProcessingTask.IsCompleted)
+            {
+                // Task.WaitではなくGetAwaiter().GetResult()を使用
+                // ただし、タイムアウトが必要な場合はTask.Wait(timeout)を使用
+                var waitTask = Task.Run(async () =>
+                {
+                    if (_translationProcessingTask != null)
+                    {
+                        await _translationProcessingTask.ConfigureAwait(false);
+                    }
+                });
+
+                if (!waitTask.Wait(TimeSpan.FromSeconds(5)))
+                {
+                    LoggerService.LogWarning("TranslationPipelineService.Dispose: Processing task did not complete within timeout");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            LoggerService.LogError($"TranslationPipelineService.Dispose: Error during disposal: {ex.Message}");
+        }
+        finally
+        {
+            _processingCancellation?.Dispose();
+        }
     }
 }
