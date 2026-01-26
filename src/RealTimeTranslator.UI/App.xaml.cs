@@ -78,13 +78,16 @@ public partial class App : Application
             updateService.UpdateSettings(optionsSnapshot.Value.Update);
             _updateCancellation = new CancellationTokenSource();
 
-            // 更新チェックと適用（タイムアウト付き待機でデッドロック防止）
-            var updateCheckTask = updateService.CheckAndApplyStartupAsync(_updateCancellation.Token);
-            if (!updateCheckTask.Wait(TimeSpan.FromSeconds(30)))
+            // 更新チェックと適用（UIスレッドブロッキングを回避）
+            var updateCheckTask = Task.Run(async () =>
+                await updateService.CheckAndApplyStartupAsync(_updateCancellation.Token));
+
+            var waitTask = Task.Run(() => updateCheckTask.Wait(TimeSpan.FromSeconds(30)));
+            if (!waitTask.Wait(TimeSpan.FromSeconds(31)))
             {
                 LoggerService.LogWarning("OnStartup: 更新チェックがタイムアウトしました。");
             }
-            else if (updateCheckTask.Result)
+            else if (updateCheckTask.IsCompletedSuccessfully && updateCheckTask.Result)
             {
                 LoggerService.LogInfo("OnStartup: 更新適用のためアプリを再起動します。");
                 Current.Shutdown();

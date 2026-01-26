@@ -38,6 +38,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
     private readonly IDisposable? _settingsChangeSubscription;
     private readonly Queue<string> _logLines = new();
     private readonly object _logLock = new();
+    private readonly object _cancellationLock = new();
     private string? _lastLogMessage;
     private CancellationTokenSource? _processingCancellation;
 
@@ -401,9 +402,13 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
         try
         {
-            _processingCancellation?.Cancel();
-            _processingCancellation?.Dispose();
-            _processingCancellation = new CancellationTokenSource();
+            // スレッドセーフにCancellationTokenSourceを置き換え
+            lock (_cancellationLock)
+            {
+                _processingCancellation?.Cancel();
+                _processingCancellation?.Dispose();
+                _processingCancellation = new CancellationTokenSource();
+            }
             IsRunning = true;
             StatusText = "起動中...";
             StatusColor = Brushes.Orange;
@@ -479,9 +484,13 @@ public partial class MainViewModel : ObservableObject, IDisposable
     [RelayCommand]
     private async Task StopAsync()
     {
-        _processingCancellation?.Cancel();
-        _processingCancellation?.Dispose();
-        _processingCancellation = null;
+        // スレッドセーフにCancellationTokenSourceをクリーンアップ
+        lock (_cancellationLock)
+        {
+            _processingCancellation?.Cancel();
+            _processingCancellation?.Dispose();
+            _processingCancellation = null;
+        }
         await _pipelineService.StopAsync();
         var pendingSegment = _vadService.FlushPendingSegment();
         if (pendingSegment != null)
@@ -947,9 +956,13 @@ public partial class MainViewModel : ObservableObject, IDisposable
             LoggerService.LogError($"MainViewModel.Dispose: 音声キャプチャ停止エラー: {ex.Message}");
         }
 
-        _processingCancellation?.Cancel();
-        _processingCancellation?.Dispose();
-        _processingCancellation = null;
+        // スレッドセーフにCancellationTokenSourceをクリーンアップ
+        lock (_cancellationLock)
+        {
+            _processingCancellation?.Cancel();
+            _processingCancellation?.Dispose();
+            _processingCancellation = null;
+        }
         LoggerService.LogInfo("MainViewModel.Dispose: 処理パイプライン停止完了");
 
         _settingsChangeSubscription?.Dispose();
