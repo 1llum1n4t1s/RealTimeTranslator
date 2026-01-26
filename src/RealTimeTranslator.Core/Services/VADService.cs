@@ -496,12 +496,16 @@ public class VADService : IVADService, IDisposable
             LoggerService.LogError($"VADService.Dispose: Error disposing ONNX session: {ex.Message}");
         }
 
-        // モデル初期化タスクが完了するまで待機（タイムアウト付き）
+        // モデル初期化タスクが完了するまで待機（タイムアウト付き、デッドロック回避）
         if (_modelInitializationTask != null && !_modelInitializationTask.IsCompleted)
         {
             try
             {
-                _modelInitializationTask.Wait(TimeSpan.FromSeconds(5));
+                var waitTask = Task.Run(async () => await _modelInitializationTask.ConfigureAwait(false));
+                if (!waitTask.Wait(TimeSpan.FromSeconds(5)))
+                {
+                    LoggerService.LogWarning("VADService.Dispose: Model initialization task did not complete within timeout");
+                }
             }
             catch (Exception ex)
             {

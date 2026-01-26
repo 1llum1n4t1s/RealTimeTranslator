@@ -280,8 +280,7 @@ public class TranslationPipelineService : ITranslationPipelineService
         _disposed = true;
         _audioCaptureService.AudioDataAvailable -= OnAudioDataAvailable;
 
-        // デッドロックを回避するため、Wait() ではなく GetAwaiter().GetResult() を使用
-        // または同期メソッドで停止処理を行う
+        // デッドロック回避: GetAwaiter().GetResult()を使用し、タイムアウト付きで待機
         try
         {
             _processingCancellation?.Cancel();
@@ -289,7 +288,20 @@ public class TranslationPipelineService : ITranslationPipelineService
 
             if (_translationProcessingTask != null && !_translationProcessingTask.IsCompleted)
             {
-                _translationProcessingTask.Wait(TimeSpan.FromSeconds(5));
+                // Task.WaitではなくGetAwaiter().GetResult()を使用
+                // ただし、タイムアウトが必要な場合はTask.Wait(timeout)を使用
+                var waitTask = Task.Run(async () =>
+                {
+                    if (_translationProcessingTask != null)
+                    {
+                        await _translationProcessingTask.ConfigureAwait(false);
+                    }
+                });
+
+                if (!waitTask.Wait(TimeSpan.FromSeconds(5)))
+                {
+                    LoggerService.LogWarning("TranslationPipelineService.Dispose: Processing task did not complete within timeout");
+                }
             }
         }
         catch (Exception ex)
