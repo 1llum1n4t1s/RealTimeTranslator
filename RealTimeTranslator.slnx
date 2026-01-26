@@ -1,8 +1,19 @@
 <Solution>
+  <Configurations>
+    <Platform Name="x64" />
+  </Configurations>
   <Folder Name="/src/">
-    <Project Path="src/RealTimeTranslator.Tests/RealTimeTranslator.Tests.csproj" />
+    <Project Path="src/RealTimeTranslator.Tests/RealTimeTranslator.Tests.csproj">
+      <Platform Project="x64" />
+    </Project>
   </Folder>
-  <Project Path="src/RealTimeTranslator.Core/RealTimeTranslator.Core.csproj" />
-  <Project Path="src/RealTimeTranslator.Translation/RealTimeTranslator.Translation.csproj" />
-  <Project Path="src/RealTimeTranslator.UI/RealTimeTranslator.UI.csproj" />
+  <Project Path="src/RealTimeTranslator.Core/RealTimeTranslator.Core.csproj">
+    <Platform Project="x64" />
+  </Project>
+  <Project Path="src/RealTimeTranslator.Translation/RealTimeTranslator.Translation.csproj">
+    <Platform Project="x64" />
+  </Project>
+  <Project Path="src/RealTimeTranslator.UI/RealTimeTranslator.UI.csproj">
+    <Platform Project="x64" />
+  </Project>
 </Solution>

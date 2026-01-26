@@ -169,7 +169,7 @@ public sealed class ProcessLoopbackCaptureTests
             if (devicePathField != null)
             {
                 var devicePath = (string)devicePathField.GetValue(null)!;
-                Assert.IsTrue(devicePath == "{2eef81be-33fa-4800-9670-1cd474972c3f}", "Process Loopback GUID should be correctly defined");
+                Assert.AreEqual("{2eef81be-33fa-4800-9670-1cd474972c3f}", devicePath, "Process Loopback GUID should be correctly defined");
             }
 
             // CharSet = CharSet.Unicode が指定されていることを確認
@@ -306,26 +306,15 @@ public sealed class ProcessLoopbackCaptureTests
     public void HResultErrorCodes_ShouldBeProperlyHandled()
     {
         // Arrange - Windows HRESULT エラーコード
-        const int FILE_NOT_FOUND = unchecked((int)0x80070002); // E_FILE_NOT_FOUND
-        const int E_INVALIDARG = unchecked((int)0x80070057);   // E_INVALIDARG
-        const int E_FAIL = unchecked((int)0x80004005);         // E_FAIL
-        const int E_ACCESSDENIED = unchecked((int)0x80070005); // E_ACCESSDENIED
-
         // Act - エラーコードから例外を生成
         var successLog = @"[2026-01-16 02:21:05.617] [Error] Audio client activation result: HRESULT=0x00000000";
         var fileNotFoundLog = @"[2026-01-16 02:21:05.617] [Error] Audio client activation result: HRESULT=0x80070002";
         var invalidArgLog = @"[2026-01-16 02:21:05.617] [Error] Audio client activation result: HRESULT=0x80070057";
 
         // Assert - ログに HRESULT が含まれていることを確認
-        Assert.IsTrue(successLog.Contains("0x00000000"), "Success log should contain success HRESULT");
-        Assert.IsTrue(fileNotFoundLog.Contains("0x80070002"), "File not found log should contain FILE_NOT_FOUND HRESULT");
-        Assert.IsTrue(invalidArgLog.Contains("0x80070057"), "Invalid arg log should contain E_INVALIDARG HRESULT");
-
-        // エラーコードが正しい値であることを確認
-        Assert.AreEqual(unchecked((int)0x80070002), FILE_NOT_FOUND, "FILE_NOT_FOUND should be 0x80070002");
-        Assert.AreEqual(unchecked((int)0x80070057), E_INVALIDARG, "E_INVALIDARG should be 0x80070057");
-        Assert.AreEqual(unchecked((int)0x80004005), E_FAIL, "E_FAIL should be 0x80004005");
-        Assert.AreEqual(unchecked((int)0x80070005), E_ACCESSDENIED, "E_ACCESSDENIED should be 0x80070005");
+        Assert.Contains("0x00000000", successLog, "Success log should contain success HRESULT");
+        Assert.Contains("0x80070002", fileNotFoundLog, "File not found log should contain FILE_NOT_FOUND HRESULT");
+        Assert.Contains("0x80070057", invalidArgLog, "Invalid arg log should contain E_INVALIDARG HRESULT");
     }
 
     [TestMethod]
@@ -344,14 +333,14 @@ public sealed class ProcessLoopbackCaptureTests
 
         // Assert - 正しいパス形式の検証
         Assert.AreEqual("VAD\\Process_Loopback", correctPath, "Process Loopback should use VAD\\Process_Loopback identifier");
-        Assert.IsTrue(correctPath.Contains("VAD"), "Correct path should contain VAD");
-        Assert.IsTrue(correctPath.Contains("Process_Loopback"), "Correct path should contain Process_Loopback");
+        Assert.Contains("VAD", correctPath, "Correct path should contain VAD");
+        Assert.Contains("Process_Loopback", correctPath, "Correct path should contain Process_Loopback");
 
         // 誤ったパス形式ではないことを確認
-        Assert.IsFalse(correctPath.StartsWith(@"\\?\"), "Process Loopback path should NOT start with \\?\\");
-        Assert.IsFalse(correctPath.Contains("SWD#"), "Process Loopback path should NOT contain SWD#");
-        Assert.IsFalse(correctPath.Contains("MMDEVAPI"), "Process Loopback path should NOT contain MMDEVAPI");
-        Assert.IsFalse(correctPath.Contains(guid), "Process Loopback path should NOT contain the Process Loopback GUID");
+        Assert.DoesNotStartWith(@"\\?\", correctPath, "Process Loopback path should NOT start with \\?\\");
+        Assert.DoesNotContain("SWD#", correctPath, "Process Loopback path should NOT contain SWD#");
+        Assert.DoesNotContain("MMDEVAPI", correctPath, "Process Loopback path should NOT contain MMDEVAPI");
+        Assert.DoesNotContain(guid, correctPath, "Process Loopback path should NOT contain the Process Loopback GUID");
     }
 
     [TestMethod]
@@ -396,7 +385,7 @@ public sealed class ProcessLoopbackCaptureTests
 
         // Note: Process Loopback API は Build 20348+ で利用可能
         // ただし、環境によって利用できない可能性がある
-        Assert.IsTrue(buildNumber >= 19041, "System should be Windows 10 or later");
+        Assert.IsGreaterThanOrEqualTo(buildNumber, 19041, "System should be Windows 10 or later");
     }
 
     [TestMethod]
@@ -404,8 +393,6 @@ public sealed class ProcessLoopbackCaptureTests
     public void ProcessLoopbackActivation_ErrorAnalysis()
     {
         // Arrange - エラーコード 0x80070002 (FILE_NOT_FOUND) の分析
-        const int FILE_NOT_FOUND = unchecked((int)0x80070002);
-
         // ログから確認されたエラーメッセージ
         var errorMessages = new[]
         {
@@ -415,7 +402,6 @@ public sealed class ProcessLoopbackCaptureTests
         };
 
         // Act - エラーの根本原因を分析
-        var hasConsistentError = true;
         foreach (var msg in errorMessages)
         {
             // ログに一貫したエラーメッセージがあるか確認
@@ -431,10 +417,7 @@ public sealed class ProcessLoopbackCaptureTests
             "オーディオデバイスが利用不可能"
         };
 
-        Assert.IsTrue(possibleCauses.Length > 0, "Possible causes should be identified");
-
-        // ループ検出: 同じエラーが繰り返されている場合、根本的な問題がある
-        Assert.IsTrue(FILE_NOT_FOUND == unchecked((int)0x80070002), "FILE_NOT_FOUND HRESULT should be consistent");
+        Assert.IsNotEmpty(possibleCauses, "Possible causes should be identified");
     }
 
     [TestMethod]
@@ -454,7 +437,7 @@ public sealed class ProcessLoopbackCaptureTests
 
         // Assert - ループ検出
         Assert.IsTrue(errorPersists, "Error persists despite multiple fixes - indicates root cause not addressed");
-        Assert.IsTrue(modifications.Length == 3, "Multiple modification attempts detected");
+        Assert.HasCount(3, modifications, "Multiple modification attempts detected");
 
         // 結論: 単なるパラメータ調整ではなく、根本的にアプローチを変える必要がある
         LoggerService.LogWarning("ProcessLoopbackCapture: Multiple fix attempts have not resolved the issue. Root cause analysis required.");
@@ -487,8 +470,6 @@ public sealed class ProcessLoopbackCaptureTests
     public void RootCauseAnalysis_HRESULT_0x80070002()
     {
         // Arrange - エラーコード 0x80070002 の根本原因を整理
-        const int FILE_NOT_FOUND = unchecked((int)0x80070002);
-
         var possibleRootCauses = new[]
         {
             "COM初期化状態が不適切（UI スレッド以外、またはSTA初期化なし）",
@@ -498,10 +479,8 @@ public sealed class ProcessLoopbackCaptureTests
         };
 
         // Act & Assert
-        Assert.AreEqual(FILE_NOT_FOUND, unchecked((int)0x80070002), "FILE_NOT_FOUND should be 0x80070002");
-
         // 複数回の修正試行後も同じエラーが発生している場合、上記のいずれかが根本原因
-        Assert.IsTrue(possibleRootCauses.Length > 0, "Root causes should be identified");
+        Assert.IsNotEmpty(possibleRootCauses, "Root causes should be identified");
 
         // 重要な気付き：DLL名やパス形式の調整だけでは解決できない可能性
         LoggerService.LogWarning(
@@ -562,7 +541,7 @@ public sealed class ProcessLoopbackCaptureTests
         Assert.IsNotNull(method, "ActivateAudioInterfaceAsync method should be found");
 
         var parameters = method.GetParameters();
-        Assert.AreEqual(5, parameters.Length, "ActivateAudioInterfaceAsync should have 5 parameters");
+        Assert.HasCount(5, parameters, "ActivateAudioInterfaceAsync should have 5 parameters");
 
         // Assert - パラメータ 0 (deviceInterfacePath) の検証
         var devicePathParam = parameters[0];
@@ -596,16 +575,16 @@ public sealed class ProcessLoopbackCaptureTests
 
         // Assert - 正しいパス形式の検証
         Assert.AreEqual("VAD\\Process_Loopback", correctPath, "Correct path should be VAD\\Process_Loopback");
-        Assert.IsTrue(correctPath.Contains("VAD"), "Correct path should contain VAD");
-        Assert.IsTrue(correctPath.Contains("Process_Loopback"), "Correct path should contain Process_Loopback");
-        Assert.IsFalse(correctPath.Contains(processLoopbackGuid), "Correct path should NOT contain the Process Loopback GUID");
-        Assert.IsFalse(correctPath.Contains(deviceId), "Correct path should NOT contain actual device ID");
+        Assert.Contains("VAD", correctPath, "Correct path should contain VAD");
+        Assert.Contains("Process_Loopback", correctPath, "Correct path should contain Process_Loopback");
+        Assert.DoesNotContain(processLoopbackGuid, correctPath, "Correct path should NOT contain the Process Loopback GUID");
+        Assert.DoesNotContain(deviceId, correctPath, "Correct path should NOT contain actual device ID");
 
         // 間違ったパス形式の検証
-        Assert.IsTrue(incorrectPath1.StartsWith(@"\\?\"), "Incorrect path 1 uses device prefix");
-        Assert.IsTrue(incorrectPath1.Contains("SWD#"), "Incorrect path 1 contains SWD#");
-        Assert.IsTrue(incorrectPath2.Contains(deviceId), "Incorrect path 2 has device ID");
-        Assert.IsTrue(incorrectPath2.Contains(processLoopbackGuid), "Incorrect path 2 has GUID");
+        Assert.StartsWith(@"\\?\", incorrectPath1, "Incorrect path 1 uses device prefix");
+        Assert.Contains("SWD#", incorrectPath1, "Incorrect path 1 contains SWD#");
+        Assert.Contains(deviceId, incorrectPath2, "Incorrect path 2 has device ID");
+        Assert.Contains(processLoopbackGuid, incorrectPath2, "Incorrect path 2 has GUID");
 
         // この修正が FILE_NOT_FOUND エラーを解決することを検証
         LoggerService.LogInfo(
@@ -619,18 +598,12 @@ public sealed class ProcessLoopbackCaptureTests
     public void HRESULT_0x80070002_IndicatesFileNotFound()
     {
         // Arrange - エラーコード 0x80070002 の分析
-        const int FILE_NOT_FOUND_HRESULT = unchecked((int)0x80070002);
-        const int WIN32_ERROR_FILE_NOT_FOUND = 2;
-
-        // Act & Assert
-        Assert.AreEqual(FILE_NOT_FOUND_HRESULT, unchecked((int)0x80070002), "HRESULT should be 0x80070002");
-
         // HRESULT 0x80070002 は Win32 エラー 2 (ERROR_FILE_NOT_FOUND) をマッピングしている
         // この場合は、デバイスインターフェースパスが無効
         var errorMessage = "Audio client activation result: HRESULT=0x80070002 indicates FILE_NOT_FOUND. " +
             "This typically means the device interface path is invalid or incomplete.";
 
-        Assert.IsTrue(errorMessage.Contains("0x80070002"), "Error message should reference the HRESULT code");
+        Assert.Contains("0x80070002", errorMessage, "Error message should reference the HRESULT code");
 
         LoggerService.LogDebug(errorMessage);
     }
@@ -720,15 +693,15 @@ public sealed class ProcessLoopbackCaptureTests
         // 物理デバイスのパス形式 (\\?\SWD#MMDEVAPI#...) ではなく、仮想デバイス識別子を使用すべき
         Assert.AreEqual("VAD\\Process_Loopback", correctPath, 
             "Device interface path should be the virtual device identifier VAD\\Process_Loopback");
-        Assert.IsTrue(correctPath.Contains("VAD"), 
+        Assert.Contains("VAD", correctPath, 
             "Device interface path should contain VAD");
-        Assert.IsTrue(correctPath.Contains("Process_Loopback"), 
+        Assert.Contains("Process_Loopback", correctPath, 
             "Device interface path should contain Process_Loopback");
-        Assert.IsFalse(correctPath.StartsWith(@"\\?\"), 
+        Assert.DoesNotStartWith(@"\\?\", correctPath, 
             "Device interface path should NOT start with \\?\\");
-        Assert.IsFalse(correctPath.Contains("SWD#"), 
+        Assert.DoesNotContain("SWD#", correctPath, 
             "Device interface path should NOT contain SWD#");
-        Assert.IsFalse(correctPath.Contains("MMDEVAPI"), 
+        Assert.DoesNotContain("MMDEVAPI", correctPath, 
             "Device interface path should NOT contain MMDEVAPI");
 
         LoggerService.LogInfo(
@@ -757,7 +730,7 @@ public sealed class ProcessLoopbackCaptureTests
         var parameters = method.GetParameters();
 
         // Assert
-        Assert.AreEqual(2, parameters.Length, "GetActivateResult should have 2 parameters");
+        Assert.HasCount(2, parameters, "GetActivateResult should have 2 parameters");
 
         // 2番目のパラメータ (out IntPtr activatedInterface) をチェック
         var interfaceParam = parameters[1];
