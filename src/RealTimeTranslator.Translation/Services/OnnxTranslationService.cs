@@ -250,7 +250,11 @@ public class OnnxTranslationService : ITranslationService
         {
             if (_cache.ContainsKey(key))
             {
-                _cacheOrder.Remove(_cacheOrder.Find(key)!);
+                var node = _cacheOrder.Find(key);
+                if (node != null)
+                {
+                    _cacheOrder.Remove(node);
+                }
             }
 
             _cache[key] = value;
@@ -274,8 +278,12 @@ public class OnnxTranslationService : ITranslationService
         {
             if (_cache.TryGetValue(key, out var cachedValue))
             {
-                _cacheOrder.Remove(_cacheOrder.Find(key)!);
-                _cacheOrder.AddLast(key);
+                var node = _cacheOrder.Find(key);
+                if (node != null)
+                {
+                    _cacheOrder.Remove(node);
+                    _cacheOrder.AddLast(key);
+                }
                 value = cachedValue;
                 return true;
             }
