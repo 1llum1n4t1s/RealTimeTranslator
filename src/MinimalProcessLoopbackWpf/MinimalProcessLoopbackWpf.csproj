@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <UseWPF>true</UseWPF>
+    <RootNamespace>MinimalProcessLoopbackWpf</RootNamespace>
+    <AssemblyName>MinimalProcessLoopbackWpf</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="1llum1n4t1s.NAudio" Version="1.0.22" />
+  </ItemGroup>
+
+</Project>

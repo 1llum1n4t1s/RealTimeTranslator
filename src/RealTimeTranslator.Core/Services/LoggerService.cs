@@ -1,6 +1,12 @@
-using System.Collections.Concurrent;
 using System.Diagnostics;
-using System.Text;
+using System.Reflection;
+
+using log4net;
+using log4net.Appender;
+using log4net.Config;
+using log4net.Core;
+using log4net.Layout;
+using log4net.Repository.Hierarchy;
 
 namespace RealTimeTranslator.Core.Services;
 
@@ -16,8 +22,8 @@ public enum LogLevel
 }
 
 /// <summary>
-/// ログ出力機能を提供するクラス
-/// ファイル、デバッグ出力ウィンドウ、UI ログの統一管理
+/// log4net を利用したログ出力のファサード
+/// ファイル・デバッグ出力・UI コールバックを統一して利用する
 /// </summary>
 public static class LoggerService
 {
@@ -27,11 +33,6 @@ public static class LoggerService
     private static readonly string LogFilePath = Path.Combine(
         AppDomain.CurrentDomain.BaseDirectory,
         "RealTimeTranslator.log");
-
-    /// <summary>
-    /// ログファイルの最大行数
-    /// </summary>
-    private const int MaxLogLines = 1000;
 
     /// <summary>
     /// 最小ログレベル（これ以上のレベルのログのみ出力）
@@ -49,34 +50,58 @@ public static class LoggerService
     private static Action<string>? _uiLogCallback;
 
     /// <summary>
-    /// ログバッファ（非同期書き込み用）
+    /// UI ログ用のカスタム Appender（設定後に参照を保持）
     /// </summary>
-    private static readonly ConcurrentQueue<string> _logBuffer = new();
+    private static UILogAppender? _uiAppender;
 
     /// <summary>
-    /// ログフラッシュタスク
+    /// log4net の logger
     /// </summary>
-    private static Task? _flushTask;
+    private static readonly ILog LogImpl = LogManager.GetLogger("RealTimeTranslator");
 
     /// <summary>
-    /// キャンセルトークンソース
+    /// 初期化済みフラグ
     /// </summary>
-    private static CancellationTokenSource? _cancellationTokenSource;
+    private static bool _initialized;
 
     /// <summary>
-    /// ログ出力カウンター（トリム実行頻度制御用）
+    /// 初期化用ロック
     /// </summary>
-    private static int _logCounter = 0;
+    private static readonly object InitLock = new();
 
     /// <summary>
-    /// トリム実行間隔（この回数ごとにログファイルトリムを実行）
+    /// log4net を設定し、未初期化なら一度だけ初期化する
     /// </summary>
-    private const int TrimInterval = 100;
-
-    /// <summary>
-    /// ロックオブジェクト
-    /// </summary>
-    private static readonly object _lock = new();
+    private static void EnsureInitialized()
+    {
+        if (_initialized)
+            return;
+        lock (InitLock)
+        {
+            if (_initialized)
+                return;
+            try
+            {
+                GlobalContext.Properties["LogPath"] = LogFilePath;
+                var entryAssembly = Assembly.GetEntryAssembly();
+                var baseDir = !string.IsNullOrEmpty(entryAssembly?.Location)
+                    ? Path.GetDirectoryName(entryAssembly.Location)
+                    : null;
+                var configDir = !string.IsNullOrEmpty(baseDir) ? baseDir : AppDomain.CurrentDomain.BaseDirectory;
+                var configPath = Path.Combine(configDir, "log4net.config");
+                var repository = LogManager.GetRepository(typeof(LoggerService).Assembly);
+                if (File.Exists(configPath))
+                    XmlConfigurator.Configure(repository, new FileInfo(configPath));
+                else
+                    XmlConfigurator.Configure(repository);
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"log4net config error: {ex.Message}");
+            }
+            _initialized = true;
+        }
+    }
 
     /// <summary>
     /// UI ログコールバックを設定
@@ -85,72 +110,21 @@ public static class LoggerService
     public static void SetUILogCallback(Action<string> callback)
     {
         _uiLogCallback = callback;
-        EnsureFlushTaskRunning();
-    }
-
-    /// <summary>
-    /// バックグラウンドフラッシュタスクが実行されていることを確認
-    /// </summary>
-    private static void EnsureFlushTaskRunning()
-    {
-        lock (_lock)
-        {
-            if (_flushTask == null || _flushTask.IsCompleted)
-            {
-                _cancellationTokenSource?.Cancel();
-                _cancellationTokenSource = new CancellationTokenSource();
-                _flushTask = Task.Run(() => FlushLoopAsync(_cancellationTokenSource.Token));
-            }
-        }
-    }
-
-    /// <summary>
-    /// ログバッファを定期的にフラッシュするループ
-    /// </summary>
-    private static async Task FlushLoopAsync(CancellationToken cancellationToken)
-    {
-        while (!cancellationToken.IsCancellationRequested)
-        {
-            try
-            {
-                await Task.Delay(500, cancellationToken).ConfigureAwait(false);
-                FlushBuffer();
-            }
-            catch (OperationCanceledException)
-            {
-                break;
-            }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"ログフラッシュエラー: {ex.Message}");
-            }
-        }
-    }
-
-    /// <summary>
-    /// バッファをファイルにフラッシュ
-    /// </summary>
-    private static void FlushBuffer()
-    {
-        if (_logBuffer.IsEmpty)
+        EnsureInitialized();
+        if (_uiAppender != null)
             return;
-
         try
         {
-            var linesToWrite = new List<string>();
-            while (_logBuffer.TryDequeue(out var line))
-            {
-                linesToWrite.Add(line);
-            }
-
-            if (linesToWrite.Count > 0)
-            {
-                File.AppendAllLines(LogFilePath, linesToWrite, Encoding.UTF8);
-            }
+            var hierarchy = (Hierarchy)LogManager.GetRepository();
+            _uiAppender = new UILogAppender(() => _uiLogCallback);
+            _uiAppender.Layout = new PatternLayout("%message");
+            _uiAppender.ActivateOptions();
+            hierarchy.Root.AddAppender(_uiAppender);
+            hierarchy.Configured = true;
         }
         catch (Exception ex)
         {
-            Debug.WriteLine($"ログフラッシュエラー: {ex.Message}");
+            Debug.WriteLine($"UILogAppender add error: {ex.Message}");
         }
     }
 
@@ -159,13 +133,11 @@ public static class LoggerService
     /// </summary>
     public static void Shutdown()
     {
-        _cancellationTokenSource?.Cancel();
-        FlushBuffer();
+        LogManager.Shutdown();
     }
 
     /// <summary>
     /// ログを出力する
-    /// ファイル、デバッグ出力ウィンドウ、UI ログに統一出力
     /// </summary>
     /// <param name="message">ログメッセージ</param>
     /// <param name="level">ログレベル（デフォルト: Info）</param>
@@ -173,29 +145,21 @@ public static class LoggerService
     {
         if (level < MinLogLevel)
             return;
-
-        try
+        EnsureInitialized();
+        switch (level)
         {
-            var timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff");
-            var formattedMessage = $"[{timestamp}] [{level}] {message}";
-
-            // ログバッファに追加（非同期でファイルに書き込まれる）
-            _logBuffer.Enqueue(formattedMessage);
-            EnsureFlushTaskRunning();
-
-            // 定期的にログファイルをトリム（パフォーマンス改善のため頻度を下げる）
-            if (Interlocked.Increment(ref _logCounter) % TrimInterval == 0)
-            {
-                TrimLogFile();
-            }
-
-            // UI ログに出力（時刻は含めない：UI 側で管理）
-            var uiMessage = $"[{level}] {message}";
-            _uiLogCallback?.Invoke(uiMessage);
-        }
-        catch (Exception ex)
-        {
-            Debug.WriteLine($"ログ出力エラー: {ex.Message}");
+            case LogLevel.Debug:
+                LogImpl.Logger.Log(typeof(LoggerService), Level.Debug, message, null);
+                break;
+            case LogLevel.Info:
+                LogImpl.Logger.Log(typeof(LoggerService), Level.Info, message, null);
+                break;
+            case LogLevel.Warning:
+                LogImpl.Logger.Log(typeof(LoggerService), Level.Warn, message, null);
+                break;
+            case LogLevel.Error:
+                LogImpl.Logger.Log(typeof(LoggerService), Level.Error, message, null);
+                break;
         }
     }
 
@@ -208,35 +172,24 @@ public static class LoggerService
     {
         if (level < MinLogLevel)
             return;
-
-        try
+        EnsureInitialized();
+        foreach (var message in messages)
         {
-            var timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff");
-
-            // ログバッファに追加（非同期でファイルに書き込まれる）
-            foreach (var message in messages)
+            switch (level)
             {
-                var formattedMessage = $"[{timestamp}] [{level}] {message}";
-                _logBuffer.Enqueue(formattedMessage);
+                case LogLevel.Debug:
+                    LogImpl.Logger.Log(typeof(LoggerService), Level.Debug, message, null);
+                    break;
+                case LogLevel.Info:
+                    LogImpl.Logger.Log(typeof(LoggerService), Level.Info, message, null);
+                    break;
+                case LogLevel.Warning:
+                    LogImpl.Logger.Log(typeof(LoggerService), Level.Warn, message, null);
+                    break;
+                case LogLevel.Error:
+                    LogImpl.Logger.Log(typeof(LoggerService), Level.Error, message, null);
+                    break;
             }
-            EnsureFlushTaskRunning();
-
-            // 定期的にログファイルをトリム
-            if (Interlocked.Add(ref _logCounter, messages.Length) % TrimInterval == 0)
-            {
-                TrimLogFile();
-            }
-
-            // UI ログに出力
-            foreach (var message in messages)
-            {
-                var uiMessage = $"[{level}] {message}";
-                _uiLogCallback?.Invoke(uiMessage);
-            }
-        }
-        catch (Exception ex)
-        {
-            Debug.WriteLine($"ログ出力エラー: {ex.Message}");
         }
     }
 
@@ -247,47 +200,12 @@ public static class LoggerService
     /// <param name="exception">例外オブジェクト</param>
     public static void LogException(string message, Exception exception)
     {
-        try
-        {
-            var timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff");
-
-            // ログバッファに追加（複数行分）
-            _logBuffer.Enqueue($"[{timestamp}] [Error] {message}");
-            _logBuffer.Enqueue($"例外: {exception.GetType().Name} - {exception.Message}");
-            if (!string.IsNullOrEmpty(exception.StackTrace))
-            {
-                _logBuffer.Enqueue($"スタックトレース: {exception.StackTrace}");
-            }
-
-            // InnerExceptionも記録
-            if (exception.InnerException != null)
-            {
-                _logBuffer.Enqueue($"InnerException: {exception.InnerException.GetType().Name} - {exception.InnerException.Message}");
-                if (!string.IsNullOrEmpty(exception.InnerException.StackTrace))
-                {
-                    _logBuffer.Enqueue($"InnerStackTrace: {exception.InnerException.StackTrace}");
-                }
-            }
-
-            EnsureFlushTaskRunning();
-
-            // 定期的にログファイルをトリム
-            if (Interlocked.Increment(ref _logCounter) % TrimInterval == 0)
-            {
-                TrimLogFile();
-            }
-
-            // UI ログに出力
-            _uiLogCallback?.Invoke($"[Error] {message}: {exception.Message}");
-        }
-        catch (Exception ex)
-        {
-            Debug.WriteLine($"ログ出力エラー: {ex.Message}");
-        }
+        EnsureInitialized();
+        LogImpl.Logger.Log(typeof(LoggerService), Level.Error, message, exception);
     }
 
     /// <summary>
-    /// デバッグレベルのログを出力
+    /// デバッグレベルのログを出力する
     /// </summary>
     /// <param name="message">ログメッセージ</param>
     public static void LogDebug(string message)
@@ -296,7 +214,7 @@ public static class LoggerService
     }
 
     /// <summary>
-    /// 情報レベルのログを出力
+    /// 情報レベルのログを出力する
     /// </summary>
     /// <param name="message">ログメッセージ</param>
     public static void LogInfo(string message)
@@ -305,7 +223,7 @@ public static class LoggerService
     }
 
     /// <summary>
-    /// 警告レベルのログを出力
+    /// 警告レベルのログを出力する
     /// </summary>
     /// <param name="message">ログメッセージ</param>
     public static void LogWarning(string message)
@@ -314,7 +232,7 @@ public static class LoggerService
     }
 
     /// <summary>
-    /// エラーレベルのログを出力
+    /// エラーレベルのログを出力する
     /// </summary>
     /// <param name="message">ログメッセージ</param>
     public static void LogError(string message)
@@ -323,50 +241,23 @@ public static class LoggerService
     }
 
     /// <summary>
-    /// ログファイルを最大行数に制限する
-    /// </summary>
-    private static void TrimLogFile()
-    {
-        try
-        {
-            if (File.Exists(LogFilePath))
-            {
-                var lines = File.ReadAllLines(LogFilePath, Encoding.UTF8);
-                if (lines.Length > MaxLogLines)
-                {
-                    var trimmedLines = lines.Skip(lines.Length - MaxLogLines).ToArray();
-                    File.WriteAllLines(LogFilePath, trimmedLines, Encoding.UTF8);
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            // ログファイル整理エラーの場合はデバッグ出力ウィンドウに最終手段として出力
-            Debug.WriteLine($"ログファイル整理エラー: {ex.Message}");
-        }
-    }
-
-    /// <summary>
-    /// ログファイルをクリア
+    /// ログファイルをクリアする
     /// </summary>
     public static void ClearLogFile()
     {
         try
         {
             if (File.Exists(LogFilePath))
-            {
                 File.Delete(LogFilePath);
-            }
         }
         catch (Exception ex)
         {
-            // ログファイル削除エラーの場合はデバッグ出力ウィンドウに最終手段として出力
             Debug.WriteLine($"ログファイル削除エラー: {ex.Message}");
         }
     }
 
     /// <summary>
-    /// ログファイルのパスを取得
+    /// ログファイルのパスを取得する
     /// </summary>
     /// <returns>ログファイルのパス</returns>
     public static string GetLogFilePath()
@@ -388,7 +279,36 @@ public static class LoggerService
             $"OS Version: {Environment.OSVersion}",
             $"Processor Count: {Environment.ProcessorCount}"
         };
-
         LogLines(messages.ToArray(), LogLevel.Debug);
+    }
+
+    /// <summary>
+    /// UI に転送するための log4net カスタム Appender
+    /// </summary>
+    private sealed class UILogAppender : AppenderSkeleton
+    {
+        private readonly Func<Action<string>?> _getCallback;
+
+        public UILogAppender(Func<Action<string>?> getCallback)
+        {
+            _getCallback = getCallback;
+        }
+
+        protected override void Append(LoggingEvent loggingEvent)
+        {
+            var cb = _getCallback();
+            if (cb == null)
+                return;
+            var msg = RenderLoggingEvent(loggingEvent);
+            var level = loggingEvent.Level?.DisplayName ?? "Info";
+            try
+            {
+                cb.Invoke($"[{level}] {msg}".TrimEnd());
+            }
+            catch
+            {
+                // UI コールバック内の例外は無視
+            }
+        }
     }
 }

@@ -47,6 +47,11 @@ public interface IVADService
     /// </summary>
     /// <returns>非同期操作のタスク</returns>
     Task EnsureModelLoadedAsync();
+
+    /// <summary>
+    /// 新しいキャプチャセッション開始時に呼び出す。バッファ・状態・タイムスタンプをクリアし、前セッションの残りデータで誤検出しないようにする。
+    /// </summary>
+    void ResetForNewSession();
 }
 
 /// <summary>

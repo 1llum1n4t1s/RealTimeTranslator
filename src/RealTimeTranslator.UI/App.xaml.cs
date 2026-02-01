@@ -275,6 +275,7 @@ public partial class App : Application
         }
 
         LoggerService.LogInfo("OnExit: アプリケーション終了完了");
+        LoggerService.Shutdown();
         base.OnExit(e);
     }
 

@@ -78,6 +78,7 @@ public class TranslationPipelineService : ITranslationPipelineService
         LoggerService.LogDebug("[Pipeline] VADモデルのロード完了を待機中...");
         await _vadService.EnsureModelLoadedAsync();
         LoggerService.LogDebug("[Pipeline] VADモデルのロード完了");
+        _vadService.ResetForNewSession();
 
         _processingCancellation = CancellationTokenSource.CreateLinkedTokenSource(token);
         _segmentSequence = 0;

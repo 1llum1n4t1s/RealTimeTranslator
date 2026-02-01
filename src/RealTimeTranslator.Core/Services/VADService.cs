@@ -110,9 +110,11 @@ public class VADService : IVADService, IDisposable
     /// </summary>
     public void ApplySettings(AudioCaptureSettings settings)
     {
+        if (settings == null)
+            throw new ArgumentNullException(nameof(settings));
         lock (_lock)
         {
-            // 感度(0.0-1.0)を閾値(1.0-0.0)に変換。デフォルト感度0.5なら閾値0.5
+            _settings = settings;
             Sensitivity = settings.VADSensitivity;
             MinSpeechDuration = settings.MinSpeechDuration;
             MaxSpeechDuration = settings.MaxSpeechDuration;
@@ -301,7 +303,7 @@ public class VADService : IVADService, IDisposable
             {
                 float maxAmp = chunk.Max(Math.Abs);
                 float avgAmp = chunk.Average(Math.Abs);
-                LoggerService.LogDebug($"[VAD] Chunk amplitude check: max={maxAmp:F3}, avg={avgAmp:F3}, samples={chunk.Length}");
+                LoggerService.LogDebug($"[VAD] Chunk amplitude check: max={maxAmp:F6}, avg={avgAmp:F6}, samples={chunk.Length}");
             }
             
             // Input tensor: [batch, samples] -> [1, 512]
@@ -410,7 +412,7 @@ public class VADService : IVADService, IDisposable
     }
 
     /// <summary>
-    /// 状態をリセット
+    /// 状態をリセット（モデルロード時および ResetForNewSession から使用）
     /// </summary>
     private void ResetState()
     {
@@ -421,6 +423,21 @@ public class VADService : IVADService, IDisposable
         _probHistorySum = 0f;
         _isSpeaking = false;
         _silenceDuration = 0;
+        _speechStartTimestamp = 0;
+        _currentTimestamp = 0;
+        _inferenceCount = 0;
+    }
+
+    /// <summary>
+    /// 新しいキャプチャセッション開始時に呼び出す。バッファ・状態・タイムスタンプをクリアする。
+    /// </summary>
+    public void ResetForNewSession()
+    {
+        lock (_lock)
+        {
+            ResetState();
+        }
+        LoggerService.LogDebug("[VAD] ResetForNewSession: バッファ・状態をクリアしました");
     }
 
     /// <summary>

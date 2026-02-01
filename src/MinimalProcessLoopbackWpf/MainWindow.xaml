@@ -1,0 +1,28 @@
+<Window x:Class="MinimalProcessLoopbackWpf.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Minimal Process Loopback (1llum1n4t1s.NAudio)"
+        Height="420" Width="640"
+        WindowStartupLocation="CenterScreen">
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+        <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,8">
+            <TextBlock Text="プロセス:" VerticalAlignment="Center" Margin="0,0,8,0"/>
+            <ComboBox x:Name="ProcessCombo" MinWidth="320" VerticalAlignment="Center" Padding="4,2"
+                      DisplayMemberPath="DisplayName" SelectedValuePath="CaptureProcessId"/>
+            <Button x:Name="RefreshButton" Content="更新" Click="RefreshButton_Click" Margin="8,0,0,0" Padding="10,4"/>
+            <Button x:Name="StartButton" Content="キャプチャ開始" Click="StartButton_Click" Margin="12,0,0,0" Padding="12,4"/>
+            <Button x:Name="StopButton" Content="停止" Click="StopButton_Click" Margin="4,0,0,0" Padding="12,4" IsEnabled="False"/>
+        </StackPanel>
+        <TextBlock Grid.Row="1" x:Name="StatusText" Text="ドロップダウンでプロセスを選び「キャプチャ開始」を押す。オーディオセッションを持つプロセスのみ表示。" TextWrapping="Wrap" Margin="0,0,0,8" Foreground="Gray"/>
+        <Border Grid.Row="2" BorderBrush="#CCC" BorderThickness="1" CornerRadius="2" Padding="4">
+            <TextBox x:Name="LogBox" FontFamily="Consolas" FontSize="12" BorderThickness="0"
+                     IsReadOnly="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto"
+                     VerticalContentAlignment="Top" AcceptsReturn="False"/>
+        </Border>
+    </Grid>
+</Window>

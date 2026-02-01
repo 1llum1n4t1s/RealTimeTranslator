@@ -7,6 +7,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Media;
+using System.Windows.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Microsoft.Extensions.DependencyInjection;
@@ -314,13 +315,45 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
         if (activeProcessIds.Count > 0)
         {
+            // オーディオセッションを持つプロセス名を収集（Chrome など親だけセッション持ち・子が実際に再生する場合に同名の子も一覧に出す）
+            var activeProcessNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var pid in activeProcessIds)
+            {
+                try
+                {
+                    using var p = Process.GetProcessById(pid);
+                    if (p.Id != currentProcessId && !string.IsNullOrEmpty(p.ProcessName))
+                        activeProcessNames.Add(p.ProcessName);
+                }
+                catch
+                {
+                    // プロセス終了等で取得できない場合は無視
+                }
+            }
+
             var allProcesses = Process.GetProcesses()
-                .Where(p => activeProcessIds.Contains(p.Id) && p.Id != currentProcessId)
+                .Where(p => p.Id != currentProcessId && (activeProcessIds.Contains(p.Id) || activeProcessNames.Contains(p.ProcessName)))
                 .OrderBy(p => p.ProcessName)
                 .ThenBy(p => p.Id)
                 .ToList();
 
-            LoggerService.LogInfo($"RefreshProcesses: Process.GetProcesses()から{allProcesses.Count}個のプロセスを特定（自分自身を除外）");
+            LoggerService.LogInfo($"RefreshProcesses: オーディオセッション＋同名プロセスで{allProcesses.Count}個を特定（自分自身を除外）");
+
+            // プロセス名 → セッション所有者の PID（Process Loopback はセッションを持つプロセスを指定する必要がある）
+            var sessionOwnerByProcessName = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            foreach (var pid in activeProcessIds)
+            {
+                try
+                {
+                    using var proc = Process.GetProcessById(pid);
+                    if (proc.Id != currentProcessId && !string.IsNullOrEmpty(proc.ProcessName) && !sessionOwnerByProcessName.ContainsKey(proc.ProcessName))
+                        sessionOwnerByProcessName[proc.ProcessName] = proc.Id;
+                }
+                catch
+                {
+                    // プロセス終了等で取得できない場合は無視
+                }
+            }
 
             var processList = new List<ProcessInfo>();
             var processNames = new Dictionary<string, int>();
@@ -342,13 +375,18 @@ public partial class MainViewModel : ObservableObject, IDisposable
                         ? $"{title} (PID: {p.Id})"
                         : title;
 
+                    var capturePid = activeProcessIds.Contains(p.Id)
+                        ? p.Id
+                        : (sessionOwnerByProcessName.TryGetValue(name, out var owner) ? owner : p.Id);
+
                     processList.Add(new ProcessInfo
                     {
                         Id = p.Id,
+                        CaptureProcessId = capturePid,
                         Name = name,
                         Title = displayTitle
                     });
-                    LoggerService.LogInfo($"RefreshProcesses: プロセス追加 - {name} (PID: {p.Id}, Title: {displayTitle})");
+                    LoggerService.LogInfo($"RefreshProcesses: プロセス追加 - {name} (PID: {p.Id}, CaptureProcessId: {capturePid}, Title: {displayTitle})");
                 }
                 catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
                 {
@@ -372,6 +410,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
             processes = fallbackProcesses.Select(p => new ProcessInfo
             {
                 Id = p.Id,
+                CaptureProcessId = p.Id,
                 Name = p.ProcessName,
                 Title = p.MainWindowTitle
             });
@@ -402,6 +441,11 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
         try
         {
+            // Process Loopback は STA（UI）スレッドにバインドするため、キャプチャ開始は必ず UI の SynchronizationContext で実行する。
+            // ボタンクリックで呼ばれる想定なので Current は通常 WPF のコンテキスト。null の場合は Dispatcher から取得して確実に UI で実行する。
+            var uiContext = SynchronizationContext.Current ?? new DispatcherSynchronizationContext(Application.Current.Dispatcher);
+            if (SynchronizationContext.Current == null)
+                LoggerService.LogDebug("[Capture] StartAsync: SynchronizationContext.Current was null, using Dispatcher-based context");
             // スレッドセーフにCancellationTokenSourceを置き換え
             lock (_cancellationLock)
             {
@@ -442,12 +486,28 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
             StatusText = "音声の再生を待機中...";
             StatusColor = Brushes.Orange;
-            Log($"'{SelectedProcess.DisplayName}' (PID: {SelectedProcess.Id}) の音声再生を待機しています...");
-            LoggerService.LogDebug($"StartAsync: Starting audio capture for process: {SelectedProcess.Name} (ID: {SelectedProcess.Id}, Title: {SelectedProcess.Title})");
-
+            var selectedPid = SelectedProcess.Id;
+            var capturePid = SelectedProcess.CaptureProcessId;
+            Log($"'{SelectedProcess.DisplayName}' (PID: {selectedPid}) の音声再生を待機しています...");
+            LoggerService.LogInfo($"[キャプチャ開始] 表示PID={selectedPid}, CaptureProcessId={capturePid}, Name={SelectedProcess.Name}, DisplayName={SelectedProcess.DisplayName}");
+            // Minimal で実音が取れた条件に合わせ、まず選択行の ProcessId（ウィンドウ／子プロセス）で試す。失敗時のみ CaptureProcessId（セッション所有者）でリトライする。
+            var pidForCapture = selectedPid;
+            LoggerService.LogDebug($"StartAsync: Starting audio capture for process: {SelectedProcess.Name} (PID: {pidForCapture}, Title: {SelectedProcess.Title})");
             var captureStarted = await _audioCaptureService.StartCaptureWithRetryAsync(
-                SelectedProcess.Id,
-                _processingCancellation.Token);
+                pidForCapture,
+                _processingCancellation.Token,
+                uiContext);
+
+            if (!captureStarted && capturePid != selectedPid)
+            {
+                LoggerService.LogInfo($"[キャプチャ] 選択PID={selectedPid} で開始できなかったため、セッション所有者PID={capturePid} でリトライします");
+                captureStarted = await _audioCaptureService.StartCaptureWithRetryAsync(
+                    capturePid,
+                    _processingCancellation.Token,
+                    uiContext);
+                if (captureStarted)
+                    pidForCapture = capturePid;
+            }
 
             if (!captureStarted)
             {
@@ -462,6 +522,13 @@ public partial class MainViewModel : ObservableObject, IDisposable
             StatusText = "実行中";
             StatusColor = Brushes.Green;
             Log($"'{SelectedProcess.DisplayName}' の音声キャプチャを開始しました");
+
+            // セッション所有者PIDでキャプチャしている場合のみ、持続無音時に選択PIDへフォールバックする監視を開始する。
+            if (captureStarted && pidForCapture == capturePid && capturePid != selectedPid)
+            {
+                var ct = _processingCancellation?.Token ?? CancellationToken.None;
+                _ = TryFallbackToWindowPidAfterSilenceAsync(selectedPid, ct);
+            }
         }
         catch (Exception ex)
         {
@@ -476,6 +543,43 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 LoggerService.LogException($"InnerException: {ex.InnerException.GetType().FullName}: {ex.InnerException.Message}", ex.InnerException);
             }
         }
+    }
+
+    /// <summary>
+    /// セッション所有者 PID でキャプチャ開始後、一定時間無音なら選択ウィンドウの PID で再キャプチャを試行する。
+    /// </summary>
+    private async Task TryFallbackToWindowPidAfterSilenceAsync(int windowPid, CancellationToken cancellationToken)
+    {
+        const int silenceCheckDelayMs = 2500;
+        try
+        {
+            await Task.Delay(silenceCheckDelayMs, cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
+        await RunOnUiThreadAsync(async () =>
+        {
+            if (!IsRunning || cancellationToken.IsCancellationRequested)
+                return;
+            if (_audioCaptureService.HasReceivedNonSilentDataSinceStart)
+                return;
+            LoggerService.LogInfo($"[キャプチャ] 持続無音のため選択ウィンドウPID={windowPid} で再キャプチャを試行します");
+            Log("音声が検出されないため、別のプロセスで再キャプチャを試行します…");
+            _audioCaptureService.StopCapture();
+            // RunOnUiThreadAsync 内のためここは UI スレッド。Current が null の場合は Dispatcher から取得。
+            var uiCtx = SynchronizationContext.Current ?? new DispatcherSynchronizationContext(Application.Current.Dispatcher);
+            var started = await _audioCaptureService.StartCaptureWithRetryAsync(
+                windowPid,
+                cancellationToken,
+                uiCtx);
+            if (started)
+            {
+                LoggerService.LogInfo($"[キャプチャ] 選択ウィンドウPID={windowPid} でキャプチャを開始しました");
+                Log("再キャプチャを開始しました");
+            }
+        });
     }
 
     /// <summary>
@@ -792,12 +896,24 @@ public partial class MainViewModel : ObservableObject, IDisposable
             return;
         }
 
-        var match = Processes.FirstOrDefault(p =>
-            p.Name.Equals(_settings.LastSelectedProcessName, StringComparison.OrdinalIgnoreCase));
-        if (match != null && !Equals(SelectedProcess, match))
+        // プロセスIDが保存されていれば、同名が複数ある場合でも正しいプロセス（音声を出している方）を復元する
+        if (_settings.LastSelectedProcessId > 0)
         {
-            SelectedProcess = match;
-            Log($"前回選択したプロセス '{match.DisplayName}' を復元しました");
+            var matchById = Processes.FirstOrDefault(p => p.Id == _settings.LastSelectedProcessId);
+            if (matchById != null && !Equals(SelectedProcess, matchById))
+            {
+                SelectedProcess = matchById;
+                Log($"前回選択したプロセス '{matchById.DisplayName}' を復元しました（PID 一致）");
+                return;
+            }
+        }
+
+        var matchByName = Processes.FirstOrDefault(p =>
+            p.Name.Equals(_settings.LastSelectedProcessName, StringComparison.OrdinalIgnoreCase));
+        if (matchByName != null && !Equals(SelectedProcess, matchByName))
+        {
+            SelectedProcess = matchByName;
+            Log($"前回選択したプロセス '{matchByName.DisplayName}' を復元しました");
             return;
         }
 
@@ -823,6 +939,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
         }
 
         _settings.LastSelectedProcessName = process.Name;
+        _settings.LastSelectedProcessId = process.Id;
         Log($"選択プロセス '{process.DisplayName}' を設定に保存しました");
     }
 
@@ -1004,9 +1121,14 @@ public partial class MainViewModel : ObservableObject, IDisposable
 public class ProcessInfo
 {
     /// <summary>
-    /// プロセスID
+    /// プロセスID（表示・選択用）
     /// </summary>
     public int Id { get; set; }
+
+    /// <summary>
+    /// Process Loopback キャプチャに使うプロセスID（オーディオセッションを持つプロセス。同名の子プロセスの場合はセッション所有者の PID）
+    /// </summary>
+    public int CaptureProcessId { get; set; }
 
     /// <summary>
     /// プロセス名
@@ -1019,7 +1141,7 @@ public class ProcessInfo
     public string Title { get; set; } = string.Empty;
 
     /// <summary>
-    /// 表示用の名前（プロセス名 - タイトル）
+    /// 表示用の名前（プロセス名 (PID: xxx) - タイトル）
     /// </summary>
-    public string DisplayName => $"{Name} - {Title}";
+    public string DisplayName => $"{Name} (PID: {Id}) - {Title}";
 }

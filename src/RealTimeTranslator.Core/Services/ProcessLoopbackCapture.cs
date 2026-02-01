@@ -159,9 +159,7 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
             {
                 LoggerService.LogDebug($"ProcessLoopbackCapture: Getting device mix format from default render device");
 
-                // デバイス自体のミックスフォーマットを取得
-                // Process Loopback では GetMixFormat が NotImplemented なため、
-                // 代わりにデバイス（スピーカー）のフォーマットを使用する
+                // デバイスの MixFormat をそのまま MarshalToPtr で渡す（環境によって安定しやすく、NAudio の Process Loopback と同じ扱い）
                 WaveFormat deviceMixFormat;
                 try
                 {
@@ -174,71 +172,9 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
                     deviceMixFormat = WaveFormat.CreateIeeeFloatWaveFormat(48000, 2);
                 }
 
-                // デバイスのフォーマット情報をベースに、Float 32-bit の形式を構築
-                // 0x88890008 エラー対策: デバイスが Extensible 形式の場合、こちらも Extensible 構造体を使う必要がある
-                
-                // デバイスが Extensible 形式かどうかを確認
-                var isExtensible = deviceMixFormat is NAudio.Wave.WaveFormatExtensible;
-                if (isExtensible)
-                {
-                    LoggerService.LogDebug($"ProcessLoopbackCapture: Device format is Extensible (WAVEFORMATEXTENSIBLE)");
-                }
-                
-                // チャネル数に基づいてチャネルマスクを計算
-                // 注: NAudio の WaveFormatExtensible には ChannelMask プロパティがないため、
-                // チャネル数から適切なマスクを計算します
-                var channelMask = 0x3; // Default: SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT
-                switch (deviceMixFormat.Channels)
-                {
-                    case 1:
-                        channelMask = 0x04; // SPEAKER_FRONT_CENTER
-                        break;
-                    case 2:
-                        channelMask = 0x03; // SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT
-                        break;
-                    case 4:
-                        channelMask = 0x33; // SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT | SPEAKER_BACK_LEFT | SPEAKER_BACK_RIGHT
-                        break;
-                    case 6:
-                        channelMask = 0x3F; // 5.1 channels
-                        break;
-                    case 8:
-                        channelMask = 0xFF; // 7.1 channels
-                        break;
-                    default:
-                        channelMask = 0x03;
-                        break;
-                }
-                LoggerService.LogDebug($"ProcessLoopbackCapture: Channels={deviceMixFormat.Channels}, ChannelMask={channelMask:X}");
-
-                // WaveFormatExtensible 構造体を使用する
-                var processLoopbackFormat = new WaveFormatExtensible
-                {
-                    Format = new WaveFormatEx
-                    {
-                        FormatTag = WaveFormatTag.Extensible,
-                        Channels = (short)deviceMixFormat.Channels,
-                        SampleRate = deviceMixFormat.SampleRate,
-                        BitsPerSample = 32,
-                        BlockAlign = (short)(deviceMixFormat.Channels * 4),
-                        AvgBytesPerSec = deviceMixFormat.SampleRate * deviceMixFormat.Channels * 4,
-                        Size = 22 // cbSize (Samples + ChannelMask + SubFormat = 2 + 4 + 16 = 22)
-                    },
-                    Samples = 32, // wValidBitsPerSample (32bit)
-                    ChannelMask = channelMask,
-                    SubFormat = AudioFormatSubType.IeeeFloat
-                };
-
-                LoggerService.LogDebug($"ProcessLoopbackCapture: Prepared Extensible format for Initialize: SampleRate={processLoopbackFormat.Format.SampleRate}, Channels={processLoopbackFormat.Format.Channels}, BitsPerSample=32");
-
-                // アンマネージドメモリに構造体をコピー
-                var size = Marshal.SizeOf(processLoopbackFormat);
-                formatPointer = Marshal.AllocCoTaskMem(size);
-                Marshal.StructureToPtr(processLoopbackFormat, formatPointer, false);
-
-                // WaveFormat プロパティを設定
-                WaveFormat = WaveFormat.CreateIeeeFloatWaveFormat(processLoopbackFormat.Format.SampleRate, processLoopbackFormat.Format.Channels);
-                LoggerService.LogDebug($"ProcessLoopbackCapture: WaveFormat property set: {WaveFormat}");
+                formatPointer = MarshalWaveFormatToPtr(deviceMixFormat);
+                WaveFormat = deviceMixFormat;
+                LoggerService.LogDebug($"ProcessLoopbackCapture: WaveFormat (device MixFormat) set for Initialize");
 
                 // 物理デバイスから処理周期を取得する (Process Loopback クライアントからは取得できないため)
                 var defaultDevicePeriod = 100000L; // デフォルト 10ms (100ns単位)
@@ -268,8 +204,9 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
             captureClient = GetCaptureClient(_audioClient);
             _captureClient = captureClient;
         }
-        catch
+        catch (Exception ex)
         {
+            LoggerService.LogError($"ProcessLoopbackCapture: Initialization failed - {ex.GetType().Name}: {ex.Message} (HRESULT=0x{ex.HResult:X8})");
             if (captureClient != null)
             {
                 Marshal.ReleaseComObject(captureClient);
@@ -553,22 +490,67 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
     }
 
     /// <summary>
+    /// NAudio の WaveFormat をアンマネージドメモリにマーシャルする（デバイス MixFormat をそのまま渡すためのヘルパー）。
+    /// 本メソッドで AllocCoTaskMem したポインタを返すため、使用後は呼び出し元で FreeCoTaskMem すること。
+    /// </summary>
+    private static IntPtr MarshalWaveFormatToPtr(WaveFormat format)
+    {
+        if (format is NAudio.Wave.WaveFormatExtensible ext)
+        {
+            var channelMask = format.Channels switch
+            {
+                1 => 0x04,
+                2 => 0x03,
+                4 => 0x33,
+                6 => 0x3F,
+                8 => 0xFF,
+                _ => 0x03
+            };
+            var wfx = new WaveFormatExtensible
+            {
+                Format = new WaveFormatEx
+                {
+                    FormatTag = WaveFormatTag.Extensible,
+                    Channels = (short)ext.Channels,
+                    SampleRate = ext.SampleRate,
+                    AvgBytesPerSec = ext.AverageBytesPerSecond,
+                    BlockAlign = (short)ext.BlockAlign,
+                    BitsPerSample = (short)ext.BitsPerSample,
+                    Size = (short)(Marshal.SizeOf<WaveFormatExtensible>() - 18)
+                },
+                Samples = (short)ext.BitsPerSample,
+                ChannelMask = channelMask,
+                SubFormat = ext.SubFormat
+            };
+            var ptr = Marshal.AllocCoTaskMem(Marshal.SizeOf<WaveFormatExtensible>());
+            Marshal.StructureToPtr(wfx, ptr, false);
+            return ptr;
+        }
+        var wf = new WaveFormatEx
+        {
+            FormatTag = (WaveFormatTag)format.Encoding,
+            Channels = (short)format.Channels,
+            SampleRate = format.SampleRate,
+            AvgBytesPerSec = format.AverageBytesPerSecond,
+            BlockAlign = (short)format.BlockAlign,
+            BitsPerSample = (short)format.BitsPerSample,
+            Size = 0
+        };
+        var p = Marshal.AllocCoTaskMem(Marshal.SizeOf<WaveFormatEx>());
+        Marshal.StructureToPtr(wf, p, false);
+        return p;
+    }
+
+    /// <summary>
     /// オーディオクライアントを初期化
-    /// Process Loopback API 使用時は Loopback フラグは不要
+    /// デバイス MixFormat を渡す場合はストリームフラグに Loopback を付与（NAudio の Process Loopback と同じ扱い）。
+    /// bufferDuration は非ゼロを指定する。
     /// </summary>
     private void InitializeAudioClient(IntPtr formatPointer, WaveFormat waveFormat, long defaultDevicePeriod)
     {
-        // 修正: ポーリングモードなので AutoConvertPcm のみ（EventCallback は外す）
-        var streamFlags = AudioClientStreamFlags.AutoConvertPcm;
+        var streamFlags = AudioClientStreamFlags.Loopback;
 
-        // Process Loopback では 0 を渡すと AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED が返るケースがあるため
-        // まず 0 を試し、失敗時はデバイス周期に合わせた値で再試行する
-        var bufferDuration = 0L;
-
-        // ref 引数のためにローカル変数を定義
         var sessionGuid = Guid.Empty;
-
-        // _audioClient.Initialize の呼び出しをラップするローカル関数
         int InitializeWithDuration(long duration) =>
             _audioClient.Initialize(
                 AudioClientShareMode.Shared,
@@ -579,31 +561,20 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
                 ref sessionGuid);
 
         var sharedModePeriod = GetSharedModePeriodHns(formatPointer, waveFormat.SampleRate);
+        var alignedDuration = sharedModePeriod ?? (defaultDevicePeriod > 0 ? defaultDevicePeriod : DefaultBufferDuration10ms);
         if (sharedModePeriod.HasValue)
         {
             LoggerService.LogDebug($"InitializeAudioClient: Shared mode engine period (hns)={sharedModePeriod.Value}");
         }
 
-        LoggerService.LogDebug($"InitializeAudioClient: Attempting Initialize with streamFlags={streamFlags:X}, bufferDuration={bufferDuration} (system default)");
-        int hResult;
-        try
-        {
-            hResult = InitializeWithDuration(bufferDuration);
-        }
-        catch (COMException ex) when (ex.HResult == AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED)
-        {
-            var alignedDuration = sharedModePeriod ?? (defaultDevicePeriod > 0 ? defaultDevicePeriod : DefaultBufferDuration10ms);
-            LoggerService.LogWarning($"InitializeAudioClient: Buffer size not aligned (COMException). Retrying with bufferDuration={alignedDuration}.");
-            hResult = InitializeWithDuration(alignedDuration);
-        }
-
+        LoggerService.LogDebug($"InitializeAudioClient: Attempting Initialize with streamFlags={streamFlags:X}, bufferDuration={alignedDuration} (required for Process Loopback)");
+        var hResult = InitializeWithDuration(alignedDuration);
         if (hResult == AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED)
         {
-            var alignedDuration = sharedModePeriod ?? (defaultDevicePeriod > 0 ? defaultDevicePeriod : DefaultBufferDuration10ms);
-            LoggerService.LogWarning($"InitializeAudioClient: Buffer size not aligned with system default. Retrying with bufferDuration={alignedDuration}.");
-            hResult = InitializeWithDuration(alignedDuration);
+            var fallback = defaultDevicePeriod > 0 ? defaultDevicePeriod : DefaultBufferDuration10ms;
+            LoggerService.LogWarning($"InitializeAudioClient: Buffer size not aligned. Retrying with bufferDuration={fallback}.");
+            hResult = InitializeWithDuration(fallback);
         }
-
         ThrowOnError(hResult);
         LoggerService.LogDebug("InitializeAudioClient: Initialize succeeded");
     }
@@ -1006,6 +977,11 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
             }
         }
 
+        /// <summary>
+        /// アクティベート結果のポインタから IAudioClient を取得
+        /// GetActivateResult で得たポインタから IAudioClient を明示的に QueryInterface してから RCW を作成する。
+        /// 直接 GetObjectForIUnknown すると IAudioClient へのキャストが失敗する環境があるため。
+        /// </summary>
         public IAudioClient GetActivatedInterface()
         {
             if (_activatedInterfacePtr == IntPtr.Zero)
@@ -1013,22 +989,20 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
                 throw new InvalidOperationException("Audio client activation failed: Interface pointer is null");
             }
 
+            var iacPtr = IntPtr.Zero;
             try
             {
-                LoggerService.LogDebug($"GetActivatedInterface: Converting Ptr 0x{_activatedInterfacePtr:X} to RCW on current thread");
-
-                // ここで（メインスレッド上で）ポインタから COM オブジェクト（RCW）を生成する
-                var obj = Marshal.GetObjectForIUnknown(_activatedInterfacePtr);
-                LoggerService.LogDebug($"GetActivatedInterface: Marshal.GetObjectForIUnknown returned {obj?.GetType().Name ?? "null"}");
-
-                // 変換できたら IAudioClient にキャスト
-                if (obj == null)
+                LoggerService.LogDebug($"GetActivatedInterface: QueryInterface IID_IAudioClient for Ptr 0x{_activatedInterfacePtr:X}");
+                var iid = IID_IAudioClient;
+                var qhr = Marshal.QueryInterface(_activatedInterfacePtr, in iid, out iacPtr);
+                if (qhr != 0 || iacPtr == IntPtr.Zero)
                 {
-                    throw new InvalidOperationException("Marshal.GetObjectForIUnknown returned null");
+                    LoggerService.LogError($"GetActivatedInterface: QueryInterface failed HRESULT=0x{qhr:X8}");
+                    Marshal.ThrowExceptionForHR(qhr);
                 }
-
-                var audioClient = (IAudioClient)obj;
-                LoggerService.LogDebug("GetActivatedInterface: Successfully cast to IAudioClient");
+                LoggerService.LogDebug($"GetActivatedInterface: GetTypedObjectForIUnknown for IAudioClient Ptr 0x{iacPtr:X}");
+                var audioClient = (IAudioClient)Marshal.GetTypedObjectForIUnknown(iacPtr, typeof(IAudioClient));
+                LoggerService.LogDebug("GetActivatedInterface: Successfully obtained IAudioClient");
                 return audioClient;
             }
             catch (InvalidCastException castEx)
@@ -1038,8 +1012,10 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
             }
             finally
             {
-                // Marshal.GetObjectForIUnknown は参照カウントを増やすため、
-                // GetActivateResult で受け取った分の参照カウントはここで解放する
+                if (iacPtr != IntPtr.Zero)
+                {
+                    Marshal.Release(iacPtr);
+                }
                 Marshal.Release(_activatedInterfacePtr);
                 _activatedInterfacePtr = IntPtr.Zero;
             }

@@ -1,5 +1,7 @@
 <Project>
   <PropertyGroup>
+    <!-- ローカル NAudio 参照時の WindowsBase 4.0.0.0 / 10.0.0.0 競合は実行時は問題にならないため抑制 -->
+    <NoWarn>$(NoWarn);MSB3277</NoWarn>
     <Platforms>x64</Platforms>
     <PlatformTarget>x64</PlatformTarget>
     <SupportedOSPlatformVersion>10.0.20348.0</SupportedOSPlatformVersion>

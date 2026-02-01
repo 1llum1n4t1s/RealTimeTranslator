@@ -38,6 +38,11 @@ public class AppSettings
     public string LastSelectedProcessName { get; set; } = string.Empty;
 
     /// <summary>
+    /// 前回選択したプロセスID（同一名で複数ある場合の復元用。0 は未保存）
+    /// </summary>
+    public int LastSelectedProcessId { get; set; }
+
+    /// <summary>
     /// 更新設定
     /// </summary>
     public UpdateSettings Update { get; set; } = new();

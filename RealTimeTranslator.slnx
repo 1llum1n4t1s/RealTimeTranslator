@@ -16,4 +16,7 @@
   <Project Path="src/RealTimeTranslator.UI/RealTimeTranslator.UI.csproj">
     <Platform Project="x64" />
   </Project>
+  <Project Path="src/MinimalProcessLoopbackWpf/MinimalProcessLoopbackWpf.csproj">
+    <Platform Project="x64" />
+  </Project>
 </Solution>
