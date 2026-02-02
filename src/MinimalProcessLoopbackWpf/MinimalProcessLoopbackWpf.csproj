@@ -8,7 +8,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="1llum1n4t1s.NAudio" Version="1.0.22" />
+    <PackageReference Include="1llum1n4t1s.NAudio" Version="1.0.24" />
   </ItemGroup>
 
 </Project>

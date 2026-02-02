@@ -1,5 +1,6 @@
 using System;
 using System.Collections.ObjectModel;
+using System.Linq;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Microsoft.Extensions.Options;
@@ -69,6 +70,24 @@ public partial class SettingsViewModel : ObservableObject
 
     [ObservableProperty]
     private string _statusMessage = string.Empty;
+
+    public ColorOption? SelectedPartialTextColorOption
+    {
+        get => TextColorOptions.FirstOrDefault(o => o.Value == _settings.Overlay.PartialTextColor);
+        set { if (value != null) _settings.Overlay.PartialTextColor = value.Value; }
+    }
+
+    public ColorOption? SelectedFinalTextColorOption
+    {
+        get => TextColorOptions.FirstOrDefault(o => o.Value == _settings.Overlay.FinalTextColor);
+        set { if (value != null) _settings.Overlay.FinalTextColor = value.Value; }
+    }
+
+    public ColorOption? SelectedBackgroundColorOption
+    {
+        get => BackgroundColorOptions.FirstOrDefault(o => o.Value == _settings.Overlay.BackgroundColor);
+        set { if (value != null) _settings.Overlay.BackgroundColor = value.Value; }
+    }
 
     [RelayCommand]
     private async Task SaveAsync()

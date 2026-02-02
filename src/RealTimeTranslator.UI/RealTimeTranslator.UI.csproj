@@ -2,10 +2,11 @@
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <UseWPF>true</UseWPF>
+    <AvaloniaUseCompiledBindingsByDefault>false</AvaloniaUseCompiledBindingsByDefault>
     <LLamaSharpCpuVariant Condition="'$(LLamaSharpCpuVariant)' == ''">avx2</LLamaSharpCpuVariant>
     <ErrorOnDuplicatePublishOutputFiles>false</ErrorOnDuplicatePublishOutputFiles>
     <ApplicationIcon>..\..\icon\app.ico</ApplicationIcon>
+    <InvariantGlobalization>false</InvariantGlobalization>
   </PropertyGroup>
 
   <ItemGroup>
@@ -14,11 +15,16 @@
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Include="Avalonia" Version="11.3.11" />
+    <PackageReference Include="Avalonia.Desktop" Version="11.3.11" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="11.3.11" />
+    <PackageReference Include="Avalonia.Fonts.Inter" Version="11.3.11" />
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.0" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.2" />
     <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="10.0.2" />
     <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="10.0.2" />
     <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.2" />
+    <PackageReference Include="Semi.Avalonia" Version="11.3.7.2" />
     <PackageReference Include="Velopack" Version="0.0.1298" />
     <PackageReference Include="Whisper.net.Runtime" Version="1.9.0" />
   </ItemGroup>
@@ -43,7 +49,6 @@
   </Target>
 
   <Target Name="RemoveNonWindowsRuntimes" AfterTargets="ResolveFilesToPublish">
-    <!-- Windows以外のランタイムファイルを削除 -->
     <ItemGroup>
       <ResolvedFileToPublish Remove="@(ResolvedFileToPublish)" Condition="'%(ResolvedFileToPublish.OriginalItemSpec)' != ''&#xD;&#xA;                               and ($([System.String]::Copy('%(ResolvedFileToPublish.OriginalItemSpec)').Contains('runtimes\linux')) or&#xD;&#xA;                                    $([System.String]::Copy('%(ResolvedFileToPublish.OriginalItemSpec)').Contains('runtimes/linux')) or&#xD;&#xA;                                    $([System.String]::Copy('%(ResolvedFileToPublish.OriginalItemSpec)').Contains('runtimes\osx')) or&#xD;&#xA;                                    $([System.String]::Copy('%(ResolvedFileToPublish.OriginalItemSpec)').Contains('runtimes/osx')) or&#xD;&#xA;                                    $([System.String]::Copy('%(ResolvedFileToPublish.OriginalItemSpec)').Contains('runtimes\android')) or&#xD;&#xA;                                    $([System.String]::Copy('%(ResolvedFileToPublish.OriginalItemSpec)').Contains('runtimes/android')) or&#xD;&#xA;                                    $([System.String]::Copy('%(ResolvedFileToPublish.OriginalItemSpec)').Contains('runtimes\ios')) or&#xD;&#xA;                                    $([System.String]::Copy('%(ResolvedFileToPublish.OriginalItemSpec)').Contains('runtimes/ios')))" />
     </ItemGroup>

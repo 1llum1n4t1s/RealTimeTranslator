@@ -1,4 +1,4 @@
-using System.Windows;
+using Avalonia.Controls;
 using RealTimeTranslator.UI.ViewModels;
 
 namespace RealTimeTranslator.UI.Views;
@@ -13,8 +13,9 @@ public partial class MainWindow : Window
         InitializeComponent();
     }
 
-    public MainWindow(MainViewModel viewModel) : this()
+    public MainWindow(MainViewModel viewModel)
     {
+        InitializeComponent();
         DataContext = viewModel;
     }
 }

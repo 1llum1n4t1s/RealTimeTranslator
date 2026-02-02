@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "RealTimeTranslator.UI": {
+      "commandName": "Project",
+      "hotReloadEnabled": false
+    }
+  }
+}

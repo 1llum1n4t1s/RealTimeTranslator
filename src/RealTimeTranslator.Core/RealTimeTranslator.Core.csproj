@@ -5,7 +5,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="1llum1n4t1s.NAudio" Version="1.0.22" />
+    <PackageReference Include="1llum1n4t1s.NAudio" Version="1.0.24" />
     <PackageReference Include="log4net" Version="3.2.0" />
     <PackageReference Include="System.Management" Version="10.0.2" />
     <PackageReference Include="Microsoft.ML.OnnxRuntime.DirectML" Version="1.23.0" />

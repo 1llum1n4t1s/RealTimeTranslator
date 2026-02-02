@@ -1,0 +1,119 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:RealTimeTranslator.UI.ViewModels"
+        x:Class="RealTimeTranslator.UI.Views.SettingsWindow"
+        x:DataType="vm:SettingsViewModel"
+        Title="設定"
+        Width="700" Height="600"
+        MinWidth="600" MinHeight="500"
+        WindowStartupLocation="CenterOwner">
+
+    <Grid Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto">
+            <StackPanel>
+                <Border BorderBrush="{DynamicResource ThemeBorderMidBrush}" BorderThickness="1"
+                        CornerRadius="4" Padding="10" Margin="0,0,0,10">
+                    <StackPanel>
+                        <TextBlock Text="翻訳設定" FontWeight="SemiBold" Margin="0,0,0,8"/>
+                        <Grid ColumnDefinitions="160,*" RowDefinitions="Auto,Auto">
+                            <TextBlock Grid.Row="0" Grid.Column="0" Text="ソース言語"/>
+                            <ComboBox Grid.Row="0" Grid.Column="1" Margin="0,0,0,6"
+                                      ItemsSource="{Binding Languages}"
+                                      SelectedItem="{Binding Settings.Translation.SourceLanguage, Mode=TwoWay}">
+                                <ComboBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Text="{Binding}"/>
+                                    </DataTemplate>
+                                </ComboBox.ItemTemplate>
+                            </ComboBox>
+                            <TextBlock Grid.Row="1" Grid.Column="0" Text="ターゲット言語" Margin="0,6,0,0"/>
+                            <ComboBox Grid.Row="1" Grid.Column="1" Margin="0,6,0,0"
+                                      ItemsSource="{Binding Languages}"
+                                      SelectedItem="{Binding Settings.Translation.TargetLanguage, Mode=TwoWay}">
+                                <ComboBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Text="{Binding}"/>
+                                    </DataTemplate>
+                                </ComboBox.ItemTemplate>
+                            </ComboBox>
+                        </Grid>
+                    </StackPanel>
+                </Border>
+
+                <Border BorderBrush="{DynamicResource ThemeBorderMidBrush}" BorderThickness="1"
+                        CornerRadius="4" Padding="10" Margin="0,0,0,10">
+                    <StackPanel>
+                        <TextBlock Text="オーバーレイ設定" FontWeight="SemiBold" Margin="0,0,0,8"/>
+                        <Grid ColumnDefinitions="160,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto">
+                            <TextBlock Grid.Row="0" Grid.Column="0" Text="フォント"/>
+                            <ComboBox Grid.Row="0" Grid.Column="1" Margin="0,0,0,6"
+                                      ItemsSource="{Binding FontFamilies}"
+                                      SelectedItem="{Binding Settings.Overlay.FontFamily, Mode=TwoWay}"/>
+                            <TextBlock Grid.Row="1" Grid.Column="0" Text="フォントサイズ" Margin="0,6,0,0"/>
+                            <ComboBox Grid.Row="1" Grid.Column="1" Margin="0,6,0,6"
+                                      ItemsSource="{Binding FontSizes}"
+                                      SelectedItem="{Binding Settings.Overlay.FontSize, Mode=TwoWay}">
+                                <ComboBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Text="{Binding}"/>
+                                    </DataTemplate>
+                                </ComboBox.ItemTemplate>
+                            </ComboBox>
+                            <TextBlock Grid.Row="2" Grid.Column="0" Text="仮字幕色" Margin="0,6,0,0"/>
+                            <ComboBox Grid.Row="2" Grid.Column="1" Margin="0,6,0,6"
+                                      ItemsSource="{Binding TextColorOptions}"
+                                      SelectedItem="{Binding SelectedPartialTextColorOption, Mode=TwoWay}">
+                                <ComboBox.ItemTemplate>
+                                    <DataTemplate DataType="vm:ColorOption">
+                                        <TextBlock Text="{Binding Name}"/>
+                                    </DataTemplate>
+                                </ComboBox.ItemTemplate>
+                            </ComboBox>
+                            <TextBlock Grid.Row="3" Grid.Column="0" Text="確定字幕色" Margin="0,6,0,0"/>
+                            <ComboBox Grid.Row="3" Grid.Column="1" Margin="0,6,0,6"
+                                      ItemsSource="{Binding TextColorOptions}"
+                                      SelectedItem="{Binding SelectedFinalTextColorOption, Mode=TwoWay}">
+                                <ComboBox.ItemTemplate>
+                                    <DataTemplate DataType="vm:ColorOption">
+                                        <TextBlock Text="{Binding Name}"/>
+                                    </DataTemplate>
+                                </ComboBox.ItemTemplate>
+                            </ComboBox>
+                            <TextBlock Grid.Row="4" Grid.Column="0" Text="背景色" Margin="0,6,0,0"/>
+                            <ComboBox Grid.Row="4" Grid.Column="1" Margin="0,6,0,6"
+                                      ItemsSource="{Binding BackgroundColorOptions}"
+                                      SelectedItem="{Binding SelectedBackgroundColorOption, Mode=TwoWay}">
+                                <ComboBox.ItemTemplate>
+                                    <DataTemplate DataType="vm:ColorOption">
+                                        <TextBlock Text="{Binding Name}"/>
+                                    </DataTemplate>
+                                </ComboBox.ItemTemplate>
+                            </ComboBox>
+                            <TextBlock Grid.Row="5" Grid.Column="0" Text="最大行数" Margin="0,6,0,0"/>
+                            <ComboBox Grid.Row="5" Grid.Column="1" Margin="0,6,0,0"
+                                      ItemsSource="{Binding MaxLinesList}"
+                                      SelectedItem="{Binding Settings.Overlay.MaxLines, Mode=TwoWay}">
+                                <ComboBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Text="{Binding}"/>
+                                    </DataTemplate>
+                                </ComboBox.ItemTemplate>
+                            </ComboBox>
+                        </Grid>
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+        </ScrollViewer>
+
+        <StackPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
+            <TextBlock Text="{Binding StatusMessage}" VerticalAlignment="Center" Margin="0,0,10,0"/>
+            <Button Content="保存" Width="120" Command="{Binding SaveAsyncCommand}"/>
+            <Button Content="閉じる" Width="120" Margin="6,0,0,0" IsCancel="True"/>
+        </StackPanel>
+    </Grid>
+</Window>

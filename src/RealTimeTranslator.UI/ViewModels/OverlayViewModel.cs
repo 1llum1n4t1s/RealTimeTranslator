@@ -1,7 +1,8 @@
+using System;
 using System.Collections.ObjectModel;
-using System.Windows;
-using System.Windows.Media;
-using System.Windows.Threading;
+using System.Linq;
+using Avalonia.Media;
+using Avalonia.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using Microsoft.Extensions.Options;
 using RealTimeTranslator.Core.Models;
@@ -14,7 +15,7 @@ namespace RealTimeTranslator.UI.ViewModels;
 /// </summary>
 public partial class OverlayViewModel : ObservableObject, IDisposable
 {
-    private const int CleanupIntervalMs = 500; // クリーンアップ間隔（ミリ秒）
+    private const int CleanupIntervalMs = 500;
 
     private OverlaySettings _settings;
     private readonly DispatcherTimer _cleanupTimer;
@@ -32,7 +33,7 @@ public partial class OverlayViewModel : ObservableObject, IDisposable
     private double _fontSize = 24;
 
     [ObservableProperty]
-    private Brush _backgroundBrush = new SolidColorBrush(Color.FromArgb(128, 0, 0, 0));
+    private IBrush _backgroundBrush = new SolidColorBrush(Color.FromArgb(128, 0, 0, 0));
 
     [ObservableProperty]
     private double _bottomMarginPercent = 10;
@@ -42,8 +43,6 @@ public partial class OverlayViewModel : ObservableObject, IDisposable
         if (optionsMonitor != null)
         {
             _settings = optionsMonitor.CurrentValue.Overlay;
-
-            // 設定変更のイベントを購読
             _settingsChangeSubscription = optionsMonitor.OnChange(newSettings =>
             {
                 LoggerService.LogInfo("Settings updated detected in OverlayViewModel.");
@@ -55,17 +54,11 @@ public partial class OverlayViewModel : ObservableObject, IDisposable
         {
             _settings = new OverlaySettings();
         }
-
         FontFamily = _settings.FontFamily;
         FontSize = _settings.FontSize;
         BackgroundBrush = ParseBrush(_settings.BackgroundColor);
         BottomMarginPercent = _settings.BottomMarginPercent;
-
-        // 定期的に古い字幕を削除
-        _cleanupTimer = new DispatcherTimer
-        {
-            Interval = TimeSpan.FromMilliseconds(CleanupIntervalMs)
-        };
+        _cleanupTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(CleanupIntervalMs) };
         _cleanupTimer.Tick += CleanupOldSubtitles;
         _cleanupTimer.Start();
     }
@@ -74,37 +67,27 @@ public partial class OverlayViewModel : ObservableObject, IDisposable
     {
         if (_isDisposed)
             return;
-
         _settingsChangeSubscription?.Dispose();
         _cleanupTimer.Stop();
         _cleanupTimer.Tick -= CleanupOldSubtitles;
         _isDisposed = true;
     }
 
-    /// <summary>
-    /// 字幕を追加または更新
-    /// </summary>
     public void AddOrUpdateSubtitle(SubtitleItem item)
     {
-        Application.Current.Dispatcher.Invoke(() =>
+        Dispatcher.UIThread.Post(() =>
         {
             lock (_subtitlesLock)
             {
-                // 同じSegmentIdの字幕を検索
                 var existing = Subtitles.FirstOrDefault(s => s.SegmentId == item.SegmentId);
-
                 if (existing != null)
                 {
-                    // 既存の字幕を更新
                     existing.Update(item, _settings);
                 }
                 else
                 {
-                    // 新しい字幕を追加
                     var displayItem = new SubtitleDisplayItem(item, _settings);
                     Subtitles.Add(displayItem);
-
-                    // 最大行数を超えた場合、古いものを削除
                     while (Subtitles.Count > _settings.MaxLines)
                     {
                         Subtitles.RemoveAt(0);
@@ -114,36 +97,25 @@ public partial class OverlayViewModel : ObservableObject, IDisposable
         });
     }
 
-    /// <summary>
-    /// 古い字幕を削除
-    /// </summary>
     private void CleanupOldSubtitles(object? sender, EventArgs e)
     {
-        Application.Current.Dispatcher.Invoke(() =>
+        Dispatcher.UIThread.Post(() =>
         {
             lock (_subtitlesLock)
             {
                 var now = DateTime.Now;
-
-                // 逆順でインデックスベースの削除を使用（パフォーマンス最適化）
-                // Remove() は O(n) だが、RemoveAt() は O(n-i) でより効率的
-                for (int i = Subtitles.Count - 1; i >= 0; i--)
+                for (var i = Subtitles.Count - 1; i >= 0; i--)
                 {
                     if (Subtitles[i].ShouldRemove(now))
-                    {
                         Subtitles.RemoveAt(i);
-                    }
                 }
             }
         });
     }
 
-    /// <summary>
-    /// すべての字幕をクリア
-    /// </summary>
     public void ClearSubtitles()
     {
-        Application.Current.Dispatcher.Invoke(() =>
+        Dispatcher.UIThread.Post(() =>
         {
             lock (_subtitlesLock)
             {
@@ -152,12 +124,9 @@ public partial class OverlayViewModel : ObservableObject, IDisposable
         });
     }
 
-    /// <summary>
-    /// 設定変更を反映
-    /// </summary>
     public void ReloadSettings()
     {
-        Application.Current.Dispatcher.Invoke(() =>
+        Dispatcher.UIThread.Post(() =>
         {
             FontFamily = _settings.FontFamily;
             FontSize = _settings.FontSize;
@@ -166,28 +135,24 @@ public partial class OverlayViewModel : ObservableObject, IDisposable
         });
     }
 
-    private static Brush ParseBrush(string colorString)
+    private static IBrush ParseBrush(string colorString)
     {
         return BrushHelper.ParseBrush(colorString, Colors.Black);
     }
 }
 
-/// <summary>
-/// Brush変換のヘルパークラス
-/// </summary>
 internal static class BrushHelper
 {
-    public static Brush ParseBrush(string colorString, Color fallbackColor)
+    public static IBrush ParseBrush(string colorString, Color fallbackColor)
     {
         if (string.IsNullOrWhiteSpace(colorString))
         {
             LoggerService.LogWarning($"Color string is null or empty, using fallback: {fallbackColor}");
             return new SolidColorBrush(fallbackColor);
         }
-
         try
         {
-            var color = (Color)ColorConverter.ConvertFromString(colorString);
+            var color = Color.Parse(colorString);
             return new SolidColorBrush(color);
         }
         catch (FormatException ex)
@@ -203,9 +168,6 @@ internal static class BrushHelper
     }
 }
 
-/// <summary>
-/// 表示用の字幕アイテム
-/// </summary>
 public partial class SubtitleDisplayItem : ObservableObject
 {
     public string SegmentId { get; }
@@ -214,7 +176,7 @@ public partial class SubtitleDisplayItem : ObservableObject
     private string _displayText = string.Empty;
 
     [ObservableProperty]
-    private Brush _textBrush = Brushes.White;
+    private IBrush _textBrush = Brushes.White;
 
     [ObservableProperty]
     private double _opacity = 1.0;
@@ -241,15 +203,12 @@ public partial class SubtitleDisplayItem : ObservableObject
     {
         if (now < _displayEndTime)
             return false;
-
-        // フェードアウト中
         var fadeProgress = (now - _displayEndTime).TotalSeconds / _fadeOutDuration;
         if (fadeProgress < 1.0)
         {
             Opacity = 1.0 - fadeProgress;
             return false;
         }
-
         return true;
     }
 }

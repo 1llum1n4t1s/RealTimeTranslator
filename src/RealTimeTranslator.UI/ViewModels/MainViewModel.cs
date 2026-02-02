@@ -5,9 +5,10 @@ using System.Diagnostics;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-using System.Windows;
-using System.Windows.Media;
-using System.Windows.Threading;
+using Avalonia;
+using Avalonia.Controls.ApplicationLifetimes;
+using Avalonia.Media;
+using Avalonia.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Microsoft.Extensions.DependencyInjection;
@@ -56,7 +57,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
     private string _statusText = "停止中";
 
     [ObservableProperty]
-    private Brush _statusColor = Brushes.Gray;
+    private IBrush _statusColor = Brushes.Gray;
 
     [ObservableProperty]
     private double _processingLatency;
@@ -230,11 +231,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
             Log($"更新: {e.Message}");
             if (!_settings.Update.AutoApply)
             {
-                MessageBox.Show(
-                    $"更新が見つかりました。\n{e.Message}",
-                    "更新通知",
-                    MessageBoxButton.OK,
-                    MessageBoxImage.Information);
+                _ = Services.MessageBoxService.ShowAsync("更新通知", $"更新が見つかりました。\n{e.Message}");
             }
         });
     }
@@ -253,13 +250,10 @@ public partial class MainViewModel : ObservableObject, IDisposable
                     return;
                 }
 
-                var result = MessageBox.Show(
-                    "更新のダウンロードが完了しました。今すぐ適用しますか？",
-                    "更新適用",
-                    MessageBoxButton.YesNo,
-                    MessageBoxImage.Question);
+                var result = await Services.MessageBoxService.ShowYesNoAsync(
+                    "更新適用", "更新のダウンロードが完了しました。今すぐ適用しますか？");
 
-                if (result == MessageBoxResult.Yes)
+                if (result)
                 {
                     await _updateService.ApplyUpdateAsync(CancellationToken.None);
                 }
@@ -279,26 +273,23 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
     private static void RunOnUiThread(Action action)
     {
-        var dispatcher = Application.Current?.Dispatcher;
-        if (dispatcher == null || dispatcher.CheckAccess())
+        if (Dispatcher.UIThread.CheckAccess())
         {
             action();
         }
         else
         {
-            dispatcher.Invoke(action);
+            Dispatcher.UIThread.Invoke(action);
         }
     }
 
     private static Task RunOnUiThreadAsync(Func<Task> action)
     {
-        var dispatcher = Application.Current?.Dispatcher;
-        if (dispatcher == null || dispatcher.CheckAccess())
+        if (Dispatcher.UIThread.CheckAccess())
         {
             return action();
         }
-
-        return dispatcher.InvokeAsync(action).Task.Unwrap();
+        return Dispatcher.UIThread.InvokeAsync(action);
     }
 
     /// <summary>
@@ -416,7 +407,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
             });
         }
 
-        Application.Current.Dispatcher.Invoke(() =>
+        Dispatcher.UIThread.Invoke(() =>
         {
             Processes.Clear();
             foreach (var process in processes)
@@ -443,7 +434,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
         {
             // Process Loopback は STA（UI）スレッドにバインドするため、キャプチャ開始は必ず UI の SynchronizationContext で実行する。
             // ボタンクリックで呼ばれる想定なので Current は通常 WPF のコンテキスト。null の場合は Dispatcher から取得して確実に UI で実行する。
-            var uiContext = SynchronizationContext.Current ?? new DispatcherSynchronizationContext(Application.Current.Dispatcher);
+            var uiContext = SynchronizationContext.Current ?? new AvaloniaSynchronizationContext();
             if (SynchronizationContext.Current == null)
                 LoggerService.LogDebug("[Capture] StartAsync: SynchronizationContext.Current was null, using Dispatcher-based context");
             // スレッドセーフにCancellationTokenSourceを置き換え
@@ -568,8 +559,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
             LoggerService.LogInfo($"[キャプチャ] 持続無音のため選択ウィンドウPID={windowPid} で再キャプチャを試行します");
             Log("音声が検出されないため、別のプロセスで再キャプチャを試行します…");
             _audioCaptureService.StopCapture();
-            // RunOnUiThreadAsync 内のためここは UI スレッド。Current が null の場合は Dispatcher から取得。
-            var uiCtx = SynchronizationContext.Current ?? new DispatcherSynchronizationContext(Application.Current.Dispatcher);
+            var uiCtx = SynchronizationContext.Current ?? new AvaloniaSynchronizationContext();
             var started = await _audioCaptureService.StartCaptureWithRetryAsync(
                 windowPid,
                 cancellationToken,
@@ -617,8 +607,15 @@ public partial class MainViewModel : ObservableObject, IDisposable
     private void OpenSettings()
     {
         var window = _serviceProvider.GetRequiredService<SettingsWindow>();
-        window.Owner = App.Current.MainWindow;
-        window.ShowDialog();
+        if (Application.Current?.ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop
+            && desktop.MainWindow != null)
+        {
+            _ = window.ShowDialog(desktop.MainWindow);
+        }
+        else
+        {
+            window.Show();
+        }
         Log("設定画面を開きました");
     }
 
