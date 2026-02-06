@@ -532,6 +532,16 @@ public class ModelDownloadService : IDisposable
         }
 
         _disposed = true;
+
+        try
+        {
+            _downloadSemaphore.Dispose();
+        }
+        catch (Exception ex)
+        {
+            LoggerService.LogError($"ModelDownloadService.Dispose: Error disposing download semaphore: {ex.Message}");
+        }
+
         GC.SuppressFinalize(this);
     }
 }

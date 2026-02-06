@@ -322,89 +322,108 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 }
             }
 
-            var allProcesses = Process.GetProcesses()
-                .Where(p => p.Id != currentProcessId && (activeProcessIds.Contains(p.Id) || activeProcessNames.Contains(p.ProcessName)))
-                .OrderBy(p => p.ProcessName)
-                .ThenBy(p => p.Id)
-                .ToList();
-
-            LoggerService.LogInfo($"RefreshProcesses: オーディオセッション＋同名プロセスで{allProcesses.Count}個を特定（自分自身を除外）");
-
-            // プロセス名 → セッション所有者の PID（Process Loopback はセッションを持つプロセスを指定する必要がある）
-            var sessionOwnerByProcessName = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-            foreach (var pid in activeProcessIds)
+            var allRawProcesses = Process.GetProcesses();
+            try
             {
-                try
-                {
-                    using var proc = Process.GetProcessById(pid);
-                    if (proc.Id != currentProcessId && !string.IsNullOrEmpty(proc.ProcessName) && !sessionOwnerByProcessName.ContainsKey(proc.ProcessName))
-                        sessionOwnerByProcessName[proc.ProcessName] = proc.Id;
-                }
-                catch
-                {
-                    // プロセス終了等で取得できない場合は無視
-                }
-            }
+                var allProcesses = allRawProcesses
+                    .Where(p => p.Id != currentProcessId && (activeProcessIds.Contains(p.Id) || activeProcessNames.Contains(p.ProcessName)))
+                    .OrderBy(p => p.ProcessName)
+                    .ThenBy(p => p.Id)
+                    .ToList();
 
-            var processList = new List<ProcessInfo>();
-            var processNames = new Dictionary<string, int>();
+                LoggerService.LogInfo($"RefreshProcesses: オーディオセッション＋同名プロセスで{allProcesses.Count}個を特定（自分自身を除外）");
 
-            foreach (var p in allProcesses)
-            {
-                try
+                // プロセス名 → セッション所有者の PID（Process Loopback はセッションを持つプロセスを指定する必要がある）
+                var sessionOwnerByProcessName = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                foreach (var pid in activeProcessIds)
                 {
-                    var title = string.IsNullOrWhiteSpace(p.MainWindowTitle) ? p.ProcessName : p.MainWindowTitle;
-                    var name = p.ProcessName;
-
-                    if (!processNames.ContainsKey(name))
+                    try
                     {
-                        processNames[name] = 0;
+                        using var proc = Process.GetProcessById(pid);
+                        if (proc.Id != currentProcessId && !string.IsNullOrEmpty(proc.ProcessName) && !sessionOwnerByProcessName.ContainsKey(proc.ProcessName))
+                            sessionOwnerByProcessName[proc.ProcessName] = proc.Id;
                     }
-                    processNames[name]++;
-
-                    var displayTitle = processNames[name] > 1
-                        ? $"{title} (PID: {p.Id})"
-                        : title;
-
-                    var capturePid = activeProcessIds.Contains(p.Id)
-                        ? p.Id
-                        : (sessionOwnerByProcessName.TryGetValue(name, out var owner) ? owner : p.Id);
-
-                    processList.Add(new ProcessInfo
+                    catch
                     {
-                        Id = p.Id,
-                        CaptureProcessId = capturePid,
-                        Name = name,
-                        Title = displayTitle
-                    });
-                    LoggerService.LogInfo($"RefreshProcesses: プロセス追加 - {name} (PID: {p.Id}, CaptureProcessId: {capturePid}, Title: {displayTitle})");
+                        // プロセス終了等で取得できない場合は無視
+                    }
                 }
-                catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
-                {
-                    LoggerService.LogError($"RefreshProcesses: プロセス情報取得エラー (PID: {p.Id}): {ex.Message}");
-                }
-            }
 
-            processes = processList;
+                var processList = new List<ProcessInfo>();
+                var processNames = new Dictionary<string, int>();
+
+                foreach (var p in allProcesses)
+                {
+                    try
+                    {
+                        var title = string.IsNullOrWhiteSpace(p.MainWindowTitle) ? p.ProcessName : p.MainWindowTitle;
+                        var name = p.ProcessName;
+
+                        if (!processNames.ContainsKey(name))
+                        {
+                            processNames[name] = 0;
+                        }
+                        processNames[name]++;
+
+                        var displayTitle = processNames[name] > 1
+                            ? $"{title} (PID: {p.Id})"
+                            : title;
+
+                        var capturePid = activeProcessIds.Contains(p.Id)
+                            ? p.Id
+                            : (sessionOwnerByProcessName.TryGetValue(name, out var owner) ? owner : p.Id);
+
+                        processList.Add(new ProcessInfo
+                        {
+                            Id = p.Id,
+                            CaptureProcessId = capturePid,
+                            Name = name,
+                            Title = displayTitle
+                        });
+                        LoggerService.LogInfo($"RefreshProcesses: プロセス追加 - {name} (PID: {p.Id}, CaptureProcessId: {capturePid}, Title: {displayTitle})");
+                    }
+                    catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+                    {
+                        LoggerService.LogError($"RefreshProcesses: プロセス情報取得エラー (PID: {p.Id}): {ex.Message}");
+                    }
+                }
+
+                processes = processList;
+            }
+            finally
+            {
+                foreach (var p in allRawProcesses)
+                    p.Dispose();
+            }
         }
         else
         {
             LoggerService.LogInfo("RefreshProcesses: オーディオセッションを持つプロセスがないため、フォールバック処理を実行（メインウィンドウを持つプロセスを表示）");
-            var fallbackProcesses = Process.GetProcesses()
-                .Where(p => p.MainWindowHandle != IntPtr.Zero && !string.IsNullOrWhiteSpace(p.MainWindowTitle) && p.Id != currentProcessId)
-                .OrderBy(p => p.ProcessName)
-                .ThenBy(p => p.Id)
-                .ToList();
-
-            LoggerService.LogInfo($"RefreshProcesses: フォールバック処理で{fallbackProcesses.Count}個のプロセスを検出");
-
-            processes = fallbackProcesses.Select(p => new ProcessInfo
+            var fallbackRawProcesses = Process.GetProcesses();
+            try
             {
-                Id = p.Id,
-                CaptureProcessId = p.Id,
-                Name = p.ProcessName,
-                Title = p.MainWindowTitle
-            });
+                var fallbackProcesses = fallbackRawProcesses
+                    .Where(p => p.MainWindowHandle != IntPtr.Zero && !string.IsNullOrWhiteSpace(p.MainWindowTitle) && p.Id != currentProcessId)
+                    .OrderBy(p => p.ProcessName)
+                    .ThenBy(p => p.Id)
+                    .ToList();
+
+                LoggerService.LogInfo($"RefreshProcesses: フォールバック処理で{fallbackProcesses.Count}個のプロセスを検出");
+
+                // Select を即時評価して ProcessInfo リストを確定させる（Process の Dispose 前にプロパティを読み取る）
+                processes = fallbackProcesses.Select(p => new ProcessInfo
+                {
+                    Id = p.Id,
+                    CaptureProcessId = p.Id,
+                    Name = p.ProcessName,
+                    Title = p.MainWindowTitle
+                }).ToList();
+            }
+            finally
+            {
+                foreach (var p in fallbackRawProcesses)
+                    p.Dispose();
+            }
         }
 
         Dispatcher.UIThread.Invoke(() =>

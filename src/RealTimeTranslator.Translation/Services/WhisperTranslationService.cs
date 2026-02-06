@@ -457,10 +457,42 @@ public class WhisperTranslationService : ITranslationService
         }
     }
 
+    private bool _disposed = false;
+
     public void Dispose()
     {
-        _processor?.Dispose();
-        _factory?.Dispose();
-        _translateLock.Dispose();
+        if (_disposed)
+            return;
+
+        _disposed = true;
+
+        try
+        {
+            _processor?.Dispose();
+        }
+        catch (Exception ex)
+        {
+            LoggerService.LogError($"WhisperTranslationService.Dispose: Error disposing processor: {ex.Message}");
+        }
+
+        try
+        {
+            _factory?.Dispose();
+        }
+        catch (Exception ex)
+        {
+            LoggerService.LogError($"WhisperTranslationService.Dispose: Error disposing factory: {ex.Message}");
+        }
+
+        try
+        {
+            _translateLock.Dispose();
+        }
+        catch (Exception ex)
+        {
+            LoggerService.LogError($"WhisperTranslationService.Dispose: Error disposing translate lock: {ex.Message}");
+        }
+
+        GC.SuppressFinalize(this);
     }
 }

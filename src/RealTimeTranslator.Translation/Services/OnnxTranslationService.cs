@@ -31,6 +31,7 @@ public class OnnxTranslationService : ITranslationService
     private readonly ModelDownloadService _downloadService;
     private readonly Dictionary<string, string> _cache = new();
     private readonly LinkedList<string> _cacheOrder = new();
+    private readonly Dictionary<string, LinkedListNode<string>> _cacheNodeMap = new();
     private readonly object _cacheLock = new();
 
     private bool _isModelLoaded = false;
@@ -248,23 +249,23 @@ public class OnnxTranslationService : ITranslationService
     {
         lock (_cacheLock)
         {
-            if (_cache.ContainsKey(key))
+            if (_cacheNodeMap.TryGetValue(key, out var existingNode))
             {
-                var node = _cacheOrder.Find(key);
-                if (node != null)
-                {
-                    _cacheOrder.Remove(node);
-                }
+                _cacheOrder.Remove(existingNode);
+                _cacheNodeMap.Remove(key);
             }
 
             _cache[key] = value;
-            _cacheOrder.AddLast(key);
+            var newNode = _cacheOrder.AddLast(key);
+            _cacheNodeMap[key] = newNode;
 
             if (_cacheOrder.Count > MaxCacheSize)
             {
-                var oldestKey = _cacheOrder.First!.Value;
+                var oldestNode = _cacheOrder.First!;
+                var oldestKey = oldestNode.Value;
                 _cacheOrder.RemoveFirst();
                 _cache.Remove(oldestKey);
+                _cacheNodeMap.Remove(oldestKey);
             }
         }
     }
@@ -278,11 +279,11 @@ public class OnnxTranslationService : ITranslationService
         {
             if (_cache.TryGetValue(key, out var cachedValue))
             {
-                var node = _cacheOrder.Find(key);
-                if (node != null)
+                if (_cacheNodeMap.TryGetValue(key, out var node))
                 {
                     _cacheOrder.Remove(node);
-                    _cacheOrder.AddLast(key);
+                    var newNode = _cacheOrder.AddLast(key);
+                    _cacheNodeMap[key] = newNode;
                 }
                 value = cachedValue;
                 return true;
@@ -511,14 +512,47 @@ public class OnnxTranslationService : ITranslationService
         {
             _cache.Clear();
             _cacheOrder.Clear();
+            _cacheNodeMap.Clear();
         }
     }
 
+    private bool _disposed = false;
+
     public void Dispose()
     {
-        _session?.Dispose();
-        _tokenizer?.Dispose();
-        _translateLock.Dispose();
+        if (_disposed)
+            return;
+
+        _disposed = true;
+
+        try
+        {
+            _session?.Dispose();
+        }
+        catch (Exception ex)
+        {
+            LoggerService.LogError($"OnnxTranslationService.Dispose: Error disposing session: {ex.Message}");
+        }
+
+        try
+        {
+            _tokenizer?.Dispose();
+        }
+        catch (Exception ex)
+        {
+            LoggerService.LogError($"OnnxTranslationService.Dispose: Error disposing tokenizer: {ex.Message}");
+        }
+
+        try
+        {
+            _translateLock.Dispose();
+        }
+        catch (Exception ex)
+        {
+            LoggerService.LogError($"OnnxTranslationService.Dispose: Error disposing translate lock: {ex.Message}");
+        }
+
+        GC.SuppressFinalize(this);
     }
 
     /// <summary>

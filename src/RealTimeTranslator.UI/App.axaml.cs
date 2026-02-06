@@ -156,8 +156,11 @@ public partial class App : Application
         {
             _serviceProvider.GetService<MainViewModel>()?.Dispose();
             _serviceProvider.GetService<OverlayViewModel>()?.Dispose();
+            _serviceProvider.GetService<ITranslationPipelineService>()?.Dispose();
             _serviceProvider.GetService<IAudioCaptureService>()?.Dispose();
+            _serviceProvider.GetService<IASRService>()?.Dispose();
             _serviceProvider.GetService<ITranslationService>()?.Dispose();
+            (_serviceProvider.GetService<IVADService>() as IDisposable)?.Dispose();
             _serviceProvider.GetService<HttpClient>()?.Dispose();
             _serviceProvider.GetService<ModelDownloadService>()?.Dispose();
             _serviceProvider.Dispose();

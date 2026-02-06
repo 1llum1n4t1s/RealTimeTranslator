@@ -171,11 +171,6 @@ public class TranslationPipelineService : ITranslationPipelineService
                 var task = HandleTranslationItemAsync(item, semaphore, token);
                 pendingTasks.Add(task);
             }
-
-            if (pendingTasks.Count > 0)
-            {
-                await Task.WhenAll(pendingTasks);
-            }
         }
         catch (OperationCanceledException)
         {
@@ -183,6 +178,20 @@ public class TranslationPipelineService : ITranslationPipelineService
         }
         finally
         {
+            // 実行中のタスクがsemaphore.Release()を呼ぶ前にDisposeするとObjectDisposedExceptionになるため、
+            // 全タスクの完了を待ってからDisposeする
+            pendingTasks.RemoveAll(t => t.IsCompleted);
+            if (pendingTasks.Count > 0)
+            {
+                try
+                {
+                    await Task.WhenAll(pendingTasks).WaitAsync(TimeSpan.FromSeconds(5));
+                }
+                catch (Exception)
+                {
+                    // タイムアウトまたはタスクエラー、無視
+                }
+            }
             semaphore.Dispose();
         }
     }

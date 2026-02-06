@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(wc:*)",
+      "Bash(du:*)",
+      "Bash(dotnet build:*)",
+      "Bash(dotnet restore:*)"
+    ]
+  }
+}
