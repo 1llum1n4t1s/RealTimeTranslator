@@ -28,6 +28,8 @@ public partial class MainViewModel : ObservableObject, IDisposable
 {
     private bool _disposed;
     private const int MaxLogLines = 1000;
+    private static readonly System.Text.RegularExpressions.Regex s_numericPattern =
+        new(@"[\d.]+%?", System.Text.RegularExpressions.RegexOptions.Compiled);
 
     private readonly ITranslationPipelineService _pipelineService;
     private readonly IAudioCaptureService _audioCaptureService;
@@ -279,7 +281,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
         }
         else
         {
-            Dispatcher.UIThread.Invoke(action);
+            Dispatcher.UIThread.Post(action);
         }
     }
 
@@ -660,17 +662,26 @@ public partial class MainViewModel : ObservableObject, IDisposable
         {
             _logLines.Enqueue(logLine);
 
+            var dequeued = false;
             while (_logLines.Count > MaxLogLines)
             {
                 _logLines.Dequeue();
+                dequeued = true;
             }
 
-            var sb = new StringBuilder(_logLines.Count * 50);
-            foreach (var line in _logLines)
+            if (dequeued)
             {
-                sb.AppendLine(line);
+                var sb = new StringBuilder(_logLines.Count * 50);
+                foreach (var line in _logLines)
+                {
+                    sb.AppendLine(line);
+                }
+                LogText = sb.ToString();
             }
-            LogText = sb.ToString();
+            else
+            {
+                LogText += logLine + Environment.NewLine;
+            }
         }
     }
 
@@ -679,7 +690,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
     /// </summary>
     private static string ExtractBaseMessage(string message)
     {
-        return System.Text.RegularExpressions.Regex.Replace(message, @"[\d.]+%?", "").Trim();
+        return s_numericPattern.Replace(message, "").Trim();
     }
 
     /// <summary>

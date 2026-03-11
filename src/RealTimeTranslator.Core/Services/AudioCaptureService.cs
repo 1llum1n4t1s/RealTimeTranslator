@@ -362,12 +362,20 @@ public class AudioCaptureService : IAudioCaptureService
 
         // NAudio の RawSourceWaveStream ＋ ToSampleProvider で float 変換（2ch の場合は StereoToMono 含む）
         var samples = ConvertToFloat(bufferCopy, e.BytesRecorded, sourceFormat);
-        var max = samples.Length > 0 ? samples.Max(s => Math.Abs(s)) : 0f;
+        var max = 0f;
+        for (var i = 0; i < samples.Length; i++)
+        {
+            var abs = Math.Abs(samples[i]);
+            if (abs > max) max = abs;
+        }
         if (max > NonSilentAmplitudeThreshold)
             _hasReceivedNonSilentDataSinceStart = true;
         if (callCount <= 5 || callCount % 50 == 0)
         {
-            var avg = samples.Length > 0 ? samples.Average(s => Math.Abs(s)) : 0f;
+            var sum = 0f;
+            for (var i = 0; i < samples.Length; i++)
+                sum += Math.Abs(samples[i]);
+            var avg = samples.Length > 0 ? sum / samples.Length : 0f;
             var raw16Str = raw16Min.HasValue ? $", raw16=[{raw16Min.Value},{raw16Max!.Value}]" : "";
             LoggerService.LogDebug($"[Capture] OnDataAvailable #{callCount}: bytes={e.BytesRecorded}, samples={samples.Length}, max={max:F6}, avg={avg:F6}{raw16Str}");
             // raw16 が -1～1 のみで再生の有無で変わらない場合は、実音ではなくドライバのプレースホルダーと判断
@@ -387,7 +395,7 @@ public class AudioCaptureService : IAudioCaptureService
             // VAD用のリサンプリング済みサンプルを準備
             var resampledForVad = sourceFormat.SampleRate != targetSampleRate
                 ? Resample(samples, sourceFormat.SampleRate, targetSampleRate)
-                : (float[])samples.Clone();
+                : samples;
 
             _audioBuffer.AddRange(resampledForVad);
 

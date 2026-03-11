@@ -325,18 +325,7 @@ public class WhisperTranslationService : ITranslationService
                 throw new FileNotFoundException($"Translation model not found: {modelPath}");
             }
 
-            // GPU を有効にするための環境変数設定（複数オプションをサポート）
-            // NVIDIA CUDA をサポート
-            Environment.SetEnvironmentVariable("GGML_USE_CUDA", "1");
-            LoggerService.LogDebug("GPU (CUDA) support enabled");
-
-            // AMD RADEON をサポート（Vulkan）
-            Environment.SetEnvironmentVariable("GGML_USE_VULKAN", "1");
-            LoggerService.LogDebug("GPU (Vulkan/RADEON) support enabled");
-
-            // AMD RADEON をサポート（HIP/ROCm）
-            Environment.SetEnvironmentVariable("GGML_USE_HIP", "1");
-            LoggerService.LogDebug("GPU (HIP/ROCm/RADEON) support enabled");
+            // GPU 環境変数は App.axaml.cs で起動時に設定済み
 
             OnModelStatusChanged(new ModelStatusChangedEventArgs(
                 ServiceName,

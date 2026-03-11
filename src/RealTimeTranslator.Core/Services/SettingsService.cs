@@ -19,6 +19,8 @@ public interface ISettingsService
 /// </summary>
 public class SettingsService : ISettingsService
 {
+    private static readonly JsonSerializerOptions s_writeOptions = new() { WriteIndented = true };
+
     /// <summary>
     /// 設定ファイルのパス
     /// </summary>
@@ -40,8 +42,7 @@ public class SettingsService : ISettingsService
     {
         try
         {
-            var options = new JsonSerializerOptions { WriteIndented = true };
-            var json = JsonSerializer.Serialize(settings, options);
+            var json = JsonSerializer.Serialize(settings, s_writeOptions);
             await File.WriteAllTextAsync(_settingsPath, json);
         }
         catch (Exception ex)

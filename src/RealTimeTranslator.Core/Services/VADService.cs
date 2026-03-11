@@ -42,6 +42,12 @@ public class VADService : IVADService, IDisposable
     private float _probHistorySum = 0f;                       // VAD確率の合計（平均用）
     private int _inferenceCount = 0;                           // 推論回数（ログ用）
 
+    // 推論で再利用する次元配列とサンプルレート値
+    private static readonly int[] InputDims = [1, WindowSizeSamples];
+    private static readonly int[] StateDims = [2, 1, 128];
+    private static readonly int[] SrDims = [1];
+    private static readonly long[] SrValue = [(long)SampleRate];
+
     // パラメータ
     private float _threshold = 0.5f;
     // 継続判定の閾値スケール
@@ -307,15 +313,15 @@ public class VADService : IVADService, IDisposable
             }
             
             // Input tensor: [batch, samples] -> [1, 512]
-            var inputTensor = new DenseTensor<float>(new Memory<float>(chunk), new[] { 1, WindowSizeSamples });
+            var inputTensor = new DenseTensor<float>(new Memory<float>(chunk), InputDims);
 
             // State tensor: [2, batch, 128] -> [2, 1, 128]
-            var stateTensor = new DenseTensor<float>(new Memory<float>(_vadState), new[] { 2, 1, 128 });
+            var stateTensor = new DenseTensor<float>(new Memory<float>(_vadState), StateDims);
 
             // SR tensor: [1] (Sample Rate)
-            var srTensor = new DenseTensor<long>(new Memory<long>(new[] { (long)SampleRate }), new[] { 1 });
+            var srTensor = new DenseTensor<long>(new Memory<long>(SrValue), SrDims);
 
-            var inputs = new List<NamedOnnxValue>
+            var inputs = new List<NamedOnnxValue>(3)
             {
                 NamedOnnxValue.CreateFromTensor("input", inputTensor),
                 NamedOnnxValue.CreateFromTensor("state", stateTensor),
