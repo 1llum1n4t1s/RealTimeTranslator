@@ -45,4 +45,4 @@ jobs:
             src/**/bin/Release/**/*.exe
             src/**/bin/Release/**/*.dll
             !src/**/bin/Release/**/ref/**
-          retention-days: 7
+          retention-days: 3
