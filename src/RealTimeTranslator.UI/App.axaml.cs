@@ -28,6 +28,7 @@ public partial class App : Application
     private ServiceProvider? _serviceProvider;
     private OverlayWindow? _overlayWindow;
     private CancellationTokenSource? _updateCancellation;
+    private bool _shutdownCleanupDone;
 
     public App()
     {
@@ -115,6 +116,12 @@ public partial class App : Application
 
     private async void OnShutdownRequested(object? sender, ShutdownRequestedEventArgs e)
     {
+        if (_shutdownCleanupDone)
+            return;
+
+        e.Cancel = true;
+        _shutdownCleanupDone = true;
+
         LoggerService.LogInfo("OnExit: アプリケーション終了開始");
         _updateCancellation?.Cancel();
         _updateCancellation?.Dispose();
@@ -129,6 +136,9 @@ public partial class App : Application
             _serviceProvider = null;
         }
         LoggerService.Shutdown();
+
+        if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
+            desktop.Shutdown();
     }
 
     private void ConfigureServices(IServiceCollection services)
