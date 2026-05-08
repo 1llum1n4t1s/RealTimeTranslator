@@ -70,7 +70,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
     private string _logText = string.Empty;
 
     [ObservableProperty]
-    private bool _isLoading = true;
+    private bool _isLoading;
 
     [ObservableProperty]
     private string _loadingMessage = "初期化中...";

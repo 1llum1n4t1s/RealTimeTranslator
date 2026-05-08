@@ -16,7 +16,7 @@ public enum ConnectionState
     Failed
 }
 
-public sealed class OpenAIRealtimeClient : IAsyncDisposable
+public sealed class OpenAIRealtimeClient : IAsyncDisposable, IDisposable
 {
     private static readonly ILog Logger = LogManager.GetLogger<OpenAIRealtimeClient>();
 
@@ -81,6 +81,14 @@ public sealed class OpenAIRealtimeClient : IAsyncDisposable
         {
             _connectLock.Release();
         }
+    }
+
+    public void Dispose()
+    {
+        if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0) return;
+        DisconnectAsync().GetAwaiter().GetResult();
+        _cts?.Dispose();
+        _connectLock.Dispose();
     }
 
     public async ValueTask DisposeAsync()
