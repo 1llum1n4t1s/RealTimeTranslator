@@ -855,6 +855,16 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
         try
         {
+            _pipelineService.StopAsync().GetAwaiter().GetResult();
+            LoggerService.LogInfo("MainViewModel.Dispose: パイプライン停止完了");
+        }
+        catch (Exception ex)
+        {
+            LoggerService.LogError($"MainViewModel.Dispose: パイプライン停止エラー: {ex.Message}");
+        }
+
+        try
+        {
             _audioCaptureService.StopCapture();
             LoggerService.LogInfo("MainViewModel.Dispose: 音声キャプチャ停止完了");
         }
@@ -863,14 +873,12 @@ public partial class MainViewModel : ObservableObject, IDisposable
             LoggerService.LogError($"MainViewModel.Dispose: 音声キャプチャ停止エラー: {ex.Message}");
         }
 
-        // スレッドセーフにCancellationTokenSourceをクリーンアップ
         lock (_cancellationLock)
         {
             _processingCancellation?.Cancel();
             _processingCancellation?.Dispose();
             _processingCancellation = null;
         }
-        LoggerService.LogInfo("MainViewModel.Dispose: 処理パイプライン停止完了");
 
         _settingsChangeSubscription?.Dispose();
 

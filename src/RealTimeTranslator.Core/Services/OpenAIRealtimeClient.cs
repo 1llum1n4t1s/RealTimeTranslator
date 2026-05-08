@@ -172,7 +172,9 @@ public sealed class OpenAIRealtimeClient : IAsyncDisposable, IDisposable
 
     private async Task CleanupAsync()
     {
-        _cts?.Cancel();
+        var cts = _cts;
+        _cts = null;
+        cts?.Cancel();
         _sendChannel?.Writer.TryComplete();
 
         var tasks = new List<Task>(2);
@@ -208,6 +210,7 @@ public sealed class OpenAIRealtimeClient : IAsyncDisposable, IDisposable
 
         _ws?.Dispose();
         _ws = null;
+        cts?.Dispose();
         SetState(ConnectionState.Disconnected);
     }
 
@@ -292,7 +295,7 @@ public sealed class OpenAIRealtimeClient : IAsyncDisposable, IDisposable
 
                 var message = new
                 {
-                    type = "session.input_audio_buffer.append",
+                    type = "input_audio_buffer.append",
                     audio = Convert.ToBase64String(audioData)
                 };
 
@@ -312,7 +315,7 @@ public sealed class OpenAIRealtimeClient : IAsyncDisposable, IDisposable
     private async Task ReceiveLoopAsync(CancellationToken ct)
     {
         var buffer = new byte[65536];
-        var messageBuffer = new StringBuilder();
+        using var messageStream = new MemoryStream();
 
         try
         {
@@ -326,12 +329,12 @@ public sealed class OpenAIRealtimeClient : IAsyncDisposable, IDisposable
                     break;
                 }
 
-                messageBuffer.Append(Encoding.UTF8.GetString(buffer, 0, result.Count));
+                messageStream.Write(buffer, 0, result.Count);
 
                 if (!result.EndOfMessage) continue;
 
-                var json = messageBuffer.ToString();
-                messageBuffer.Clear();
+                var json = Encoding.UTF8.GetString(messageStream.GetBuffer(), 0, (int)messageStream.Length);
+                messageStream.SetLength(0);
                 ProcessMessage(json);
             }
         }
