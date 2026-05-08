@@ -66,6 +66,7 @@ public sealed class OpenAIRealtimeClient : IAsyncDisposable, IDisposable
 
     public void SendAudio(byte[] pcm16Audio)
     {
+        if (pcm16Audio is null || pcm16Audio.Length == 0) return;
         if (State != ConnectionState.Connected) return;
         _sendChannel?.Writer.TryWrite(pcm16Audio);
     }
@@ -146,9 +147,8 @@ public sealed class OpenAIRealtimeClient : IAsyncDisposable, IDisposable
         _ws?.Dispose();
         _ws = new ClientWebSocket();
         _ws.Options.SetRequestHeader("Authorization", $"Bearer {_settings.ApiKey}");
-        _ws.Options.SetRequestHeader("OpenAI-Beta", "realtime=v1");
 
-        var uri = new Uri($"{_settings.Endpoint}?model={_settings.Model}");
+        var uri = new Uri($"{_settings.Endpoint}?model={Uri.EscapeDataString(_settings.Model)}");
 
         try
         {
@@ -350,7 +350,8 @@ public sealed class OpenAIRealtimeClient : IAsyncDisposable, IDisposable
         }
 
         SetState(ConnectionState.Reconnecting);
-        var delay = Math.Min(_settings.ReconnectDelayMs * (1 << (_reconnectAttempts - 1)), 30000);
+        var shift = Math.Min(_reconnectAttempts - 1, 30);
+        var delay = (int)Math.Min((long)_settings.ReconnectDelayMs << shift, 30000L);
         Logger.Info($"再接続試行 {_reconnectAttempts}/{_settings.MaxReconnectAttempts}（{delay}ms 後）");
 
         try
@@ -365,7 +366,16 @@ public sealed class OpenAIRealtimeClient : IAsyncDisposable, IDisposable
             if (_cts?.IsCancellationRequested == true) return;
             if (State == ConnectionState.Connected) return;
 
-            await ConnectWebSocketAsync(_cts!.Token).ConfigureAwait(false);
+            await CleanupAsync().ConfigureAwait(false);
+
+            _cts = new CancellationTokenSource();
+            _sendChannel = Channel.CreateBounded<byte[]>(new BoundedChannelOptions(200)
+            {
+                FullMode = BoundedChannelFullMode.DropOldest,
+                SingleReader = true
+            });
+
+            await ConnectWebSocketAsync(_cts.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException) { }
         catch (Exception ex)
@@ -377,8 +387,12 @@ public sealed class OpenAIRealtimeClient : IAsyncDisposable, IDisposable
             _connectLock.Release();
         }
 
-        if (State == ConnectionState.Reconnecting)
+        if (State != ConnectionState.Connected
+            && State != ConnectionState.Failed
+            && _cts?.IsCancellationRequested != true)
+        {
             _ = Task.Run(() => TryReconnectAsync(), CancellationToken.None);
+        }
     }
 
     private void SetState(ConnectionState state)

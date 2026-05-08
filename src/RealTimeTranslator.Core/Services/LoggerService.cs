@@ -56,6 +56,9 @@ public static class LoggerService
     /// <summary>初期化済みフラグ（スレッドセーフ: 0=未, 1=済）</summary>
     private static int _isConfigured;
 
+    /// <summary>初期化中ガード（再入防止: 0=未, 1=実行中）</summary>
+    private static int _initializing;
+
     /// <summary>アプリケーション名</summary>
     private static string _appName = "RealTimeTranslator";
 
@@ -84,55 +87,62 @@ public static class LoggerService
     /// <param name="config">ログ設定（nullの場合はデフォルト設定を使用）</param>
     public static void Initialize(LoggerConfig? config = null)
     {
-        if (Interlocked.CompareExchange(ref _isConfigured, 1, 0) != 0) return;
+        if (Volatile.Read(ref _isConfigured) != 0) return;
+        if (Interlocked.CompareExchange(ref _initializing, 1, 0) != 0) return;
 
-        var effectiveConfig = config ?? new LoggerConfig
+        try
         {
-            LogDirectory = AppDomain.CurrentDomain.BaseDirectory,
-            FilePrefix = "RealTimeTranslator"
-        };
+            var effectiveConfig = config ?? new LoggerConfig
+            {
+                LogDirectory = AppDomain.CurrentDomain.BaseDirectory,
+                FilePrefix = "RealTimeTranslator"
+            };
 
-        _appName = effectiveConfig.FilePrefix;
-        _logDirectory = effectiveConfig.LogDirectory;
-        _filePrefix = effectiveConfig.FilePrefix;
+            _appName = effectiveConfig.FilePrefix;
+            _logDirectory = effectiveConfig.LogDirectory;
+            _filePrefix = effectiveConfig.FilePrefix;
 
-        if (!Directory.Exists(effectiveConfig.LogDirectory))
-        {
-            Directory.CreateDirectory(effectiveConfig.LogDirectory);
-        }
+            if (!Directory.Exists(effectiveConfig.LogDirectory))
+            {
+                Directory.CreateDirectory(effectiveConfig.LogDirectory);
+            }
 
-        var minLevel =
+            var minLevel =
 #if DEBUG
-            "Debug";
+                "Debug";
 #else
-            "Information";
+                "Information";
 #endif
 
-        LogManager.Configure(builder =>
-        {
-            builder.SetMinimumLevel(minLevel);
-            builder.AddSuperLightFile(opt =>
+            LogManager.Configure(builder =>
             {
-                opt.FileName = Path.Combine(effectiveConfig.LogDirectory, $"{effectiveConfig.FilePrefix}_${{shortdate}}.log");
-                opt.Layout = "${longdate} [${level:uppercase=true}] ${message}${onexception:inner=${newline}${exception:format=tostring}}";
-                opt.ArchiveAboveSize = effectiveConfig.MaxSizeMB * 1024 * 1024;
-                opt.ArchiveFileName = Path.Combine(effectiveConfig.LogDirectory, $"{effectiveConfig.FilePrefix}_${{shortdate}}_{{#}}.log");
-                opt.ArchiveNumbering = ArchiveNumbering.Sequence;
-                opt.MaxArchiveFiles = effectiveConfig.MaxArchiveFiles;
-                opt.Encoding = System.Text.Encoding.UTF8;
-                opt.MinLevelName = minLevel;
+                builder.SetMinimumLevel(minLevel);
+                builder.AddSuperLightFile(opt =>
+                {
+                    opt.FileName = Path.Combine(effectiveConfig.LogDirectory, $"{effectiveConfig.FilePrefix}_${{shortdate}}.log");
+                    opt.Layout = "${longdate} [${level:uppercase=true}] ${message}${onexception:inner=${newline}${exception:format=tostring}}";
+                    opt.ArchiveAboveSize = effectiveConfig.MaxSizeMB * 1024 * 1024;
+                    opt.ArchiveFileName = Path.Combine(effectiveConfig.LogDirectory, $"{effectiveConfig.FilePrefix}_${{shortdate}}_{{#}}.log");
+                    opt.ArchiveNumbering = ArchiveNumbering.Sequence;
+                    opt.MaxArchiveFiles = effectiveConfig.MaxArchiveFiles;
+                    opt.Encoding = System.Text.Encoding.UTF8;
+                    opt.MinLevelName = minLevel;
+                });
             });
-        });
 
-        _logger = LogManager.GetLogger(effectiveConfig.FilePrefix);
+            _logger = LogManager.GetLogger(effectiveConfig.FilePrefix);
+            Volatile.Write(ref _isConfigured, 1);
 
-        Log("Logger initialized with SuperLightLogger (RollingFile)", LogLevel.Debug);
+            Log("Logger initialized with SuperLightLogger (RollingFile)", LogLevel.Debug);
 
-        // 過去のバグで作成された不要な "0" ファイルを削除
-        CleanupStaleFile(Path.Combine(effectiveConfig.LogDirectory, "0"));
-
-        // 保持期間を超えた古いログファイルを削除
-        CleanupOldLogFiles(effectiveConfig.LogDirectory, effectiveConfig.FilePrefix, effectiveConfig.RetentionDays);
+            CleanupStaleFile(Path.Combine(effectiveConfig.LogDirectory, "0"));
+            CleanupOldLogFiles(effectiveConfig.LogDirectory, effectiveConfig.FilePrefix, effectiveConfig.RetentionDays);
+        }
+        catch
+        {
+            Interlocked.Exchange(ref _initializing, 0);
+            throw;
+        }
     }
 
     /// <summary>
@@ -154,6 +164,7 @@ public static class LoggerService
     {
         LogManager.Shutdown();
         Interlocked.Exchange(ref _isConfigured, 0);
+        Interlocked.Exchange(ref _initializing, 0);
     }
 
     /// <summary>

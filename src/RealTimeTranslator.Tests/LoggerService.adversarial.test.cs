@@ -70,7 +70,7 @@ public sealed class LoggerServiceAdversarialTests
     [TestCategory("Adversarial")]
     public void Log_FormatStringLike_ShouldNotCrash()
     {
-        // NLog のフォーマット文字列として解釈されないこと
+        // ロガーのフォーマット文字列として解釈されないこと
         LoggerService.Initialize();
         LoggerService.Log("{0} {1} {Error} ${date}", LogLevel.Info);
     }

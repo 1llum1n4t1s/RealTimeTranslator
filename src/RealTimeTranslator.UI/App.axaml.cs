@@ -113,7 +113,7 @@ public partial class App : Application
         base.OnFrameworkInitializationCompleted();
     }
 
-    private void OnShutdownRequested(object? sender, ShutdownRequestedEventArgs e)
+    private async void OnShutdownRequested(object? sender, ShutdownRequestedEventArgs e)
     {
         LoggerService.LogInfo("OnExit: アプリケーション終了開始");
         _updateCancellation?.Cancel();
@@ -125,11 +125,7 @@ public partial class App : Application
         }
         if (_serviceProvider != null)
         {
-            _serviceProvider.GetService<MainViewModel>()?.Dispose();
-            _serviceProvider.GetService<OverlayViewModel>()?.Dispose();
-            _serviceProvider.GetService<ITranslationPipelineService>()?.Dispose();
-            _serviceProvider.GetService<IAudioCaptureService>()?.Dispose();
-            _serviceProvider.Dispose();
+            await _serviceProvider.DisposeAsync();
             _serviceProvider = null;
         }
         LoggerService.Shutdown();
