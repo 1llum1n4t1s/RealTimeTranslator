@@ -20,7 +20,7 @@ jobs:
           dotnet-version: '10.0.x'
 
       - name: 依存関係を復元
-        run: dotnet restore RealTimeTranslator.slnx
+        run: dotnet restore RealTimeTranslator.slnx -p:Configuration=Release
 
       - name: ビルド
         run: dotnet build RealTimeTranslator.slnx --configuration Release --no-restore -p:Platform=x64
