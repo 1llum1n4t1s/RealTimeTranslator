@@ -100,6 +100,76 @@ public sealed class OpenAIRealtimeClient : IAsyncDisposable, IDisposable
         _connectLock.Dispose();
     }
 
+    public static async Task<(bool Success, string Message)> TestConnectionAsync(
+        OpenAIRealtimeSettings settings, CancellationToken ct = default)
+    {
+        using var ws = new ClientWebSocket();
+        ws.Options.SetRequestHeader("Authorization", $"Bearer {settings.ApiKey}");
+        var uri = new Uri($"{settings.Endpoint}?model={Uri.EscapeDataString(settings.Model)}");
+
+        try
+        {
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeoutCts.CancelAfter(TimeSpan.FromSeconds(10));
+
+            await ws.ConnectAsync(uri, timeoutCts.Token).ConfigureAwait(false);
+
+            var buffer = new byte[4096];
+            var result = await ws.ReceiveAsync(buffer, timeoutCts.Token).ConfigureAwait(false);
+            var json = Encoding.UTF8.GetString(buffer, 0, result.Count);
+
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            var type = root.TryGetProperty("type", out var t) ? t.GetString() : null;
+
+            string message;
+            if (type == "session.created")
+            {
+                message = "接続成功！APIキーは有効です。";
+            }
+            else if (type == "error")
+            {
+                var errorMsg = "不明なエラー";
+                if (root.TryGetProperty("error", out var err) && err.TryGetProperty("message", out var msg))
+                    errorMsg = msg.GetString() ?? errorMsg;
+                return (false, $"APIエラー: {errorMsg}");
+            }
+            else
+            {
+                message = "接続成功";
+            }
+
+            try
+            {
+                using var closeCts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+                await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, null, closeCts.Token)
+                    .ConfigureAwait(false);
+            }
+            catch { /* best effort close */ }
+
+            return (true, message);
+        }
+        catch (WebSocketException ex) when (ex.InnerException is HttpRequestException httpEx)
+        {
+            var msg = httpEx.StatusCode switch
+            {
+                System.Net.HttpStatusCode.Unauthorized => "認証失敗: APIキーが無効です。",
+                System.Net.HttpStatusCode.Forbidden => "アクセス拒否: このAPIにアクセスする権限がありません。",
+                System.Net.HttpStatusCode.TooManyRequests => "レート制限に達しています。しばらく待ってください。",
+                _ => $"接続エラー: HTTP {(int?)httpEx.StatusCode}"
+            };
+            return (false, msg);
+        }
+        catch (OperationCanceledException)
+        {
+            return (false, "タイムアウト: サーバーからの応答がありません。");
+        }
+        catch (Exception ex)
+        {
+            return (false, $"接続エラー: {ex.Message}");
+        }
+    }
+
     private async Task CleanupAsync()
     {
         _cts?.Cancel();

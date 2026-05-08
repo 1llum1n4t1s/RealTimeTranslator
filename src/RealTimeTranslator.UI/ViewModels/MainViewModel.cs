@@ -5,19 +5,15 @@ using System.Diagnostics;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-using Avalonia;
-using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Media;
 using Avalonia.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
-using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using NAudio.CoreAudioApi;
 using RealTimeTranslator.Core.Interfaces;
 using RealTimeTranslator.Core.Models;
 using RealTimeTranslator.Core.Services;
-using RealTimeTranslator.UI.Views;
 
 namespace RealTimeTranslator.UI.ViewModels;
 
@@ -36,7 +32,6 @@ public partial class MainViewModel : ObservableObject, IDisposable
     private readonly OverlayViewModel _overlayViewModel;
     private AppSettings _settings;
     private readonly IUpdateService _updateService;
-    private readonly IServiceProvider _serviceProvider;
     private readonly SettingsViewModel _settingsViewModel;
     private readonly IDisposable? _settingsChangeSubscription;
     private readonly Queue<string> _logLines = new();
@@ -92,6 +87,8 @@ public partial class MainViewModel : ObservableObject, IDisposable
     /// </summary>
     public bool CanStart => SelectedProcess != null && !IsRunning && !IsLoading;
 
+    public SettingsViewModel SettingsVM => _settingsViewModel;
+
     /// <summary>
     /// MainViewModel コンストラクタ
     /// </summary>
@@ -101,7 +98,6 @@ public partial class MainViewModel : ObservableObject, IDisposable
         OverlayViewModel overlayViewModel,
         IOptionsMonitor<AppSettings> optionsMonitor,
         IUpdateService updateService,
-        IServiceProvider serviceProvider,
         SettingsViewModel settingsViewModel)
     {
         _pipelineService = pipelineService;
@@ -117,7 +113,6 @@ public partial class MainViewModel : ObservableObject, IDisposable
         });
 
         _updateService = updateService;
-        _serviceProvider = serviceProvider;
         _settingsViewModel = settingsViewModel;
 
         _pipelineService.SubtitleGenerated += OnSubtitleGenerated;
@@ -598,25 +593,6 @@ public partial class MainViewModel : ObservableObject, IDisposable
         StatusText = "停止中";
         StatusColor = Brushes.Gray;
         Log("音声キャプチャを停止しました");
-    }
-
-    /// <summary>
-    /// 設定ウィンドウを開く
-    /// </summary>
-    [RelayCommand]
-    private void OpenSettings()
-    {
-        var window = _serviceProvider.GetRequiredService<SettingsWindow>();
-        if (Application.Current?.ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop
-            && desktop.MainWindow != null)
-        {
-            _ = window.ShowDialog(desktop.MainWindow);
-        }
-        else
-        {
-            window.Show();
-        }
-        Log("設定画面を開きました");
     }
 
     private void Log(string message, bool suppressDuplicate = false)

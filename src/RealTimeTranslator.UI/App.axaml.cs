@@ -157,7 +157,6 @@ public partial class App : Application
             sp.GetRequiredService<IOptionsSnapshot<AppSettings>>(),
             sp.GetRequiredService<ISettingsService>(),
             sp.GetRequiredService<OverlayViewModel>()));
-        services.AddTransient<SettingsWindow>();
     }
 
     private static void RegisterApplicationInARP()
