@@ -222,7 +222,7 @@ public sealed class OpenAIRealtimeClient : IAsyncDisposable, IDisposable
 
                 var message = new
                 {
-                    type = "input_audio_buffer.append",
+                    type = "session.input_audio_buffer.append",
                     audio = Convert.ToBase64String(audioData)
                 };
 
