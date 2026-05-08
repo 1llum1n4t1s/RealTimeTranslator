@@ -48,6 +48,24 @@
                 <Border BorderBrush="{DynamicResource ThemeBorderMidBrush}" BorderThickness="1"
                         CornerRadius="4" Padding="10" Margin="0,0,0,10">
                     <StackPanel>
+                        <TextBlock Text="OpenAI API設定" FontWeight="SemiBold" Margin="0,0,0,8"/>
+                        <Grid ColumnDefinitions="160,*" RowDefinitions="Auto,Auto">
+                            <TextBlock Grid.Row="0" Grid.Column="0" Text="APIキー" VerticalAlignment="Center"/>
+                            <TextBox Grid.Row="0" Grid.Column="1" Margin="0,0,0,6"
+                                     Text="{Binding Settings.OpenAIRealtime.ApiKey, Mode=TwoWay}"
+                                     PasswordChar="*"
+                                     PlaceholderText="sk-..."/>
+                            <TextBlock Grid.Row="1" Grid.Column="0" Text="出力言語" VerticalAlignment="Center" Margin="0,6,0,0"/>
+                            <TextBox Grid.Row="1" Grid.Column="1" Margin="0,6,0,0"
+                                     Text="{Binding Settings.OpenAIRealtime.OutputLanguage, Mode=TwoWay}"
+                                     PlaceholderText="ja"/>
+                        </Grid>
+                    </StackPanel>
+                </Border>
+
+                <Border BorderBrush="{DynamicResource ThemeBorderMidBrush}" BorderThickness="1"
+                        CornerRadius="4" Padding="10" Margin="0,0,0,10">
+                    <StackPanel>
                         <TextBlock Text="オーバーレイ設定" FontWeight="SemiBold" Margin="0,0,0,8"/>
                         <Grid ColumnDefinitions="160,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto">
                             <TextBlock Grid.Row="0" Grid.Column="0" Text="フォント"/>

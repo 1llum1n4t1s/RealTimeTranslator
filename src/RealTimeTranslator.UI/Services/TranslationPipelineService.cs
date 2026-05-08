@@ -1,326 +1,230 @@
 using System.Diagnostics;
-using System.Threading.Channels;
+using System.Text;
+using Microsoft.Extensions.Options;
+using SuperLightLogger;
 using RealTimeTranslator.Core.Interfaces;
 using RealTimeTranslator.Core.Models;
 using RealTimeTranslator.Core.Services;
 
 namespace RealTimeTranslator.UI.Services;
 
-/// <summary>
-/// 翻訳パイプラインサービス
-/// 音声キャプチャ、VAD、キューイング、ASR、翻訳の処理フローを管理します
-/// </summary>
-public class TranslationPipelineService : ITranslationPipelineService
+public sealed class TranslationPipelineService : ITranslationPipelineService
 {
-    private const int MaxTranslationParallelism = 2;
-    private const int ChannelCapacity = 100;
+    private static readonly ILog Logger = LogManager.GetLogger<TranslationPipelineService>();
+    private static readonly TimeSpan DeltaThrottle = TimeSpan.FromMilliseconds(100);
 
     private readonly IAudioCaptureService _audioCaptureService;
-    private readonly IVADService _vadService;
-    private readonly IASRService _asrService;
-    private readonly ITranslationService _translationService;
-    private readonly AppSettings _settings;
+    private readonly OpenAIRealtimeClient _realtimeClient;
+    private readonly IOptionsMonitor<AppSettings> _settingsMonitor;
 
-    private Channel<SpeechSegmentWorkItem>? _translationChannel;
-    private Task? _translationProcessingTask;
-    private CancellationTokenSource? _processingCancellation;
-    private long _segmentSequence;
+    private string _currentSegmentId = Guid.NewGuid().ToString();
+    private readonly StringBuilder _accumulatedText = new();
+    private readonly object _textLock = new();
+    private DateTime _lastEmitTime = DateTime.MinValue;
+    private bool _hasPendingDelta;
+    private readonly Timer _throttleTimer;
+    private readonly Stopwatch _latencyStopwatch = new();
+    private bool _isRunning;
+    private bool _disposed;
 
-    /// <summary>
-    /// 字幕が生成されたときに発火するイベント
-    /// </summary>
     public event EventHandler<SubtitleItem>? SubtitleGenerated;
-
-    /// <summary>
-    /// パイプラインの統計情報が更新されたときに発火するイベント
-    /// </summary>
     public event EventHandler<PipelineStatsEventArgs>? StatsUpdated;
-
-    /// <summary>
-    /// エラーが発生したときに発火するイベント
-    /// </summary>
     public event EventHandler<Exception>? ErrorOccurred;
 
-    /// <summary>
-    /// TranslationPipelineService コンストラクタ
-    /// </summary>
-    /// <param name="audioCaptureService">音声キャプチャサービス</param>
-    /// <param name="vadService">音声活動検出サービス</param>
-    /// <param name="asrService">音声認識サービス</param>
-    /// <param name="translationService">翻訳サービス</param>
-    /// <param name="settings">アプリケーション設定</param>
     public TranslationPipelineService(
         IAudioCaptureService audioCaptureService,
-        IVADService vadService,
-        IASRService asrService,
-        ITranslationService translationService,
-        AppSettings settings)
+        OpenAIRealtimeClient realtimeClient,
+        IOptionsMonitor<AppSettings> settingsMonitor)
     {
         _audioCaptureService = audioCaptureService;
-        _vadService = vadService;
-        _asrService = asrService;
-        _translationService = translationService;
-        _settings = settings;
+        _realtimeClient = realtimeClient;
+        _settingsMonitor = settingsMonitor;
+        _throttleTimer = new Timer(OnThrottleTimerElapsed, null, Timeout.Infinite, Timeout.Infinite);
 
-        _audioCaptureService.AudioDataAvailable += OnAudioDataAvailable;
+        _realtimeClient.TranscriptDeltaReceived += OnTranscriptDelta;
+        _realtimeClient.TranscriptCompleted += OnTranscriptCompleted;
+        _realtimeClient.ErrorReceived += OnClientError;
+        _realtimeClient.StateChanged += OnConnectionStateChanged;
     }
 
-    /// <summary>
-    /// パイプラインを開始します
-    /// </summary>
-    /// <param name="token">キャンセルトークン</param>
-    /// <returns>非同期操作のタスク</returns>
     public async Task StartAsync(CancellationToken token)
     {
-        await StopAsync();
+        if (_isRunning) return;
 
-        // VADモデルのロード完了を待機
-        LoggerService.LogDebug("[Pipeline] VADモデルのロード完了を待機中...");
-        await _vadService.EnsureModelLoadedAsync();
-        LoggerService.LogDebug("[Pipeline] VADモデルのロード完了");
-        _vadService.ResetForNewSession();
-
-        _processingCancellation = CancellationTokenSource.CreateLinkedTokenSource(token);
-        _segmentSequence = 0;
-
-        _translationChannel = Channel.CreateBounded<SpeechSegmentWorkItem>(new BoundedChannelOptions(ChannelCapacity)
+        var settings = _settingsMonitor.CurrentValue.OpenAIRealtime;
+        if (string.IsNullOrWhiteSpace(settings.ApiKey))
         {
-            SingleReader = true,
-            SingleWriter = false,
-            FullMode = BoundedChannelFullMode.DropOldest
-        });
+            var ex = new InvalidOperationException("OpenAI APIキーが設定されていません。設定画面でキーを入力してください。");
+            ErrorOccurred?.Invoke(this, ex);
+            throw ex;
+        }
 
-        _translationProcessingTask = Task.Run(() => ProcessTranslationQueueAsync(_translationChannel.Reader, _processingCancellation.Token), _processingCancellation.Token);
+        Logger.Info("翻訳パイプライン開始（OpenAI Realtime API）");
+
+        await _realtimeClient.ConnectAsync(settings, token);
+        _audioCaptureService.AudioDataAvailable += OnAudioDataAvailable;
+        _isRunning = true;
+        _latencyStopwatch.Start();
+
+        StatsUpdated?.Invoke(this, new PipelineStatsEventArgs
+        {
+            StatusText = "API接続完了"
+        });
     }
 
-    /// <summary>
-    /// パイプラインを停止します
-    /// </summary>
-    /// <returns>非同期操作のタスク</returns>
     public async Task StopAsync()
     {
-        _processingCancellation?.Cancel();
-        _translationChannel?.Writer.TryComplete();
+        if (!_isRunning) return;
 
-        if (_translationProcessingTask != null)
+        Logger.Info("翻訳パイプライン停止");
+        _audioCaptureService.AudioDataAvailable -= OnAudioDataAvailable;
+        _isRunning = false;
+        _latencyStopwatch.Stop();
+        _throttleTimer.Change(Timeout.Infinite, Timeout.Infinite);
+
+        await _realtimeClient.DisconnectAsync();
+
+        StatsUpdated?.Invoke(this, new PipelineStatsEventArgs
         {
-            try
-            {
-                await _translationProcessingTask.WaitAsync(TimeSpan.FromSeconds(5));
-            }
-            catch (Exception)
-            {
-                // タイムアウトまたはキャンセル、無視
-            }
-        }
-
-        _processingCancellation?.Dispose();
-        _processingCancellation = null;
-        _translationChannel = null;
-        _translationProcessingTask = null;
+            StatusText = "停止"
+        });
     }
 
-    /// <summary>
-    /// 音声データ受信時のハンドラー
-    /// VADで発話区間を検出し、キューに追加します
-    /// </summary>
     private void OnAudioDataAvailable(object? sender, AudioDataEventArgs e)
     {
-        if (_translationChannel == null || _processingCancellation == null || _processingCancellation.IsCancellationRequested)
-            return;
+        if (!_isRunning) return;
 
         try
         {
-            var segments = _vadService.DetectSpeech(e.AudioData);
-
-            foreach (var segment in segments)
-            {
-                if (_processingCancellation.IsCancellationRequested)
-                    return;
-
-                var sequence = Interlocked.Increment(ref _segmentSequence);
-                var workItem = new SpeechSegmentWorkItem(sequence, segment);
-
-                if (!_translationChannel.Writer.TryWrite(workItem))
-                {
-                    LoggerService.LogWarning($"[キュー] セグメント#{sequence}をキューに追加できないため破棄しました (ID: {segment.Id})");
-                }
-            }
+            var pcm16 = AudioFormatConverter.Float32ToPcm16(
+                AudioFormatConverter.ResampleTo24kHz(e.AudioData));
+            _realtimeClient.SendAudio(pcm16);
         }
         catch (Exception ex)
         {
-            ErrorOccurred?.Invoke(this, ex);
+            Logger.Error("音声データ変換エラー", ex);
         }
     }
 
-    /// <summary>
-    /// 翻訳キューを処理するメインループ
-    /// </summary>
-    private async Task ProcessTranslationQueueAsync(ChannelReader<SpeechSegmentWorkItem> reader, CancellationToken token)
+    private void OnTranscriptDelta(string delta)
     {
-        var semaphore = new SemaphoreSlim(MaxTranslationParallelism);
-        var pendingTasks = new List<Task>();
+        if (string.IsNullOrEmpty(delta)) return;
 
-        try
+        lock (_textLock)
         {
-            await foreach (var item in reader.ReadAllAsync(token))
-            {
-                await semaphore.WaitAsync(token);
-                pendingTasks.RemoveAll(t => t.IsCompleted);
+            _accumulatedText.Append(delta);
 
-                var task = HandleTranslationItemAsync(item, semaphore, token);
-                pendingTasks.Add(task);
-            }
-        }
-        catch (OperationCanceledException)
-        {
-            // キャンセル時は無視
-        }
-        finally
-        {
-            // 実行中のタスクがsemaphore.Release()を呼ぶ前にDisposeするとObjectDisposedExceptionになるため、
-            // 全タスクの完了を待ってからDisposeする
-            pendingTasks.RemoveAll(t => t.IsCompleted);
-            if (pendingTasks.Count > 0)
+            if (!_latencyStopwatch.IsRunning)
+                _latencyStopwatch.Restart();
+
+            var now = DateTime.UtcNow;
+            if (now - _lastEmitTime >= DeltaThrottle)
             {
-                try
-                {
-                    await Task.WhenAll(pendingTasks).WaitAsync(TimeSpan.FromSeconds(5));
-                }
-                catch (Exception)
-                {
-                    // タイムアウトまたはタスクエラー、無視
-                }
+                EmitPartialSubtitle();
             }
-            semaphore.Dispose();
+            else if (!_hasPendingDelta)
+            {
+                _hasPendingDelta = true;
+                _throttleTimer.Change(DeltaThrottle, Timeout.InfiniteTimeSpan);
+            }
         }
     }
 
-    /// <summary>
-    /// 個別のセグメントを処理（ASR→翻訳）
-    /// </summary>
-    private async Task HandleTranslationItemAsync(SpeechSegmentWorkItem item, SemaphoreSlim semaphore, CancellationToken token)
+    private void OnThrottleTimerElapsed(object? state)
     {
-        try
+        lock (_textLock)
         {
-            if (token.IsCancellationRequested)
-                return;
-
-            var sw = Stopwatch.StartNew();
-            var sourceLang = _settings.Translation.SourceLanguage.ToString();
-            var targetLang = _settings.Translation.TargetLanguage.ToString();
-
-            // ステップ1: ASRで音声を文字起こし
-            if (!_asrService.IsModelLoaded)
-                return;
-
-            var asrResult = await _asrService.TranscribeAccurateAsync(item.Segment);
-            if (string.IsNullOrWhiteSpace(asrResult.Text))
-                return;
-            if (IsBlankAudioText(asrResult.Text))
-            {
-                LoggerService.LogDebug("[Pipeline] [BLANK_AUDIO] を検出したため翻訳と字幕をスキップします");
-                return;
-            }
-
-            // ステップ2: 翻訳
-            string translatedText = asrResult.Text;
-            if (_translationService.IsModelLoaded)
-            {
-                var transResult = await _translationService.TranslateAsync(asrResult.Text, sourceLang, targetLang);
-                translatedText = transResult.TranslatedText;
-            }
-
-            sw.Stop();
-
-            // 結果通知
-            var subtitle = new SubtitleItem
-            {
-                SegmentId = item.Segment.Id,
-                OriginalText = asrResult.Text,
-                TranslatedText = translatedText,
-                IsFinal = true
-            };
-            SubtitleGenerated?.Invoke(this, subtitle);
-
-            // 統計通知
-            StatsUpdated?.Invoke(this, new PipelineStatsEventArgs
-            {
-                ProcessingLatency = sw.ElapsedMilliseconds,
-                TranslationLatency = (double)(sw.ElapsedMilliseconds - asrResult.ProcessingTimeMs)
-            });
-        }
-        catch (Exception ex)
-        {
-            ErrorOccurred?.Invoke(this, ex);
-        }
-        finally
-        {
-            semaphore.Release();
+            if (_hasPendingDelta)
+                EmitPartialSubtitle();
         }
     }
 
-    /// <summary>
-    /// 音声セグメント作業項目
-    /// </summary>
-    private sealed record SpeechSegmentWorkItem(long Sequence, SpeechSegment Segment);
-
-    /// <summary>
-    /// 空白の音声判定（Whisperのプレースホルダーを除外）
-    /// </summary>
-    /// <param name="text">判定対象のテキスト</param>
-    /// <returns>空白の音声なら true</returns>
-    private static bool IsBlankAudioText(string text)
+    private void EmitPartialSubtitle()
     {
-        var normalized = text.Trim();
-        return normalized.Equals("[BLANK_AUDIO]", StringComparison.OrdinalIgnoreCase)
-            || normalized.Equals("[BLANK AUDIO]", StringComparison.OrdinalIgnoreCase);
+        _lastEmitTime = DateTime.UtcNow;
+        _hasPendingDelta = false;
+
+        var subtitle = new SubtitleItem
+        {
+            SegmentId = _currentSegmentId,
+            OriginalText = _accumulatedText.ToString(),
+            TranslatedText = "",
+            IsFinal = false
+        };
+
+        SubtitleGenerated?.Invoke(this, subtitle);
     }
 
-    private bool _disposed = false;
+    private void OnTranscriptCompleted(string transcript)
+    {
+        string segmentId;
+        double latencyMs;
 
-    /// <summary>
-    /// TranslationPipelineService のディスポーズ
-    /// </summary>
+        lock (_textLock)
+        {
+            segmentId = _currentSegmentId;
+            latencyMs = _latencyStopwatch.Elapsed.TotalMilliseconds;
+
+            _currentSegmentId = Guid.NewGuid().ToString();
+            _accumulatedText.Clear();
+            _lastEmitTime = DateTime.MinValue;
+            _hasPendingDelta = false;
+            _throttleTimer.Change(Timeout.Infinite, Timeout.Infinite);
+            _latencyStopwatch.Reset();
+        }
+
+        var subtitle = new SubtitleItem
+        {
+            SegmentId = segmentId,
+            OriginalText = transcript,
+            TranslatedText = transcript,
+            IsFinal = true
+        };
+
+        SubtitleGenerated?.Invoke(this, subtitle);
+
+        StatsUpdated?.Invoke(this, new PipelineStatsEventArgs
+        {
+            ProcessingLatency = latencyMs,
+            TranslationLatency = latencyMs,
+            StatusText = $"翻訳完了 ({latencyMs:F0}ms)"
+        });
+    }
+
+    private void OnClientError(Exception ex)
+    {
+        Logger.Error("OpenAI Realtime クライアントエラー", ex);
+        ErrorOccurred?.Invoke(this, ex);
+    }
+
+    private void OnConnectionStateChanged(ConnectionState state)
+    {
+        var statusText = state switch
+        {
+            ConnectionState.Connecting => "接続中...",
+            ConnectionState.Connected => "API接続完了",
+            ConnectionState.Reconnecting => "再接続中...",
+            ConnectionState.Failed => "接続失敗 — APIキーとネットワークを確認してください",
+            ConnectionState.Disconnected => "切断",
+            _ => ""
+        };
+
+        StatsUpdated?.Invoke(this, new PipelineStatsEventArgs
+        {
+            StatusText = statusText
+        });
+    }
+
     public void Dispose()
     {
-        if (_disposed)
-            return;
-
+        if (_disposed) return;
         _disposed = true;
+
+        _throttleTimer.Dispose();
+        _realtimeClient.TranscriptDeltaReceived -= OnTranscriptDelta;
+        _realtimeClient.TranscriptCompleted -= OnTranscriptCompleted;
+        _realtimeClient.ErrorReceived -= OnClientError;
+        _realtimeClient.StateChanged -= OnConnectionStateChanged;
         _audioCaptureService.AudioDataAvailable -= OnAudioDataAvailable;
-
-        // デッドロック回避: GetAwaiter().GetResult()を使用し、タイムアウト付きで待機
-        try
-        {
-            _processingCancellation?.Cancel();
-            _translationChannel?.Writer.TryComplete();
-
-            if (_translationProcessingTask != null && !_translationProcessingTask.IsCompleted)
-            {
-                // Task.WaitではなくGetAwaiter().GetResult()を使用
-                // ただし、タイムアウトが必要な場合はTask.Wait(timeout)を使用
-                var waitTask = Task.Run(async () =>
-                {
-                    if (_translationProcessingTask != null)
-                    {
-                        await _translationProcessingTask.ConfigureAwait(false);
-                    }
-                });
-
-                if (!waitTask.Wait(TimeSpan.FromSeconds(5)))
-                {
-                    LoggerService.LogWarning("TranslationPipelineService.Dispose: Processing task did not complete within timeout");
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            LoggerService.LogError($"TranslationPipelineService.Dispose: Error during disposal: {ex.Message}");
-        }
-        finally
-        {
-            _processingCancellation?.Dispose();
-        }
     }
 }

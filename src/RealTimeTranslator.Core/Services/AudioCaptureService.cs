@@ -77,10 +77,6 @@ public class AudioCaptureService : IAudioCaptureService
         lock (_bufferLock)
         {
             _settings.SampleRate = settings.SampleRate;
-            _settings.VADSensitivity = settings.VADSensitivity;
-            _settings.MinSpeechDuration = settings.MinSpeechDuration;
-            _settings.MaxSpeechDuration = settings.MaxSpeechDuration;
-            _settings.SilenceThreshold = settings.SilenceThreshold;
 
             _targetFormat = WaveFormat.CreateIeeeFloatWaveFormat(_settings.SampleRate, MonoChannelCount);
             _audioBuffer.Clear();

@@ -1,16 +1,11 @@
 using System;
 using System.IO;
-using System.Linq;
-using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
-using Avalonia.Data.Core;
-using Avalonia.Data.Core.Plugins;
 using Avalonia.Markup.Xaml;
-using Avalonia.Threading;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
@@ -18,7 +13,6 @@ using Microsoft.Win32;
 using RealTimeTranslator.Core.Interfaces;
 using RealTimeTranslator.Core.Models;
 using RealTimeTranslator.Core.Services;
-using RealTimeTranslator.Translation.Services;
 using RealTimeTranslator.UI.Services;
 using RealTimeTranslator.UI.ViewModels;
 using RealTimeTranslator.UI.Views;
@@ -37,16 +31,6 @@ public partial class App : Application
 
     public App()
     {
-        Environment.SetEnvironmentVariable("GGML_USE_CUDA", "1");
-        Environment.SetEnvironmentVariable("GGML_CUDA_NO_PINNED", "1");
-        Environment.SetEnvironmentVariable("CUDA_VISIBLE_DEVICES", "0");
-        Environment.SetEnvironmentVariable("GGML_USE_HIP", "1");
-        Environment.SetEnvironmentVariable("HSA_OVERRIDE_GFX_VERSION", "11.0.0");
-        Environment.SetEnvironmentVariable("GGML_USE_SYCL", "1");
-        Environment.SetEnvironmentVariable("SYCL_DEVICE_FILTER", "level_zero:gpu");
-        Environment.SetEnvironmentVariable("GGML_USE_VULKAN", "1");
-        Environment.SetEnvironmentVariable("GGML_USE_METAL", "1");
-        LoggerService.LogDebug("App constructor: GPU環境変数設定完了 (CUDA/HIP/SYCL/Vulkan/Metal)");
     }
 
     public override void Initialize()
@@ -66,7 +50,6 @@ public partial class App : Application
             base.OnFrameworkInitializationCompleted();
             return;
         }
-        DisableAvaloniaDataAnnotationValidation();
         VelopackApp.Build().Run();
 
         try
@@ -116,18 +99,6 @@ public partial class App : Application
             _overlayWindow.Show();
             LoggerService.LogInfo("OnStartup: オーバーレイウィンドウ表示");
 
-            _ = mainViewModel.InitializeModelsAsync().ContinueWith(t =>
-            {
-                if (t.IsFaulted)
-                {
-                    LoggerService.LogError($"OnStartup: モデル初期化エラー: {t.Exception}");
-                    Dispatcher.UIThread.Post(() =>
-                    {
-                        _ = Services.MessageBoxService.ShowWindowDialogAsync(mainWindow, "エラー",
-                            $"モデルの初期化に失敗しました:\n\n{t.Exception?.GetBaseException().Message}");
-                    });
-                }
-            }, TaskScheduler.Default);
             LoggerService.LogInfo("OnStartup: 起動完了");
         }
         catch (Exception ex)
@@ -158,22 +129,10 @@ public partial class App : Application
             _serviceProvider.GetService<OverlayViewModel>()?.Dispose();
             _serviceProvider.GetService<ITranslationPipelineService>()?.Dispose();
             _serviceProvider.GetService<IAudioCaptureService>()?.Dispose();
-            _serviceProvider.GetService<IASRService>()?.Dispose();
-            _serviceProvider.GetService<ITranslationService>()?.Dispose();
-            (_serviceProvider.GetService<IVADService>() as IDisposable)?.Dispose();
-            _serviceProvider.GetService<HttpClient>()?.Dispose();
-            _serviceProvider.GetService<ModelDownloadService>()?.Dispose();
             _serviceProvider.Dispose();
             _serviceProvider = null;
         }
         LoggerService.Shutdown();
-    }
-
-    private static void DisableAvaloniaDataAnnotationValidation()
-    {
-        var toRemove = BindingPlugins.DataValidators.OfType<DataAnnotationsValidationPlugin>().ToArray();
-        foreach (var plugin in toRemove)
-            BindingPlugins.DataValidators.Remove(plugin);
     }
 
     private void ConfigureServices(IServiceCollection services)
@@ -192,18 +151,8 @@ public partial class App : Application
         services.AddSingleton<AudioCaptureSettings>(sp =>
             sp.GetRequiredService<AppSettings>().AudioCapture);
         services.AddSingleton<ISettingsService, SettingsService>();
-        services.AddSingleton<HttpClient>(sp =>
-        {
-            var httpClient = new HttpClient();
-            httpClient.Timeout = TimeSpan.FromMinutes(30);
-            return httpClient;
-        });
-        services.AddSingleton<ModelDownloadService>();
-        services.AddSingleton<PromptBuilderFactory>();
         services.AddSingleton<IAudioCaptureService, AudioCaptureService>();
-        services.AddSingleton<IVADService, VADService>();
-        services.AddSingleton<IASRService, WhisperASRService>();
-        services.AddSingleton<ITranslationService, MistralTranslationService>();
+        services.AddSingleton<OpenAIRealtimeClient>();
         services.AddSingleton<IUpdateService, UpdateService>();
         services.AddSingleton<ITranslationPipelineService, TranslationPipelineService>();
         services.AddSingleton<OverlayViewModel>();

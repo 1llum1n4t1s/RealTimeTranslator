@@ -33,7 +33,6 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
     private readonly ITranslationPipelineService _pipelineService;
     private readonly IAudioCaptureService _audioCaptureService;
-    private readonly IVADService _vadService;
     private readonly OverlayViewModel _overlayViewModel;
     private AppSettings _settings;
     private readonly IUpdateService _updateService;
@@ -99,7 +98,6 @@ public partial class MainViewModel : ObservableObject, IDisposable
     public MainViewModel(
         ITranslationPipelineService pipelineService,
         IAudioCaptureService audioCaptureService,
-        IVADService vadService,
         OverlayViewModel overlayViewModel,
         IOptionsMonitor<AppSettings> optionsMonitor,
         IUpdateService updateService,
@@ -108,7 +106,6 @@ public partial class MainViewModel : ObservableObject, IDisposable
     {
         _pipelineService = pipelineService;
         _audioCaptureService = audioCaptureService;
-        _vadService = vadService;
         _overlayViewModel = overlayViewModel;
         _settings = optionsMonitor.CurrentValue;
 
@@ -186,7 +183,6 @@ public partial class MainViewModel : ObservableObject, IDisposable
         try
         {
             _audioCaptureService.ApplySettings(e.Settings.AudioCapture);
-            _vadService.ApplySettings(e.Settings.AudioCapture);
             _updateService.UpdateSettings(e.Settings.Update);
             var sourceLanguage = e.Settings.Translation.SourceLanguage;
             var targetLanguage = e.Settings.Translation.TargetLanguage;
@@ -469,30 +465,18 @@ public partial class MainViewModel : ObservableObject, IDisposable
             StatusText = "起動中...";
             StatusColor = Brushes.Orange;
 
-            var translationService = _serviceProvider.GetRequiredService<ITranslationService>();
             var profile = _settings.GameProfiles
                 .FirstOrDefault(p => p.ProcessName.Equals(SelectedProcess.Name, StringComparison.OrdinalIgnoreCase));
 
             if (profile != null)
             {
-                translationService.SetPreTranslationDictionary(profile.PreTranslationDictionary);
-                translationService.SetPostTranslationDictionary(profile.PostTranslationDictionary);
                 Log($"プロファイル '{profile.Name}' を適用しました");
-            }
-
-            if (!translationService.IsModelLoaded)
-            {
-                IsRunning = false;
-                StatusText = "翻訳モデル未ロード: 翻訳を開始できません。";
-                StatusColor = Brushes.Red;
-                Log("翻訳モデル未ロードのため翻訳を停止しました。モデルのダウンロードが完了するまでお待ちください。");
-                return;
             }
 
             var sourceLanguage = _settings.Translation.SourceLanguage;
             var targetLanguage = _settings.Translation.TargetLanguage;
 
-            Log($"翻訳モデルが準備完了しました ({sourceLanguage}→{targetLanguage})。");
+            Log($"翻訳開始 ({sourceLanguage}→{targetLanguage})。");
 
             await _pipelineService.StartAsync(_processingCancellation.Token);
 
@@ -607,11 +591,6 @@ public partial class MainViewModel : ObservableObject, IDisposable
             _processingCancellation = null;
         }
         await _pipelineService.StopAsync();
-        var pendingSegment = _vadService.FlushPendingSegment();
-        if (pendingSegment != null)
-        {
-            Log("停止に伴い残留発話を破棄しました");
-        }
         _audioCaptureService.StopCapture();
         _overlayViewModel.ClearSubtitles();
 
@@ -693,78 +672,6 @@ public partial class MainViewModel : ObservableObject, IDisposable
         return s_numericPattern.Replace(message, "").Trim();
     }
 
-    /// <summary>
-    /// バイト数を人間が読みやすい形式にフォーマット
-    /// </summary>
-    private static string FormatBytes(long bytes)
-    {
-        string[] sizes = { "B", "KB", "MB", "GB", "TB" };
-        double len = bytes;
-        int order = 0;
-        while (len >= 1024 && order < sizes.Length - 1)
-        {
-            order++;
-            len = len / 1024;
-        }
-        return $"{len:F1} {sizes[order]}";
-    }
-
-    private void OnModelDownloadProgress(object? sender, ModelDownloadProgressEventArgs e)
-    {
-        var progressText = e.ProgressPercentage.HasValue
-            ? $"{e.ProgressPercentage.Value:F1}%"
-            : "進捗不明";
-
-        var totalSize = e.TotalBytes.HasValue
-            ? FormatBytes(e.TotalBytes.Value)
-            : "不明";
-        var downloadedSize = FormatBytes(e.BytesReceived);
-
-        var downloadStatusText = $"{e.ServiceName} {e.ModelName} ダウンロード中... {downloadedSize} / {totalSize} ({progressText})";
-
-        RunOnUiThread(() =>
-        {
-            IsDownloading = true;
-            DownloadProgress = e.ProgressPercentage ?? 0;
-            DownloadStatus = downloadStatusText;
-
-            if (!IsLoading)
-            {
-                StatusText = downloadStatusText;
-                StatusColor = Brushes.Orange;
-            }
-        });
-    }
-
-    private void OnModelStatusChanged(object? sender, ModelStatusChangedEventArgs e)
-    {
-        var message = e.Exception != null
-            ? $"{e.Message} ({FormatExceptionMessage(e.Exception)})"
-            : e.Message;
-
-        RunOnUiThread(() =>
-        {
-            StatusText = message;
-            StatusColor = e.Status == ModelStatusType.DownloadFailed || e.Status == ModelStatusType.LoadFailed
-                ? Brushes.Red
-                : Brushes.Orange;
-
-            if (e.Status == ModelStatusType.Info && message.Contains("ダウンロード", StringComparison.Ordinal))
-            {
-                DownloadReason = message;
-            }
-
-            if (e.Status == ModelStatusType.DownloadCompleted || e.Status == ModelStatusType.DownloadFailed)
-            {
-                IsDownloading = false;
-                DownloadProgress = 0;
-                DownloadStatus = string.Empty;
-                DownloadReason = string.Empty;
-            }
-        });
-
-        Log(message);
-    }
 
     private void OnCaptureStatusChanged(object? sender, CaptureStatusEventArgs e)
     {
@@ -779,25 +686,6 @@ public partial class MainViewModel : ObservableObject, IDisposable
         });
     }
 
-    /// <summary>
-    /// 例外メッセージをフォーマット
-    /// </summary>
-    private static string FormatExceptionMessage(Exception ex)
-    {
-        var messages = new List<string>();
-        Exception? current = ex;
-        while (current != null)
-        {
-            if (!string.IsNullOrWhiteSpace(current.Message))
-            {
-                messages.Add(current.Message.Trim());
-            }
-            current = current.InnerException;
-        }
-
-        var normalized = messages.Distinct().ToList();
-        return normalized.Count > 0 ? string.Join(" / ", normalized) : ex.GetType().Name;
-    }
 
     partial void OnSelectedProcessChanged(ProcessInfo? value)
     {
@@ -813,101 +701,6 @@ public partial class MainViewModel : ObservableObject, IDisposable
     partial void OnIsLoadingChanged(bool value)
     {
         OnPropertyChanged(nameof(CanStart));
-    }
-
-    private bool _modelsInitialized = false;
-
-    /// <summary>
-    /// モデルを初期化（起動時に呼び出される）
-    /// </summary>
-    public async Task InitializeModelsAsync()
-    {
-        // 重複初期化を防ぐ
-        if (_modelsInitialized)
-        {
-            LoggerService.LogWarning("InitializeModelsAsync: Already initialized, skipping.");
-            return;
-        }
-
-        _modelsInitialized = true;
-
-        try
-        {
-            IsLoading = true;
-            Log("モデルの初期化を開始します...");
-
-            var asrService = _serviceProvider.GetRequiredService<IASRService>();
-            var translationService = _serviceProvider.GetRequiredService<ITranslationService>();
-
-            // イベントハンドラを登録（重複を避けるため、先に解除してから登録）
-            asrService.ModelDownloadProgress -= OnModelDownloadProgress;
-            asrService.ModelStatusChanged -= OnModelStatusChanged;
-            translationService.ModelDownloadProgress -= OnModelDownloadProgress;
-            translationService.ModelStatusChanged -= OnModelStatusChanged;
-
-            asrService.ModelDownloadProgress += OnModelDownloadProgress;
-            asrService.ModelStatusChanged += OnModelStatusChanged;
-            translationService.ModelDownloadProgress += OnModelDownloadProgress;
-            translationService.ModelStatusChanged += OnModelStatusChanged;
-
-            var initTasks = new List<Task>
-            {
-                InitializeASRModelAsync(asrService),
-                InitializeTranslationModelAsync(translationService)
-            };
-
-            await Task.WhenAll(initTasks);
-
-            LoadingMessage = "準備完了";
-            Log("モデルの初期化が完了しました。");
-            LoggerService.LogInfo("All models initialized successfully");
-        }
-        catch (Exception ex)
-        {
-            LoadingMessage = $"初期化エラー: {ex.Message}";
-            Log($"モデル初期化エラー: {ex.Message}");
-            LoggerService.LogError($"モデル初期化エラー: {ex}");
-        }
-        finally
-        {
-            IsLoading = false;
-        }
-    }
-
-    /// <summary>
-    /// ASRモデルを初期化
-    /// </summary>
-    private async Task InitializeASRModelAsync(IASRService asrService)
-    {
-        try
-        {
-            LoadingMessage = "音声認識モデル読み込み中...";
-            await asrService.InitializeAsync();
-            LoggerService.LogInfo("ASR model initialization completed");
-        }
-        catch (Exception ex)
-        {
-            LoggerService.LogError($"ASR initialization error: {ex.Message}");
-            throw;
-        }
-    }
-
-    /// <summary>
-    /// 翻訳モデルを初期化
-    /// </summary>
-    private async Task InitializeTranslationModelAsync(ITranslationService translationService)
-    {
-        try
-        {
-            LoadingMessage = "翻訳モデル読み込み中...";
-            await translationService.InitializeAsync();
-            LoggerService.LogInfo("Translation model initialization completed");
-        }
-        catch (Exception ex)
-        {
-            LoggerService.LogError($"Translation initialization error: {ex.Message}");
-            throw;
-        }
     }
 
     private void RestoreLastSelectedProcess()
@@ -1119,20 +912,6 @@ public partial class MainViewModel : ObservableObject, IDisposable
         _updateService.StatusChanged -= OnUpdateStatusChanged;
         _updateService.UpdateAvailable -= OnUpdateAvailable;
         _updateService.UpdateReady -= OnUpdateReady;
-
-        var asrService = _serviceProvider.GetService<IASRService>();
-        if (asrService != null)
-        {
-            asrService.ModelDownloadProgress -= OnModelDownloadProgress;
-            asrService.ModelStatusChanged -= OnModelStatusChanged;
-        }
-
-        var translationService = _serviceProvider.GetService<ITranslationService>();
-        if (translationService != null)
-        {
-            translationService.ModelDownloadProgress -= OnModelDownloadProgress;
-            translationService.ModelStatusChanged -= OnModelStatusChanged;
-        }
 
         LoggerService.LogInfo("MainViewModel.Dispose: イベントハンドラ解除完了");
 
