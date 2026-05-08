@@ -141,9 +141,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
         RunOnUiThread(() =>
         {
             _overlayViewModel.AddOrUpdateSubtitle(item);
-            var sourceLanguage = _settings.Translation.SourceLanguage.ToString();
-            var targetLanguage = _settings.Translation.TargetLanguage.ToString();
-            var logMessage = $"[確定] {sourceLanguage}→{targetLanguage} {item.OriginalText} → {item.TranslatedText}";
+            var logMessage = $"[確定] →{_settings.OpenAIRealtime.OutputLanguage} {item.OriginalText} → {item.TranslatedText}";
             LoggerService.LogInfo(logMessage);
             Log(logMessage);
         });
@@ -179,21 +177,20 @@ public partial class MainViewModel : ObservableObject, IDisposable
         {
             _audioCaptureService.ApplySettings(e.Settings.AudioCapture);
             _updateService.UpdateSettings(e.Settings.Update);
-            var sourceLanguage = e.Settings.Translation.SourceLanguage;
-            var targetLanguage = e.Settings.Translation.TargetLanguage;
+            var outputLang = e.Settings.OpenAIRealtime.OutputLanguage;
 
             if (IsRunning)
             {
                 await StopAsync();
                 StatusText = "設定変更のため停止しました。再開時に新しい設定が反映されます。";
                 StatusColor = Brushes.Orange;
-                Log($"設定変更を検知したため停止しました。再開時に新しい設定が反映されます。翻訳言語: {sourceLanguage}→{targetLanguage}");
+                Log($"設定変更を検知したため停止しました。再開時に新しい設定が反映されます。翻訳先: {outputLang}");
                 return;
             }
 
             StatusText = "設定を更新しました。次回開始時に反映されます。";
             StatusColor = Brushes.Gray;
-            Log($"設定変更を反映しました（次回開始時に適用）。翻訳言語: {sourceLanguage}→{targetLanguage}");
+            Log($"設定変更を反映しました（次回開始時に適用）。翻訳先: {outputLang}");
         }
         catch (Exception ex)
         {
@@ -468,10 +465,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 Log($"プロファイル '{profile.Name}' を適用しました");
             }
 
-            var sourceLanguage = _settings.Translation.SourceLanguage;
-            var targetLanguage = _settings.Translation.TargetLanguage;
-
-            Log($"翻訳開始 ({sourceLanguage}→{targetLanguage})。");
+            Log($"翻訳開始（翻訳先: {_settings.OpenAIRealtime.OutputLanguage}）");
 
             await _pipelineService.StartAsync(_processingCancellation.Token);
 
