@@ -196,7 +196,14 @@ public sealed class OpenAIRealtimeClient : IAsyncDisposable, IDisposable
             type = "session.update",
             session = new
             {
-                output_audio = new { language = _settings.OutputLanguage }
+                audio = new
+                {
+                    input = new
+                    {
+                        noise_reduction = new { type = "far_field" }
+                    },
+                    output = new { language = _settings.OutputLanguage }
+                }
             }
         };
 
@@ -215,7 +222,7 @@ public sealed class OpenAIRealtimeClient : IAsyncDisposable, IDisposable
 
                 var message = new
                 {
-                    type = "input_audio_buffer.append",
+                    type = "session.input_audio_buffer.append",
                     audio = Convert.ToBase64String(audioData)
                 };
 
@@ -285,12 +292,14 @@ public sealed class OpenAIRealtimeClient : IAsyncDisposable, IDisposable
 
             switch (type)
             {
+                case "session.output_transcript.delta":
                 case "response.audio_transcript.delta":
                 case "output_transcript.delta":
                     if (root.TryGetProperty("delta", out var delta))
                         TranscriptDeltaReceived?.Invoke(delta.GetString() ?? "");
                     break;
 
+                case "session.output_transcript.done":
                 case "response.audio_transcript.done":
                 case "output_transcript.done":
                     var transcript = "";
