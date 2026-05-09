@@ -233,8 +233,12 @@ public partial class SettingsViewModel : ObservableObject
         try
         {
             await _settingsService.SaveAsync(_settings);
-            _overlayViewModel.ReloadSettings();
-            SettingsSaved?.Invoke(this, new SettingsSavedEventArgs(_settings));
+            // UIスレッドで通知（OverlayViewModel.ReloadSettings や MainViewModel.OnSettingsSaved が UI バインドプロパティを操作するため）
+            Avalonia.Threading.Dispatcher.UIThread.Post(() =>
+            {
+                _overlayViewModel.ReloadSettings();
+                SettingsSaved?.Invoke(this, new SettingsSavedEventArgs(_settings));
+            });
         }
         catch (Exception ex)
         {
