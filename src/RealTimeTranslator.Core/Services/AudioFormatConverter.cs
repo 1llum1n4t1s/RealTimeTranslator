@@ -44,26 +44,27 @@ public static class AudioFormatConverter
         return Convert.ToBase64String(pcm16);
     }
 
-    private sealed class BufferSampleProvider : ISampleProvider
+}
+
+internal sealed class BufferSampleProvider : ISampleProvider
+{
+    private readonly float[] _buffer;
+    private int _position;
+
+    public WaveFormat WaveFormat { get; }
+
+    public BufferSampleProvider(float[] buffer, WaveFormat waveFormat)
     {
-        private readonly float[] _buffer;
-        private int _position;
+        _buffer = buffer;
+        WaveFormat = waveFormat;
+    }
 
-        public WaveFormat WaveFormat { get; }
-
-        public BufferSampleProvider(float[] buffer, WaveFormat waveFormat)
-        {
-            _buffer = buffer;
-            WaveFormat = waveFormat;
-        }
-
-        public int Read(float[] buffer, int offset, int count)
-        {
-            var available = Math.Min(count, _buffer.Length - _position);
-            if (available <= 0) return 0;
-            Array.Copy(_buffer, _position, buffer, offset, available);
-            _position += available;
-            return available;
-        }
+    public int Read(float[] buffer, int offset, int count)
+    {
+        var available = Math.Min(count, _buffer.Length - _position);
+        if (available <= 0) return 0;
+        Array.Copy(_buffer, _position, buffer, offset, available);
+        _position += available;
+        return available;
     }
 }

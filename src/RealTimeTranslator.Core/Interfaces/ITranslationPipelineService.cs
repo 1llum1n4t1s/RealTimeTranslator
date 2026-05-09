@@ -6,7 +6,7 @@ namespace RealTimeTranslator.Core.Interfaces;
 /// 翻訳パイプラインサービスのインターフェース
 /// 音声キャプチャ、VAD、ASR、翻訳の一連のパイプライン処理を管理します
 /// </summary>
-public interface ITranslationPipelineService : IDisposable
+public interface ITranslationPipelineService : IAsyncDisposable, IDisposable
 {
     /// <summary>
     /// 字幕が生成されたときに発火するイベント
@@ -35,6 +35,11 @@ public interface ITranslationPipelineService : IDisposable
     /// </summary>
     /// <returns>非同期操作のタスク</returns>
     Task StopAsync();
+
+    /// <summary>
+    /// API設定を即座に反映します（IOptionsMonitorのファイル監視遅延を回避）
+    /// </summary>
+    void ApplySettings(OpenAIRealtimeSettings settings);
 }
 
 /// <summary>

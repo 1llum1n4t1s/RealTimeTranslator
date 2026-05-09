@@ -1,6 +1,7 @@
 using System;
 using System.Collections.ObjectModel;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -12,15 +13,18 @@ namespace RealTimeTranslator.UI.ViewModels;
 
 public partial class SettingsViewModel : ObservableObject
 {
-    private AppSettings _settings;
+    private static readonly TimeSpan AutoSaveDelay = TimeSpan.FromMilliseconds(500);
+
+    private readonly AppSettings _settings;
     private readonly ISettingsService _settingsService;
     private readonly OverlayViewModel _overlayViewModel;
+    private CancellationTokenSource? _autoSaveCts;
 
     public event EventHandler<SettingsSavedEventArgs>? SettingsSaved;
 
-    public SettingsViewModel(IOptionsSnapshot<AppSettings> options, ISettingsService settingsService, OverlayViewModel overlayViewModel)
+    public SettingsViewModel(IOptionsMonitor<AppSettings> options, ISettingsService settingsService, OverlayViewModel overlayViewModel)
     {
-        _settings = options.Value;
+        _settings = options.CurrentValue;
         _settingsService = settingsService;
         _overlayViewModel = overlayViewModel;
         FontFamilies = new ReadOnlyCollection<string>(new[]
@@ -79,13 +83,26 @@ public partial class SettingsViewModel : ObservableObject
     public ReadOnlyCollection<OutputLanguageOption> OutputLanguageOptions { get; }
 
     [ObservableProperty]
-    private string _statusMessage = string.Empty;
-
-    [ObservableProperty]
     private bool _isTestingApi;
 
     [ObservableProperty]
     private string _apiTestResult = string.Empty;
+
+    // ───── API設定プロパティ（自動保存付き） ─────
+
+    public string ApiKey
+    {
+        get => _settings.OpenAIRealtime.ApiKey;
+        set
+        {
+            if (_settings.OpenAIRealtime.ApiKey != value)
+            {
+                _settings.OpenAIRealtime.ApiKey = value;
+                OnPropertyChanged();
+                ScheduleAutoSave();
+            }
+        }
+    }
 
     public OutputLanguageOption? SelectedOutputLanguage
     {
@@ -93,10 +110,55 @@ public partial class SettingsViewModel : ObservableObject
                ?? OutputLanguageOptions[0];
         set
         {
-            if (value != null)
+            if (value != null && _settings.OpenAIRealtime.OutputLanguage != value.Code)
             {
                 _settings.OpenAIRealtime.OutputLanguage = value.Code;
                 OnPropertyChanged();
+                ScheduleAutoSave();
+            }
+        }
+    }
+
+    // ───── 表示設定プロパティ（自動保存付き） ─────
+
+    public string? SelectedFontFamily
+    {
+        get => _settings.Overlay.FontFamily;
+        set
+        {
+            if (value != null && _settings.Overlay.FontFamily != value)
+            {
+                _settings.Overlay.FontFamily = value;
+                OnPropertyChanged();
+                ScheduleAutoSave();
+            }
+        }
+    }
+
+    public double SelectedFontSize
+    {
+        get => _settings.Overlay.FontSize;
+        set
+        {
+            if (Math.Abs(_settings.Overlay.FontSize - value) > 0.01)
+            {
+                _settings.Overlay.FontSize = value;
+                OnPropertyChanged();
+                ScheduleAutoSave();
+            }
+        }
+    }
+
+    public int SelectedMaxLines
+    {
+        get => _settings.Overlay.MaxLines;
+        set
+        {
+            if (_settings.Overlay.MaxLines != value)
+            {
+                _settings.Overlay.MaxLines = value;
+                OnPropertyChanged();
+                ScheduleAutoSave();
             }
         }
     }
@@ -105,22 +167,82 @@ public partial class SettingsViewModel : ObservableObject
     {
         get => TextColorOptions.FirstOrDefault(o => o.Value == _settings.Overlay.PartialTextColor)
                ?? TextColorOptions[0];
-        set { if (value != null) _settings.Overlay.PartialTextColor = value.Value; }
+        set
+        {
+            if (value != null && _settings.Overlay.PartialTextColor != value.Value)
+            {
+                _settings.Overlay.PartialTextColor = value.Value;
+                OnPropertyChanged();
+                ScheduleAutoSave();
+            }
+        }
     }
 
     public ColorOption? SelectedFinalTextColorOption
     {
         get => TextColorOptions.FirstOrDefault(o => o.Value == _settings.Overlay.FinalTextColor)
                ?? TextColorOptions[0];
-        set { if (value != null) _settings.Overlay.FinalTextColor = value.Value; }
+        set
+        {
+            if (value != null && _settings.Overlay.FinalTextColor != value.Value)
+            {
+                _settings.Overlay.FinalTextColor = value.Value;
+                OnPropertyChanged();
+                ScheduleAutoSave();
+            }
+        }
     }
 
     public ColorOption? SelectedBackgroundColorOption
     {
         get => BackgroundColorOptions.FirstOrDefault(o => o.Value == _settings.Overlay.BackgroundColor)
                ?? BackgroundColorOptions[0];
-        set { if (value != null) _settings.Overlay.BackgroundColor = value.Value; }
+        set
+        {
+            if (value != null && _settings.Overlay.BackgroundColor != value.Value)
+            {
+                _settings.Overlay.BackgroundColor = value.Value;
+                OnPropertyChanged();
+                ScheduleAutoSave();
+            }
+        }
     }
+
+    // ───── 自動保存 ─────
+
+    private void ScheduleAutoSave()
+    {
+        _autoSaveCts?.Cancel();
+        _autoSaveCts = new CancellationTokenSource();
+        var token = _autoSaveCts.Token;
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(AutoSaveDelay, token);
+                if (!token.IsCancellationRequested)
+                    await SaveInternalAsync();
+            }
+            catch (OperationCanceledException) { }
+        }, token);
+    }
+
+    private async Task SaveInternalAsync()
+    {
+        try
+        {
+            await _settingsService.SaveAsync(_settings);
+            _overlayViewModel.ReloadSettings();
+            SettingsSaved?.Invoke(this, new SettingsSavedEventArgs(_settings));
+        }
+        catch (Exception ex)
+        {
+            LoggerService.LogError($"設定の自動保存に失敗: {ex.Message}");
+        }
+    }
+
+    // ───── API接続テスト ─────
 
     [RelayCommand]
     private async Task TestApiConnectionAsync()
@@ -147,15 +269,6 @@ public partial class SettingsViewModel : ObservableObject
         {
             IsTestingApi = false;
         }
-    }
-
-    [RelayCommand]
-    private async Task SaveAsync()
-    {
-        await _settingsService.SaveAsync(_settings);
-        _overlayViewModel.ReloadSettings();
-        SettingsSaved?.Invoke(this, new SettingsSavedEventArgs(_settings));
-        StatusMessage = $"設定を保存しました: {DateTime.Now:HH:mm:ss}";
     }
 }
 

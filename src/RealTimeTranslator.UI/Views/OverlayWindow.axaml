@@ -8,7 +8,7 @@
         WindowDecorations="None"
         TransparencyLevelHint="Transparent"
         Background="Transparent"
-        ExtendClientAreaToDecorationsHint="True"
+        ExtendClientAreaToDecorationsHint="False"
         Topmost="True"
         ShowInTaskbar="False"
         WindowState="Maximized"

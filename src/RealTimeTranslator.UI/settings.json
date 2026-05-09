@@ -1,8 +1,4 @@
 {
-  "Translation": {
-    "SourceLanguage": "en",
-    "TargetLanguage": "ja"
-  },
   "Overlay": {
     "FontFamily": "Yu Gothic UI",
     "FontSize": 24,

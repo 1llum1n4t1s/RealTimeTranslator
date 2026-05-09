@@ -1,10 +1,7 @@
-using System.Text.Json.Serialization;
-
 namespace RealTimeTranslator.Core.Models;
 
 public class AppSettings
 {
-    public TranslationSettings Translation { get; set; } = new();
     public OverlaySettings Overlay { get; set; } = new();
     public AudioCaptureSettings AudioCapture { get; set; } = new();
     public OpenAIRealtimeSettings OpenAIRealtime { get; set; } = new();
@@ -21,21 +18,6 @@ public class UpdateSettings
     public bool AutoApply { get; set; } = true;
 }
 
-public enum LanguageType
-{
-    en,
-    ja,
-    zh
-}
-
-public class TranslationSettings
-{
-    [JsonConverter(typeof(JsonStringEnumConverter))]
-    public LanguageType SourceLanguage { get; set; } = LanguageType.en;
-
-    [JsonConverter(typeof(JsonStringEnumConverter))]
-    public LanguageType TargetLanguage { get; set; } = LanguageType.ja;
-}
 
 public class OverlaySettings
 {

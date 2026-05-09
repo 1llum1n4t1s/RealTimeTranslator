@@ -8,14 +8,14 @@ using RealTimeTranslator.Core.Services;
 
 namespace RealTimeTranslator.UI.Services;
 
-public sealed class TranslationPipelineService : ITranslationPipelineService
+public sealed class TranslationPipelineService : ITranslationPipelineService, IAsyncDisposable
 {
     private static readonly ILog Logger = LogManager.GetLogger<TranslationPipelineService>();
     private static readonly TimeSpan DeltaThrottle = TimeSpan.FromMilliseconds(100);
 
     private readonly IAudioCaptureService _audioCaptureService;
-    private readonly OpenAIRealtimeClient _realtimeClient;
-    private readonly IOptionsMonitor<AppSettings> _settingsMonitor;
+    private readonly IOpenAIRealtimeClient _realtimeClient;
+    private OpenAIRealtimeSettings _cachedRealtimeSettings;
 
     private string _currentSegmentId = Guid.NewGuid().ToString();
     private readonly StringBuilder _accumulatedText = new();
@@ -33,12 +33,12 @@ public sealed class TranslationPipelineService : ITranslationPipelineService
 
     public TranslationPipelineService(
         IAudioCaptureService audioCaptureService,
-        OpenAIRealtimeClient realtimeClient,
+        IOpenAIRealtimeClient realtimeClient,
         IOptionsMonitor<AppSettings> settingsMonitor)
     {
         _audioCaptureService = audioCaptureService;
         _realtimeClient = realtimeClient;
-        _settingsMonitor = settingsMonitor;
+        _cachedRealtimeSettings = settingsMonitor.CurrentValue.OpenAIRealtime;
         _throttleTimer = new Timer(OnThrottleTimerElapsed, null, Timeout.Infinite, Timeout.Infinite);
 
         _realtimeClient.TranscriptDeltaReceived += OnTranscriptDelta;
@@ -47,11 +47,16 @@ public sealed class TranslationPipelineService : ITranslationPipelineService
         _realtimeClient.StateChanged += OnConnectionStateChanged;
     }
 
+    public void ApplySettings(OpenAIRealtimeSettings settings)
+    {
+        _cachedRealtimeSettings = settings;
+    }
+
     public async Task StartAsync(CancellationToken token)
     {
         if (_isRunning) return;
 
-        var settings = _settingsMonitor.CurrentValue.OpenAIRealtime;
+        var settings = _cachedRealtimeSettings;
         if (string.IsNullOrWhiteSpace(settings.ApiKey))
         {
             var ex = new InvalidOperationException("OpenAI APIキーが設定されていません。設定画面でキーを入力してください。");
@@ -215,10 +220,39 @@ public sealed class TranslationPipelineService : ITranslationPipelineService
         });
     }
 
+    public async ValueTask DisposeAsync()
+    {
+        if (_disposed) return;
+        _disposed = true;
+
+        try
+        {
+            await StopAsync();
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("TranslationPipelineService.DisposeAsync: 停止エラー", ex);
+        }
+
+        _throttleTimer.Dispose();
+        _realtimeClient.TranscriptDeltaReceived -= OnTranscriptDelta;
+        _realtimeClient.TranscriptCompleted -= OnTranscriptCompleted;
+        _realtimeClient.ErrorReceived -= OnClientError;
+        _realtimeClient.StateChanged -= OnConnectionStateChanged;
+        _audioCaptureService.AudioDataAvailable -= OnAudioDataAvailable;
+    }
+
     public void Dispose()
     {
         if (_disposed) return;
         _disposed = true;
+
+        // 同期版: StopAsync が完了しなくても最低限イベント解除はする
+        try
+        {
+            StopAsync().GetAwaiter().GetResult();
+        }
+        catch { /* DisposeAsync を推奨 */ }
 
         _throttleTimer.Dispose();
         _realtimeClient.TranscriptDeltaReceived -= OnTranscriptDelta;

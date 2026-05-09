@@ -16,7 +16,7 @@ public enum ConnectionState
     Failed
 }
 
-public sealed class OpenAIRealtimeClient : IAsyncDisposable, IDisposable
+public sealed class OpenAIRealtimeClient : Interfaces.IOpenAIRealtimeClient
 {
     private static readonly ILog Logger = LogManager.GetLogger<OpenAIRealtimeClient>();
 
@@ -28,9 +28,11 @@ public sealed class OpenAIRealtimeClient : IAsyncDisposable, IDisposable
     private OpenAIRealtimeSettings _settings = new();
     private int _reconnectAttempts;
     private int _disposed;
+    private volatile bool _shouldReconnect;
+    private volatile ConnectionState _state = ConnectionState.Disconnected;
     private readonly SemaphoreSlim _connectLock = new(1, 1);
 
-    public ConnectionState State { get; private set; } = ConnectionState.Disconnected;
+    public ConnectionState State => _state;
 
     public event Action<string>? TranscriptDeltaReceived;
     public event Action<string>? TranscriptCompleted;
@@ -49,6 +51,7 @@ public sealed class OpenAIRealtimeClient : IAsyncDisposable, IDisposable
             }
 
             _settings = settings;
+            _shouldReconnect = true;
             _cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             _sendChannel = Channel.CreateBounded<byte[]>(new BoundedChannelOptions(200)
             {
@@ -73,6 +76,7 @@ public sealed class OpenAIRealtimeClient : IAsyncDisposable, IDisposable
 
     public async Task DisconnectAsync()
     {
+        _shouldReconnect = false;
         await _connectLock.WaitAsync().ConfigureAwait(false);
         try
         {
@@ -103,9 +107,13 @@ public sealed class OpenAIRealtimeClient : IAsyncDisposable, IDisposable
     public static async Task<(bool Success, string Message)> TestConnectionAsync(
         OpenAIRealtimeSettings settings, CancellationToken ct = default)
     {
+        var uri = new Uri($"{settings.Endpoint}?model={Uri.EscapeDataString(settings.Model)}");
+
+        if (uri.Scheme != "wss")
+            return (false, $"セキュアでない WebSocket スキーム '{uri.Scheme}' は許可されていません。Endpoint には wss:// を使用してください。");
+
         using var ws = new ClientWebSocket();
         ws.Options.SetRequestHeader("Authorization", $"Bearer {settings.ApiKey}");
-        var uri = new Uri($"{settings.Endpoint}?model={Uri.EscapeDataString(settings.Model)}");
 
         try
         {
@@ -223,6 +231,9 @@ public sealed class OpenAIRealtimeClient : IAsyncDisposable, IDisposable
 
         var uri = new Uri($"{_settings.Endpoint}?model={Uri.EscapeDataString(_settings.Model)}");
 
+        if (uri.Scheme != "wss")
+            throw new InvalidOperationException($"セキュアでない WebSocket スキーム '{uri.Scheme}' は許可されていません。Endpoint には wss:// を使用してください。");
+
         try
         {
             await _ws.ConnectAsync(uri, ct).ConfigureAwait(false);
@@ -238,6 +249,8 @@ public sealed class OpenAIRealtimeClient : IAsyncDisposable, IDisposable
         catch (WebSocketException ex) when (ex.InnerException is HttpRequestException httpEx)
         {
             var statusCode = httpEx.StatusCode;
+            var isFatal = statusCode is System.Net.HttpStatusCode.Unauthorized
+                or System.Net.HttpStatusCode.Forbidden;
             var friendlyMsg = statusCode switch
             {
                 System.Net.HttpStatusCode.Unauthorized =>
@@ -250,7 +263,7 @@ public sealed class OpenAIRealtimeClient : IAsyncDisposable, IDisposable
             };
             Logger.Error(friendlyMsg, ex);
             ErrorReceived?.Invoke(new InvalidOperationException(friendlyMsg, ex));
-            SetState(ConnectionState.Disconnected);
+            SetState(isFatal ? ConnectionState.Failed : ConnectionState.Disconnected);
             throw;
         }
         catch (Exception ex)
@@ -410,12 +423,13 @@ public sealed class OpenAIRealtimeClient : IAsyncDisposable, IDisposable
 
     private async Task TryReconnectAsync()
     {
-        if (_cts?.IsCancellationRequested == true) return;
+        if (!_shouldReconnect) return;
 
         _reconnectAttempts++;
         if (_reconnectAttempts > _settings.MaxReconnectAttempts)
         {
             Logger.Error($"再接続上限 ({_settings.MaxReconnectAttempts}) 到達");
+            _shouldReconnect = false;
             SetState(ConnectionState.Failed);
             ErrorReceived?.Invoke(new InvalidOperationException(
                 $"再接続の上限（{_settings.MaxReconnectAttempts}回）に達しました。接続を確認してください。"));
@@ -429,15 +443,17 @@ public sealed class OpenAIRealtimeClient : IAsyncDisposable, IDisposable
 
         try
         {
-            await Task.Delay(delay, _cts!.Token).ConfigureAwait(false);
+            await Task.Delay(delay).ConfigureAwait(false);
         }
         catch (OperationCanceledException) { return; }
+
+        if (!_shouldReconnect) return;
 
         await _connectLock.WaitAsync().ConfigureAwait(false);
         try
         {
-            if (_cts?.IsCancellationRequested == true) return;
-            if (State == ConnectionState.Connected) return;
+            if (!_shouldReconnect) return;
+            if (_state == ConnectionState.Connected) return;
 
             await CleanupAsync().ConfigureAwait(false);
 
@@ -460,9 +476,9 @@ public sealed class OpenAIRealtimeClient : IAsyncDisposable, IDisposable
             _connectLock.Release();
         }
 
-        if (State != ConnectionState.Connected
-            && State != ConnectionState.Failed
-            && _cts?.IsCancellationRequested != true)
+        if (_shouldReconnect
+            && _state != ConnectionState.Connected
+            && _state != ConnectionState.Failed)
         {
             _ = Task.Run(() => TryReconnectAsync(), CancellationToken.None);
         }
@@ -470,7 +486,7 @@ public sealed class OpenAIRealtimeClient : IAsyncDisposable, IDisposable
 
     private void SetState(ConnectionState state)
     {
-        State = state;
+        _state = state;
         StateChanged?.Invoke(state);
     }
 }

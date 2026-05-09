@@ -51,6 +51,10 @@ public partial class App : Application
             base.OnFrameworkInitializationCompleted();
             return;
         }
+
+        // メインウィンドウを閉じたらアプリ終了（OverlayWindowが残っていても）
+        desktop.ShutdownMode = ShutdownMode.OnMainWindowClose;
+
         VelopackApp.Build().Run();
 
         try
@@ -122,23 +126,44 @@ public partial class App : Application
         e.Cancel = true;
         _shutdownCleanupDone = true;
 
-        LoggerService.LogInfo("OnExit: アプリケーション終了開始");
-        _updateCancellation?.Cancel();
-        _updateCancellation?.Dispose();
-        if (_overlayWindow != null)
+        try
         {
-            _overlayWindow.Close();
-            _overlayWindow = null;
-        }
-        if (_serviceProvider != null)
-        {
-            await _serviceProvider.DisposeAsync();
-            _serviceProvider = null;
-        }
-        LoggerService.Shutdown();
+            LoggerService.LogInfo("OnExit: アプリケーション終了開始");
+            _updateCancellation?.Cancel();
+            _updateCancellation?.Dispose();
+            if (_overlayWindow != null)
+            {
+                _overlayWindow.Close();
+                _overlayWindow = null;
+            }
 
-        if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
-            desktop.Shutdown();
+            // サービス破棄にタイムアウトを設定（無限待ちでハング防止）
+            if (_serviceProvider != null)
+            {
+                using var disposeCts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                try
+                {
+                    var disposeTask = _serviceProvider.DisposeAsync().AsTask();
+                    await disposeTask.WaitAsync(disposeCts.Token);
+                }
+                catch (OperationCanceledException)
+                {
+                    LoggerService.LogWarning("OnExit: サービス破棄がタイムアウトしました");
+                }
+                _serviceProvider = null;
+            }
+
+            LoggerService.Shutdown();
+        }
+        catch (Exception ex)
+        {
+            LoggerService.LogError($"シャットダウン中にエラー: {ex}");
+        }
+        finally
+        {
+            // 残存スレッドがあっても確実にプロセスを終了
+            Environment.Exit(0);
+        }
     }
 
     private void ConfigureServices(IServiceCollection services)
@@ -151,20 +176,19 @@ public partial class App : Application
         services.AddSingleton<IConfiguration>(configuration);
         services.Configure<AppSettings>(configuration);
         services.AddSingleton<AppSettings>(sp =>
-            sp.GetRequiredService<IOptionsSnapshot<AppSettings>>().Value);
-        services.AddSingleton<TranslationSettings>(sp =>
-            sp.GetRequiredService<AppSettings>().Translation);
+            sp.GetRequiredService<IOptionsMonitor<AppSettings>>().CurrentValue);
         services.AddSingleton<AudioCaptureSettings>(sp =>
             sp.GetRequiredService<AppSettings>().AudioCapture);
         services.AddSingleton<ISettingsService, SettingsService>();
         services.AddSingleton<IAudioCaptureService, AudioCaptureService>();
         services.AddSingleton<OpenAIRealtimeClient>();
+        services.AddSingleton<IOpenAIRealtimeClient>(sp => sp.GetRequiredService<OpenAIRealtimeClient>());
         services.AddSingleton<IUpdateService, UpdateService>();
         services.AddSingleton<ITranslationPipelineService, TranslationPipelineService>();
         services.AddSingleton<OverlayViewModel>();
         services.AddSingleton<MainViewModel>();
         services.AddSingleton(sp => new SettingsViewModel(
-            sp.GetRequiredService<IOptionsSnapshot<AppSettings>>(),
+            sp.GetRequiredService<IOptionsMonitor<AppSettings>>(),
             sp.GetRequiredService<ISettingsService>(),
             sp.GetRequiredService<OverlayViewModel>()));
     }
@@ -177,7 +201,7 @@ public partial class App : Application
             var exeDir = Path.GetDirectoryName(exePath);
             var appVersion = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "1.0.0.0";
             var registryPath = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\RealTimeTranslator";
-            using var key = Registry.LocalMachine.CreateSubKey(registryPath);
+            using var key = Registry.CurrentUser.CreateSubKey(registryPath);
             if (key != null)
             {
                 key.SetValue("DisplayName", "RealTimeTranslator", RegistryValueKind.String);

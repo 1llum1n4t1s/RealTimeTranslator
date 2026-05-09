@@ -177,6 +177,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
         {
             _audioCaptureService.ApplySettings(e.Settings.AudioCapture);
             _updateService.UpdateSettings(e.Settings.Update);
+            _pipelineService.ApplySettings(e.Settings.OpenAIRealtime);
             var outputLang = e.Settings.OpenAIRealtime.OutputLanguage;
 
             if (IsRunning)
