@@ -33,6 +33,8 @@ public partial class MainViewModel : ObservableObject, IDisposable
     private AppSettings _settings;
     private readonly IUpdateService _updateService;
     private readonly SettingsViewModel _settingsViewModel;
+    private string _lastApiKey;
+    private string _lastOutputLanguage;
     private readonly IDisposable? _settingsChangeSubscription;
     private readonly Queue<string> _logLines = new();
     private readonly object _logLock = new();
@@ -104,6 +106,8 @@ public partial class MainViewModel : ObservableObject, IDisposable
         _audioCaptureService = audioCaptureService;
         _overlayViewModel = overlayViewModel;
         _settings = optionsMonitor.CurrentValue;
+        _lastApiKey = _settings.OpenAIRealtime.ApiKey;
+        _lastOutputLanguage = _settings.OpenAIRealtime.OutputLanguage;
 
         // 設定変更のイベントを購読
         _settingsChangeSubscription = optionsMonitor.OnChange(newSettings =>
@@ -183,13 +187,16 @@ public partial class MainViewModel : ObservableObject, IDisposable
             _audioCaptureService.ApplySettings(e.Settings.AudioCapture);
             _updateService.UpdateSettings(e.Settings.Update);
 
-            // API設定が変更された場合のみパイプラインに通知
-            var apiSettingsChanged = _settings.OpenAIRealtime.ApiKey != e.Settings.OpenAIRealtime.ApiKey
-                                     || _settings.OpenAIRealtime.OutputLanguage != e.Settings.OpenAIRealtime.OutputLanguage;
+            // API設定が変更されたかを、前回保存した値と比較して判定
+            // （SettingsViewModel が同一 AppSettings インスタンスを編集するため、
+            //   e.Settings と _settings は同一参照になる。別途保持した前回値と比較する）
+            var newApiKey = e.Settings.OpenAIRealtime.ApiKey;
+            var newOutputLang = e.Settings.OpenAIRealtime.OutputLanguage;
+            var apiSettingsChanged = _lastApiKey != newApiKey || _lastOutputLanguage != newOutputLang;
 
             _pipelineService.ApplySettings(e.Settings.OpenAIRealtime);
-            _settings = e.Settings;
-            var outputLang = e.Settings.OpenAIRealtime.OutputLanguage;
+            _lastApiKey = newApiKey;
+            _lastOutputLanguage = newOutputLang;
 
             // API設定変更時のみパイプラインを停止（表示設定だけの変更では停止しない）
             if (apiSettingsChanged && IsRunning)
@@ -197,11 +204,11 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 await StopAsync();
                 StatusText = "API設定変更のため停止しました。再開時に新しい設定が反映されます。";
                 StatusColor = Brushes.Orange;
-                Log($"API設定変更を検知したため停止しました。再開時に新しい設定が反映されます。翻訳先: {outputLang}");
+                Log($"API設定変更を検知したため停止しました。再開時に新しい設定が反映されます。翻訳先: {newOutputLang}");
                 return;
             }
 
-            Log($"設定変更を反映しました。翻訳先: {outputLang}");
+            Log($"設定変更を反映しました。翻訳先: {newOutputLang}");
         }
         catch (Exception ex)
         {
