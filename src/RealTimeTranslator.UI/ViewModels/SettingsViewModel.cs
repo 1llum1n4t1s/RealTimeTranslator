@@ -213,6 +213,7 @@ public partial class SettingsViewModel : ObservableObject
     private void ScheduleAutoSave()
     {
         _autoSaveCts?.Cancel();
+        _autoSaveCts?.Dispose();
         _autoSaveCts = new CancellationTokenSource();
         var token = _autoSaveCts.Token;
 

@@ -33,11 +33,13 @@ public interface ITranslationPipelineService : IAsyncDisposable, IDisposable
     /// <summary>
     /// パイプラインを停止します
     /// </summary>
+    /// <param name="cancellationToken">キャンセルトークン</param>
     /// <returns>非同期操作のタスク</returns>
-    Task StopAsync();
+    Task StopAsync(CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// API設定を即座に反映します（IOptionsMonitorのファイル監視遅延を回避）
+    /// API設定をキャッシュに反映します。次回の接続時に新しい設定が使われます。
+    /// 既にアクティブな接続には影響しません（再接続が必要です）。
     /// </summary>
     void ApplySettings(OpenAIRealtimeSettings settings);
 }

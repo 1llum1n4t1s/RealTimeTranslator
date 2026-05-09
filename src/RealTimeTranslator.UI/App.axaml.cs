@@ -69,8 +69,8 @@ public partial class App : Application
             LoggerService.LogInfo("OnStartup: DI構築完了");
 
             var updateService = _serviceProvider.GetRequiredService<IUpdateService>();
-            var optionsSnapshot = _serviceProvider.GetRequiredService<IOptionsSnapshot<AppSettings>>();
-            updateService.UpdateSettings(optionsSnapshot.Value.Update);
+            var optionsMonitor = _serviceProvider.GetRequiredService<IOptionsMonitor<AppSettings>>();
+            updateService.UpdateSettings(optionsMonitor.CurrentValue.Update);
             _updateCancellation = new CancellationTokenSource();
 
             var updateCheckTask = Task.Run(async () =>

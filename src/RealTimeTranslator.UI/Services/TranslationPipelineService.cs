@@ -24,8 +24,9 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     private bool _hasPendingDelta;
     private readonly Timer _throttleTimer;
     private readonly Stopwatch _latencyStopwatch = new();
-    private bool _isRunning;
-    private bool _disposed;
+    private volatile bool _isRunning;
+    private volatile bool _disposed;
+    private DateTime _lastAudioErrorLogTime = DateTime.MinValue;
 
     public event EventHandler<SubtitleItem>? SubtitleGenerated;
     public event EventHandler<PipelineStatsEventArgs>? StatsUpdated;
@@ -77,7 +78,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         });
     }
 
-    public async Task StopAsync()
+    public async Task StopAsync(CancellationToken cancellationToken = default)
     {
         if (!_isRunning) return;
 
@@ -87,7 +88,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         _latencyStopwatch.Stop();
         _throttleTimer.Change(Timeout.Infinite, Timeout.Infinite);
 
-        await _realtimeClient.DisconnectAsync();
+        await _realtimeClient.DisconnectAsync().ConfigureAwait(false);
 
         StatsUpdated?.Invoke(this, new PipelineStatsEventArgs
         {
@@ -107,7 +108,13 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         }
         catch (Exception ex)
         {
-            Logger.Error("音声データ変換エラー", ex);
+            // エラーログを1秒に1回に制限（高頻度の音声イベントでログが溢れることを防止）
+            var now = DateTime.UtcNow;
+            if ((now - _lastAudioErrorLogTime).TotalSeconds >= 1.0)
+            {
+                _lastAudioErrorLogTime = now;
+                Logger.Error("音声データ変換エラー", ex);
+            }
         }
     }
 
@@ -181,7 +188,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         var subtitle = new SubtitleItem
         {
             SegmentId = segmentId,
-            OriginalText = transcript,
+            OriginalText = string.Empty,
             TranslatedText = transcript,
             IsFinal = true
         };
@@ -247,10 +254,10 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         if (_disposed) return;
         _disposed = true;
 
-        // 同期版: StopAsync が完了しなくても最低限イベント解除はする
+        // 同期版: UIスレッドでのデッドロックを回避するため Task.Run 経由で呼び出す
         try
         {
-            StopAsync().GetAwaiter().GetResult();
+            Task.Run(() => StopAsync()).GetAwaiter().GetResult();
         }
         catch { /* DisposeAsync を推奨 */ }
 

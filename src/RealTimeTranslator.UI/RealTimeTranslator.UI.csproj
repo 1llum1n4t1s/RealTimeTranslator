@@ -26,10 +26,16 @@
   </ItemGroup>
 
   <ItemGroup>
-    <None Update="settings.json">
+    <None Update="settings.default.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
   </ItemGroup>
 
+  <!-- settings.json が出力先に無ければ settings.default.json をコピーして初期化する -->
+  <Target Name="CopyDefaultSettingsIfMissing" AfterTargets="Build">
+    <Copy SourceFiles="$(OutputPath)settings.default.json"
+          DestinationFiles="$(OutputPath)settings.json"
+          Condition="!Exists('$(OutputPath)settings.json')" />
+  </Target>
 
 </Project>

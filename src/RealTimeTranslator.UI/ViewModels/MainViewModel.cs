@@ -156,6 +156,10 @@ public partial class MainViewModel : ObservableObject, IDisposable
         {
             ProcessingLatency = e.ProcessingLatency;
             TranslationLatency = e.TranslationLatency;
+            if (!string.IsNullOrEmpty(e.StatusText) && IsRunning)
+            {
+                StatusText = e.StatusText;
+            }
         });
     }
 
@@ -175,23 +179,29 @@ public partial class MainViewModel : ObservableObject, IDisposable
     {
         try
         {
+            // 表示設定（Overlay）は常に反映（パイプライン停止不要）
             _audioCaptureService.ApplySettings(e.Settings.AudioCapture);
             _updateService.UpdateSettings(e.Settings.Update);
+
+            // API設定が変更された場合のみパイプラインに通知
+            var apiSettingsChanged = _settings.OpenAIRealtime.ApiKey != e.Settings.OpenAIRealtime.ApiKey
+                                     || _settings.OpenAIRealtime.OutputLanguage != e.Settings.OpenAIRealtime.OutputLanguage;
+
             _pipelineService.ApplySettings(e.Settings.OpenAIRealtime);
+            _settings = e.Settings;
             var outputLang = e.Settings.OpenAIRealtime.OutputLanguage;
 
-            if (IsRunning)
+            // API設定変更時のみパイプラインを停止（表示設定だけの変更では停止しない）
+            if (apiSettingsChanged && IsRunning)
             {
                 await StopAsync();
-                StatusText = "設定変更のため停止しました。再開時に新しい設定が反映されます。";
+                StatusText = "API設定変更のため停止しました。再開時に新しい設定が反映されます。";
                 StatusColor = Brushes.Orange;
-                Log($"設定変更を検知したため停止しました。再開時に新しい設定が反映されます。翻訳先: {outputLang}");
+                Log($"API設定変更を検知したため停止しました。再開時に新しい設定が反映されます。翻訳先: {outputLang}");
                 return;
             }
 
-            StatusText = "設定を更新しました。次回開始時に反映されます。";
-            StatusColor = Brushes.Gray;
-            Log($"設定変更を反映しました（次回開始時に適用）。翻訳先: {outputLang}");
+            Log($"設定変更を反映しました。翻訳先: {outputLang}");
         }
         catch (Exception ex)
         {
@@ -856,7 +866,8 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
         try
         {
-            _pipelineService.StopAsync().GetAwaiter().GetResult();
+            // UIスレッドでのデッドロックを回避するため Task.Run 経由で呼び出す
+            Task.Run(() => _pipelineService.StopAsync()).GetAwaiter().GetResult();
             LoggerService.LogInfo("MainViewModel.Dispose: パイプライン停止完了");
         }
         catch (Exception ex)
