@@ -378,6 +378,13 @@ public sealed class OpenAIRealtimeClient : Interfaces.IOpenAIRealtimeClient
 
             switch (type)
             {
+                // 翻訳結果のストリーミング（delta）
+                // ・現行 GPT Realtime API: response.output_audio_transcript.delta / response.output_text.delta
+                // ・Translation 専用エンドポイント: session.output_transcript.delta / output_transcript.delta
+                // ・互換のため旧 response.audio_transcript.delta も残す
+                // 参考: https://platform.openai.com/docs/api-reference/realtime-server-events
+                case "response.output_audio_transcript.delta":
+                case "response.output_text.delta":
                 case "session.output_transcript.delta":
                 case "response.audio_transcript.delta":
                 case "output_transcript.delta":
@@ -385,12 +392,17 @@ public sealed class OpenAIRealtimeClient : Interfaces.IOpenAIRealtimeClient
                         TranscriptDeltaReceived?.Invoke(delta.GetString() ?? "");
                     break;
 
+                // 翻訳結果の完了（done）— done では transcript または text プロパティに最終結果が入る
+                case "response.output_audio_transcript.done":
+                case "response.output_text.done":
                 case "session.output_transcript.done":
                 case "response.audio_transcript.done":
                 case "output_transcript.done":
                     var transcript = "";
                     if (root.TryGetProperty("transcript", out var t))
                         transcript = t.GetString() ?? "";
+                    else if (root.TryGetProperty("text", out var txt))
+                        transcript = txt.GetString() ?? "";
                     TranscriptCompleted?.Invoke(transcript);
                     break;
 

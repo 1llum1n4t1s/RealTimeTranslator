@@ -61,7 +61,7 @@ Audio Capture (WASAPI) → Resample 16kHz→24kHz → PCM16 → OpenAI Realtime 
 
 1. `AudioCaptureService` feeds 16kHz mono float32 audio chunks via `AudioDataAvailable` event
 2. `TranslationPipelineService` resamples to 24kHz, converts to PCM16, sends via `OpenAIRealtimeClient`
-3. API returns translation text as `output_transcript.delta` (streaming) and `output_transcript.done` (final)
+3. API returns translation text as `response.output_audio_transcript.delta` / `response.output_text.delta` (streaming) and `.done` (final). Legacy event names (`output_transcript.*`, `response.audio_transcript.*`) are still recognized for compatibility.
 4. Delta events fire `SubtitleGenerated` with `IsFinal=false` (100ms throttled), done fires with `IsFinal=true`
 5. `OverlayViewModel` displays subtitles, tracking updates by `SegmentId`
 

@@ -121,6 +121,63 @@ public sealed class OpenAIRealtimeClientAdversarialTests
     }
 
     // ═══════════════════════════════════════════════════════════════
+    // 🎭 サーバーイベントのスキーマ互換性
+    //   GPT Realtime API のサーバーイベント名は時期により以下のバリエーションがある:
+    //   - response.output_audio_transcript.{delta,done}（現行・音声出力）
+    //   - response.output_text.{delta,done}（現行・テキスト出力）
+    //   - session.output_transcript.{delta,done} / output_transcript.{delta,done}（旧 Translate 専用）
+    //   - response.audio_transcript.{delta,done}（旧）
+    //   このテストは ProcessMessage が全バリエーションでイベントを発火することを保証する。
+    // ═══════════════════════════════════════════════════════════════
+
+    [TestMethod]
+    [TestCategory("Adversarial")]
+    [DataRow("response.output_audio_transcript.delta")]
+    [DataRow("response.output_text.delta")]
+    [DataRow("session.output_transcript.delta")]
+    [DataRow("response.audio_transcript.delta")]
+    [DataRow("output_transcript.delta")]
+    public void ProcessMessage_DeltaEvent_ShouldRaiseTranscriptDeltaReceived(string eventType)
+    {
+        using var client = new OpenAIRealtimeClient();
+        string? receivedDelta = null;
+        client.TranscriptDeltaReceived += d => receivedDelta = d;
+
+        var json = $"{{\"type\":\"{eventType}\",\"delta\":\"こんにちは\"}}";
+        InvokeProcessMessage(client, json);
+
+        Assert.AreEqual("こんにちは", receivedDelta, $"イベント '{eventType}' でデルタが伝播するべき");
+    }
+
+    [TestMethod]
+    [TestCategory("Adversarial")]
+    [DataRow("response.output_audio_transcript.done", "transcript")]
+    [DataRow("response.output_text.done", "text")]
+    [DataRow("session.output_transcript.done", "transcript")]
+    [DataRow("response.audio_transcript.done", "transcript")]
+    [DataRow("output_transcript.done", "transcript")]
+    public void ProcessMessage_DoneEvent_ShouldRaiseTranscriptCompleted(string eventType, string finalField)
+    {
+        using var client = new OpenAIRealtimeClient();
+        string? receivedFinal = null;
+        client.TranscriptCompleted += t => receivedFinal = t;
+
+        var json = $"{{\"type\":\"{eventType}\",\"{finalField}\":\"完成テキスト\"}}";
+        InvokeProcessMessage(client, json);
+
+        Assert.AreEqual("完成テキスト", receivedFinal, $"イベント '{eventType}' で最終テキストが伝播するべき");
+    }
+
+    private static void InvokeProcessMessage(OpenAIRealtimeClient client, string json)
+    {
+        var method = typeof(OpenAIRealtimeClient).GetMethod(
+            "ProcessMessage",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+        Assert.IsNotNull(method, "ProcessMessage メソッドが見つからない");
+        method.Invoke(client, new object[] { json });
+    }
+
+    // ═══════════════════════════════════════════════════════════════
     // 🗡️ カテゴリ1: 境界値・極端入力（Boundary Assault）
     // ═══════════════════════════════════════════════════════════════
 
