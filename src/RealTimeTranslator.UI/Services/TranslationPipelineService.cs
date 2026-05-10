@@ -48,9 +48,13 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         _realtimeClient.StateChanged += OnConnectionStateChanged;
     }
 
-    public void ApplySettings(OpenAIRealtimeSettings settings)
+    public Task ApplySettingsAsync(OpenAIRealtimeSettings settings, CancellationToken cancellationToken = default)
     {
+        // 現状はキャッシュ更新のみだが、将来的に再接続処理を組み込みやすいよう
+        // インターフェース規約に合わせて Task / CancellationToken を受け取る形にしている。
+        cancellationToken.ThrowIfCancellationRequested();
         _cachedRealtimeSettings = settings;
+        return Task.CompletedTask;
     }
 
     public async Task StartAsync(CancellationToken token)

@@ -41,7 +41,9 @@ public interface ITranslationPipelineService : IAsyncDisposable, IDisposable
     /// API設定をキャッシュに反映します。次回の接続時に新しい設定が使われます。
     /// 既にアクティブな接続には影響しません（再接続が必要です）。
     /// </summary>
-    void ApplySettings(OpenAIRealtimeSettings settings);
+    /// <param name="settings">適用する API 設定</param>
+    /// <param name="cancellationToken">キャンセルトークン</param>
+    Task ApplySettingsAsync(OpenAIRealtimeSettings settings, CancellationToken cancellationToken = default);
 }
 
 /// <summary>

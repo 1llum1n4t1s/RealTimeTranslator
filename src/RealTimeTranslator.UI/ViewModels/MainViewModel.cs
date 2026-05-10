@@ -194,7 +194,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
             var newOutputLang = e.Settings.OpenAIRealtime.OutputLanguage;
             var apiSettingsChanged = _lastApiKey != newApiKey || _lastOutputLanguage != newOutputLang;
 
-            _pipelineService.ApplySettings(e.Settings.OpenAIRealtime);
+            await _pipelineService.ApplySettingsAsync(e.Settings.OpenAIRealtime);
             _lastApiKey = newApiKey;
             _lastOutputLanguage = newOutputLang;
 

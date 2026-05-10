@@ -28,14 +28,22 @@
   <ItemGroup>
     <None Update="settings.default.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
     </None>
   </ItemGroup>
 
-  <!-- settings.json が出力先に無ければ settings.default.json をコピーして初期化する -->
-  <Target Name="CopyDefaultSettingsIfMissing" AfterTargets="Build">
+  <!-- Build 時: 出力先に settings.json が無ければ settings.default.json をコピーして初期化する -->
+  <Target Name="CopyDefaultSettingsAfterBuild" AfterTargets="Build">
     <Copy SourceFiles="$(OutputPath)settings.default.json"
           DestinationFiles="$(OutputPath)settings.json"
-          Condition="!Exists('$(OutputPath)settings.json')" />
+          Condition="Exists('$(OutputPath)settings.default.json') and !Exists('$(OutputPath)settings.json')" />
+  </Target>
+
+  <!-- Publish 時: 配布先にも同様に settings.json を生成する（Velopack 配布版で初期設定が無い問題を防ぐ） -->
+  <Target Name="CopyDefaultSettingsAfterPublish" AfterTargets="Publish">
+    <Copy SourceFiles="$(PublishDir)settings.default.json"
+          DestinationFiles="$(PublishDir)settings.json"
+          Condition="Exists('$(PublishDir)settings.default.json') and !Exists('$(PublishDir)settings.json')" />
   </Target>
 
 </Project>
