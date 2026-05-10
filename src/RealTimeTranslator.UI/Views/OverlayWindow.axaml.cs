@@ -2,8 +2,8 @@ using System;
 using System.Runtime.InteropServices;
 using Avalonia;
 using Avalonia.Controls;
-using Avalonia.Interactivity;
-using Avalonia.Platform;
+using Avalonia.Media;
+using RealTimeTranslator.Core.Services;
 using RealTimeTranslator.UI.ViewModels;
 
 namespace RealTimeTranslator.UI.Views;
@@ -53,14 +53,29 @@ public partial class OverlayWindow : Window
 
     private void OnOpened(object? sender, EventArgs e)
     {
+        // 透過が有効か確認し、無効ならウィンドウを非表示にして操作不能を防止
+        if (ActualTransparencyLevel == WindowTransparencyLevel.None)
+        {
+            LoggerService.LogWarning("OverlayWindow: 透過レベルが None — ウィンドウを非表示にします（デスクトップ黒画面防止）");
+            IsVisible = false;
+            return;
+        }
+
+        // 背景が透過であることを明示的に保証
+        Background = Brushes.Transparent;
         SetClickThrough();
+
+        LoggerService.LogInfo($"OverlayWindow: 透過レベル={ActualTransparencyLevel}, クリック透過設定完了");
     }
 
     private void SetClickThrough()
     {
         var handle = TryGetPlatformHandle();
         if (handle?.Handle == null || handle.Handle == IntPtr.Zero)
+        {
+            LoggerService.LogWarning("OverlayWindow: ウィンドウハンドルが取得できません — クリック透過を設定できません");
             return;
+        }
         var hwnd = handle.Handle;
         var extendedStyle = (int)GetWindowLongPtr(hwnd, GWL_EXSTYLE);
         SetWindowLongPtr(hwnd, GWL_EXSTYLE, (IntPtr)(extendedStyle | WS_EX_TRANSPARENT | WS_EX_LAYERED));

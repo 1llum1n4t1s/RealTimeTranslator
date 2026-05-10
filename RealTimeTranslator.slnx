@@ -10,9 +10,6 @@
   <Project Path="src/RealTimeTranslator.Core/RealTimeTranslator.Core.csproj">
     <Platform Project="x64" />
   </Project>
-  <Project Path="src/RealTimeTranslator.Translation/RealTimeTranslator.Translation.csproj">
-    <Platform Project="x64" />
-  </Project>
   <Project DefaultStartup="true" Path="src/RealTimeTranslator.UI/RealTimeTranslator.UI.csproj">
     <Platform Project="x64" />
   </Project>

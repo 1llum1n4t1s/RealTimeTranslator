@@ -1,16 +1,11 @@
 using System;
 using System.IO;
-using System.Linq;
-using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
-using Avalonia.Data.Core;
-using Avalonia.Data.Core.Plugins;
 using Avalonia.Markup.Xaml;
-using Avalonia.Threading;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
@@ -18,7 +13,6 @@ using Microsoft.Win32;
 using RealTimeTranslator.Core.Interfaces;
 using RealTimeTranslator.Core.Models;
 using RealTimeTranslator.Core.Services;
-using RealTimeTranslator.Translation.Services;
 using RealTimeTranslator.UI.Services;
 using RealTimeTranslator.UI.ViewModels;
 using RealTimeTranslator.UI.Views;
@@ -34,19 +28,10 @@ public partial class App : Application
     private ServiceProvider? _serviceProvider;
     private OverlayWindow? _overlayWindow;
     private CancellationTokenSource? _updateCancellation;
+    private bool _shutdownCleanupDone;
 
     public App()
     {
-        Environment.SetEnvironmentVariable("GGML_USE_CUDA", "1");
-        Environment.SetEnvironmentVariable("GGML_CUDA_NO_PINNED", "1");
-        Environment.SetEnvironmentVariable("CUDA_VISIBLE_DEVICES", "0");
-        Environment.SetEnvironmentVariable("GGML_USE_HIP", "1");
-        Environment.SetEnvironmentVariable("HSA_OVERRIDE_GFX_VERSION", "11.0.0");
-        Environment.SetEnvironmentVariable("GGML_USE_SYCL", "1");
-        Environment.SetEnvironmentVariable("SYCL_DEVICE_FILTER", "level_zero:gpu");
-        Environment.SetEnvironmentVariable("GGML_USE_VULKAN", "1");
-        Environment.SetEnvironmentVariable("GGML_USE_METAL", "1");
-        LoggerService.LogDebug("App constructor: GPU環境変数設定完了 (CUDA/HIP/SYCL/Vulkan/Metal)");
     }
 
     public override void Initialize()
@@ -66,7 +51,10 @@ public partial class App : Application
             base.OnFrameworkInitializationCompleted();
             return;
         }
-        DisableAvaloniaDataAnnotationValidation();
+
+        // メインウィンドウを閉じたらアプリ終了（OverlayWindowが残っていても）
+        desktop.ShutdownMode = ShutdownMode.OnMainWindowClose;
+
         VelopackApp.Build().Run();
 
         try
@@ -81,8 +69,8 @@ public partial class App : Application
             LoggerService.LogInfo("OnStartup: DI構築完了");
 
             var updateService = _serviceProvider.GetRequiredService<IUpdateService>();
-            var optionsSnapshot = _serviceProvider.GetRequiredService<IOptionsSnapshot<AppSettings>>();
-            updateService.UpdateSettings(optionsSnapshot.Value.Update);
+            var optionsMonitor = _serviceProvider.GetRequiredService<IOptionsMonitor<AppSettings>>();
+            updateService.UpdateSettings(optionsMonitor.CurrentValue.Update);
             _updateCancellation = new CancellationTokenSource();
 
             var updateCheckTask = Task.Run(async () =>
@@ -116,18 +104,6 @@ public partial class App : Application
             _overlayWindow.Show();
             LoggerService.LogInfo("OnStartup: オーバーレイウィンドウ表示");
 
-            _ = mainViewModel.InitializeModelsAsync().ContinueWith(t =>
-            {
-                if (t.IsFaulted)
-                {
-                    LoggerService.LogError($"OnStartup: モデル初期化エラー: {t.Exception}");
-                    Dispatcher.UIThread.Post(() =>
-                    {
-                        _ = Services.MessageBoxService.ShowWindowDialogAsync(mainWindow, "エラー",
-                            $"モデルの初期化に失敗しました:\n\n{t.Exception?.GetBaseException().Message}");
-                    });
-                }
-            }, TaskScheduler.Default);
             LoggerService.LogInfo("OnStartup: 起動完了");
         }
         catch (Exception ex)
@@ -142,38 +118,52 @@ public partial class App : Application
         base.OnFrameworkInitializationCompleted();
     }
 
-    private void OnShutdownRequested(object? sender, ShutdownRequestedEventArgs e)
+    private async void OnShutdownRequested(object? sender, ShutdownRequestedEventArgs e)
     {
-        LoggerService.LogInfo("OnExit: アプリケーション終了開始");
-        _updateCancellation?.Cancel();
-        _updateCancellation?.Dispose();
-        if (_overlayWindow != null)
-        {
-            _overlayWindow.Close();
-            _overlayWindow = null;
-        }
-        if (_serviceProvider != null)
-        {
-            _serviceProvider.GetService<MainViewModel>()?.Dispose();
-            _serviceProvider.GetService<OverlayViewModel>()?.Dispose();
-            _serviceProvider.GetService<ITranslationPipelineService>()?.Dispose();
-            _serviceProvider.GetService<IAudioCaptureService>()?.Dispose();
-            _serviceProvider.GetService<IASRService>()?.Dispose();
-            _serviceProvider.GetService<ITranslationService>()?.Dispose();
-            (_serviceProvider.GetService<IVADService>() as IDisposable)?.Dispose();
-            _serviceProvider.GetService<HttpClient>()?.Dispose();
-            _serviceProvider.GetService<ModelDownloadService>()?.Dispose();
-            _serviceProvider.Dispose();
-            _serviceProvider = null;
-        }
-        LoggerService.Shutdown();
-    }
+        if (_shutdownCleanupDone)
+            return;
 
-    private static void DisableAvaloniaDataAnnotationValidation()
-    {
-        var toRemove = BindingPlugins.DataValidators.OfType<DataAnnotationsValidationPlugin>().ToArray();
-        foreach (var plugin in toRemove)
-            BindingPlugins.DataValidators.Remove(plugin);
+        e.Cancel = true;
+        _shutdownCleanupDone = true;
+
+        try
+        {
+            LoggerService.LogInfo("OnExit: アプリケーション終了開始");
+            _updateCancellation?.Cancel();
+            _updateCancellation?.Dispose();
+            if (_overlayWindow != null)
+            {
+                _overlayWindow.Close();
+                _overlayWindow = null;
+            }
+
+            // サービス破棄にタイムアウトを設定（無限待ちでハング防止）
+            if (_serviceProvider != null)
+            {
+                using var disposeCts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                try
+                {
+                    var disposeTask = _serviceProvider.DisposeAsync().AsTask();
+                    await disposeTask.WaitAsync(disposeCts.Token);
+                }
+                catch (OperationCanceledException)
+                {
+                    LoggerService.LogWarning("OnExit: サービス破棄がタイムアウトしました");
+                }
+                _serviceProvider = null;
+            }
+
+            LoggerService.Shutdown();
+        }
+        catch (Exception ex)
+        {
+            LoggerService.LogError($"シャットダウン中にエラー: {ex}");
+        }
+        finally
+        {
+            // 残存スレッドがあっても確実にプロセスを終了
+            Environment.Exit(0);
+        }
     }
 
     private void ConfigureServices(IServiceCollection services)
@@ -186,33 +176,21 @@ public partial class App : Application
         services.AddSingleton<IConfiguration>(configuration);
         services.Configure<AppSettings>(configuration);
         services.AddSingleton<AppSettings>(sp =>
-            sp.GetRequiredService<IOptionsSnapshot<AppSettings>>().Value);
-        services.AddSingleton<TranslationSettings>(sp =>
-            sp.GetRequiredService<AppSettings>().Translation);
+            sp.GetRequiredService<IOptionsMonitor<AppSettings>>().CurrentValue);
         services.AddSingleton<AudioCaptureSettings>(sp =>
             sp.GetRequiredService<AppSettings>().AudioCapture);
         services.AddSingleton<ISettingsService, SettingsService>();
-        services.AddSingleton<HttpClient>(sp =>
-        {
-            var httpClient = new HttpClient();
-            httpClient.Timeout = TimeSpan.FromMinutes(30);
-            return httpClient;
-        });
-        services.AddSingleton<ModelDownloadService>();
-        services.AddSingleton<PromptBuilderFactory>();
         services.AddSingleton<IAudioCaptureService, AudioCaptureService>();
-        services.AddSingleton<IVADService, VADService>();
-        services.AddSingleton<IASRService, WhisperASRService>();
-        services.AddSingleton<ITranslationService, MistralTranslationService>();
+        services.AddSingleton<OpenAIRealtimeClient>();
+        services.AddSingleton<IOpenAIRealtimeClient>(sp => sp.GetRequiredService<OpenAIRealtimeClient>());
         services.AddSingleton<IUpdateService, UpdateService>();
         services.AddSingleton<ITranslationPipelineService, TranslationPipelineService>();
         services.AddSingleton<OverlayViewModel>();
         services.AddSingleton<MainViewModel>();
         services.AddSingleton(sp => new SettingsViewModel(
-            sp.GetRequiredService<IOptionsSnapshot<AppSettings>>(),
+            sp.GetRequiredService<IOptionsMonitor<AppSettings>>(),
             sp.GetRequiredService<ISettingsService>(),
             sp.GetRequiredService<OverlayViewModel>()));
-        services.AddTransient<SettingsWindow>();
     }
 
     private static void RegisterApplicationInARP()
@@ -223,7 +201,7 @@ public partial class App : Application
             var exeDir = Path.GetDirectoryName(exePath);
             var appVersion = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "1.0.0.0";
             var registryPath = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\RealTimeTranslator";
-            using var key = Registry.LocalMachine.CreateSubKey(registryPath);
+            using var key = Registry.CurrentUser.CreateSubKey(registryPath);
             if (key != null)
             {
                 key.SetValue("DisplayName", "RealTimeTranslator", RegistryValueKind.String);

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-RealTimeTranslator is a Windows desktop app for real-time subtitle translation. It captures audio from a specific process, runs VAD (Silero) → ASR (Whisper) → LLM translation (LLamaSharp) and displays translated subtitles in a transparent overlay window.
+RealTimeTranslator is a Windows desktop app for real-time subtitle translation. It captures audio from a specific process via WASAPI Process Loopback, sends it to the OpenAI Realtime Translate API via WebSocket, and displays translated subtitles in a transparent overlay window.
 
 **Language**: Japanese (UI, comments, commit messages, README are all in Japanese)
 
@@ -33,14 +33,13 @@ Platform is **always x64** — there is no x86 support.
 ## Architecture
 
 ```
-Audio Capture → Silero VAD → Whisper ASR → LLM Translation → Overlay
+Audio Capture (WASAPI) → Resample 16kHz→24kHz → PCM16 → OpenAI Realtime API (WebSocket) → Subtitle Overlay
 ```
 
 ### Project Structure
 
-- **RealTimeTranslator.Core** — Interfaces, models, and infrastructure services (audio capture, VAD, logging). No UI dependency.
-- **RealTimeTranslator.Translation** — ASR (Whisper.net) and translation (LLamaSharp) implementations. Prompt builders per model format (Phi3, Mistral, Gemma, Qwen). References Core.
-- **RealTimeTranslator.UI** — Avalonia desktop app. Views, ViewModels (CommunityToolkit.Mvvm), DI setup, pipeline orchestration. References Core + Translation.
+- **RealTimeTranslator.Core** — Interfaces, models, and infrastructure services (audio capture, audio format conversion, OpenAI Realtime WebSocket client, logging). No UI dependency.
+- **RealTimeTranslator.UI** — Avalonia desktop app. Views, ViewModels (CommunityToolkit.Mvvm), DI setup, pipeline orchestration. References Core.
 - **RealTimeTranslator.Tests** — MSTest unit tests. References Core.
 
 ### Key Interfaces (in Core/Interfaces/)
@@ -49,52 +48,43 @@ Audio Capture → Silero VAD → Whisper ASR → LLM Translation → Overlay
 |---|---|
 | `ITranslationPipelineService` | Orchestrates the full pipeline. Events: `SubtitleGenerated`, `StatsUpdated`, `ErrorOccurred` |
 | `IAudioCaptureService` | WASAPI process loopback capture (16kHz mono float) |
-| `IVADService` | Silero VAD v4 via ONNX. Speech segment detection with configurable sensitivity |
-| `IASRService` | Whisper transcription. Dual-mode: Fast (small model) + Accurate (large model) |
-| `ITranslationService` | LLM inference via LLamaSharp. Auto-detects GGUF model format |
+
+### Key Services (in Core/Services/)
+
+| Service | Responsibility |
+|---|---|
+| `OpenAIRealtimeClient` | WebSocket client for OpenAI Realtime Translate API. Handles connection, reconnection (exponential backoff), audio send/receive loops |
+| `AudioFormatConverter` | Static utility: 16kHz float32 → 24kHz PCM16 conversion for API input |
+| `AudioCaptureService` | WASAPI process loopback capture with custom COM interop + NAudio |
 
 ### Pipeline Flow (TranslationPipelineService in UI/Services/)
 
-1. `AudioCaptureService` feeds audio chunks via `AudioDataAvailable` event
-2. `VADService` detects speech segments, outputs `SpeechSegment`
-3. Segments enqueued to a `Channel<SpeechSegment>` (bounded, 100 items, DropOldest)
-4. Consumer loop runs ASR (fast then accurate) with semaphore-limited parallelism (max 2)
-5. Translation results fire `SubtitleGenerated` event → `OverlayViewModel` displays them
+1. `AudioCaptureService` feeds 16kHz mono float32 audio chunks via `AudioDataAvailable` event
+2. `TranslationPipelineService` resamples to 24kHz, converts to PCM16, sends via `OpenAIRealtimeClient`
+3. API returns translation text as `response.output_audio_transcript.delta` / `response.output_text.delta` (streaming) and `.done` (final). Legacy event names (`output_transcript.*`, `response.audio_transcript.*`) are still recognized for compatibility.
+4. Delta events fire `SubtitleGenerated` with `IsFinal=false` (100ms throttled), done fires with `IsFinal=true`
+5. `OverlayViewModel` displays subtitles, tracking updates by `SegmentId`
 
 ### DI & Configuration
 
 - DI configured in `App.axaml.cs` (`OnFrameworkInitializationCompleted`)
 - Settings loaded from `settings.json` via `IOptionsMonitor<AppSettings>` (supports hot-reload)
-- `AppSettings` contains sub-sections: `ASR`, `Translation`, `Overlay`, `AudioCapture`, `GameProfiles[]`, `Update`
+- Runtime settings changes pushed via `ApplySettings()` pattern to bypass file watcher delay
+- `AppSettings` contains sub-sections: `OpenAIRealtime`, `Overlay`, `AudioCapture`, `GameProfiles[]`, `Update`
 - Single-instance enforcement via named Mutex in `Program.cs`
 
 ### UI Framework
 
-- **Avalonia 11** with Semi.Avalonia theme (recently migrated from WPF)
+- **Avalonia 12** with Fluent theme
 - MVVM via CommunityToolkit.Mvvm (`[ObservableProperty]`, `[RelayCommand]`)
-- Main views: `MainWindow` (process selector, controls), `OverlayWindow` (transparent subtitle display), `SettingsWindow`
+- Main views: `MainWindow` (process selector, controls, settings tab), `OverlayWindow` (transparent subtitle display)
 - UI thread dispatch: `Dispatcher.UIThread.Post()`
-
-### GPU & Native Libraries
-
-- ONNX Runtime (DirectML/CUDA) for VAD
-- LLamaSharp with CUDA 12 backend for translation
-- Whisper.net with GPU runtime for ASR
-- GPU type configured in `AppSettings.ASR.GPU` (Auto/NVIDIA_CUDA/AMD_Vulkan/CPU)
-- CPU variant filtering at publish time: only AVX2 kept (configurable via `LLamaSharpCpuVariant` MSBuild property)
-- Non-Windows runtimes stripped during publish
 
 ## Key Conventions
 
 - **Async**: All service methods use `Async` suffix, propagate `CancellationToken`
-- **Thread safety**: `lock` for shared collections, `volatile` for cross-thread flags, `Channel<T>` for producer-consumer
+- **Thread safety**: `lock` for shared collections, `Channel<T>` for producer-consumer (audio send buffer)
 - **Error propagation**: Event-based (`ErrorOccurred` events bubble up to UI)
 - **Output paths**: Simplified — `bin/{Configuration}/` (no TFM/platform subdirectories, set in Directory.Build.props)
 - **Auto-update**: Velopack. Release via `release/**` branch push → GitHub Actions → GitHub Releases
-
-## Models (Auto-Downloaded)
-
-Models download automatically on first launch if missing:
-- **VAD**: `models/vad/silero_vad.onnx`
-- **ASR**: `ggml-base.bin` (fast), `ggml-large-v3.bin` (accurate) — Whisper GGML format
-- **Translation**: `Phi-3-mini-4k-instruct-q4.gguf` — LLamaSharp GGUF format
+- **API Key**: BYOK model. User provides their own OpenAI API key, stored in `settings.json` (runtime copy in bin/)

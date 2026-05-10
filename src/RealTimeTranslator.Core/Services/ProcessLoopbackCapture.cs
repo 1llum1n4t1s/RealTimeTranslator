@@ -32,38 +32,6 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
     private const int AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED = unchecked((int)0x88890021); // AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED
     private const long DefaultBufferDuration10ms = 100000L; // デフォルトバッファ期間（10ms、100ns単位）
 
-    // CLSCTX constants
-    private static class CLSCTX
-    {
-        public const int CLSCTX_INPROC_SERVER = 0x1;
-        public const int CLSCTX_INPROC_HANDLER = 0x2;
-        public const int CLSCTX_LOCAL_SERVER = 0x4;
-        public const int CLSCTX_INPROC_SERVER16 = 0x8;
-        public const int CLSCTX_REMOTE_SERVER = 0x10;
-        public const int CLSCTX_INPROC_HANDLER16 = 0x20;
-        public const int CLSCTX_RESERVED1 = 0x40;
-        public const int CLSCTX_RESERVED2 = 0x80;
-        public const int CLSCTX_RESERVED3 = 0x100;
-        public const int CLSCTX_RESERVED4 = 0x200;
-        public const int CLSCTX_NO_CODE_DOWNLOAD = 0x400;
-        public const int CLSCTX_RESERVED5 = 0x800;
-        public const int CLSCTX_NO_CUSTOM_MARSHAL = 0x1000;
-        public const int CLSCTX_ENABLE_CODE_DOWNLOAD = 0x2000;
-        public const int CLSCTX_NO_FAILURE_LOG = 0x4000;
-        public const int CLSCTX_DISABLE_AAA = 0x8000;
-        public const int CLSCTX_ENABLE_AAA = 0x10000;
-        public const int CLSCTX_FROM_DEFAULT_CONTEXT = 0x20000;
-        public const int CLSCTX_ACTIVATE_X86_SERVER = 0x40000;
-        public const int CLSCTX_ACTIVATE_64_BIT_SERVER = 0x80000;
-        public const int CLSCTX_ENABLE_CLOAKING = 0x100000;
-        public const int CLSCTX_APPCONTAINER = 0x400000;
-        public const int CLSCTX_ACTIVATE_AAA_AS_IU = 0x800000;
-        public const int CLSCTX_RESERVED6 = 0x1000000;
-        public const int CLSCTX_ACTIVATE_ARM32_SERVER = 0x2000000;
-        public const uint CLSCTX_PS_DLL = 0x80000000;
-        public const int CLSCTX_ALL = CLSCTX_INPROC_SERVER | CLSCTX_INPROC_HANDLER | CLSCTX_LOCAL_SERVER | CLSCTX_REMOTE_SERVER;
-    }
-
     // AUDCLNT_SHAREMODE
     private enum AUDCLNT_SHAREMODE
     {

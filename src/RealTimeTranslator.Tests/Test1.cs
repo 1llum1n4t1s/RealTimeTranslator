@@ -385,7 +385,7 @@ public sealed class ProcessLoopbackCaptureTests
 
         // Note: Process Loopback API は Build 20348+ で利用可能
         // ただし、環境によって利用できない可能性がある
-        Assert.IsGreaterThanOrEqualTo(buildNumber, 19041, "System should be Windows 10 or later");
+        Assert.IsGreaterThanOrEqualTo(19041, buildNumber, "System should be Windows 10 or later");
     }
 
     [TestMethod]

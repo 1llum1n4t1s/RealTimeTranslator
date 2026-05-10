@@ -4,12 +4,14 @@
         xmlns:converters="using:RealTimeTranslator.UI.Converters"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
-        mc:Ignorable="d" d:DesignWidth="700" d:DesignHeight="500"
+        mc:Ignorable="d" d:DesignWidth="750" d:DesignHeight="550"
         x:Class="RealTimeTranslator.UI.Views.MainWindow"
         x:DataType="vm:MainViewModel"
         Title="リアルタイム字幕翻訳"
-        Width="700" Height="500"
-        MinWidth="600" MinHeight="400"
+        Width="750" Height="550"
+        MinWidth="650" MinHeight="450"
+        CanResize="False"
+        Background="{DynamicResource Brush.Window}"
         WindowStartupLocation="CenterScreen">
 
     <Window.Resources>
@@ -20,93 +22,242 @@
         <vm:MainViewModel/>
     </Design.DataContext>
 
-    <Grid>
+    <Grid Margin="16">
+        <!-- Loading Overlay -->
         <Grid IsVisible="{Binding IsLoading}"
-              ZIndex="100"
-              HorizontalAlignment="Stretch"
-              VerticalAlignment="Stretch"
-              Background="#1E1E1E">
+              ZIndex="100">
             <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" Width="400">
                 <ProgressBar Height="6" Margin="0,0,0,20" IsIndeterminate="True"/>
                 <TextBlock Text="{Binding LoadingMessage}" FontSize="16"
                            HorizontalAlignment="Center"/>
                 <TextBlock Text="しばらくお待ちください..." FontSize="12"
-                           HorizontalAlignment="Center" Margin="0,10,0,0"/>
+                           HorizontalAlignment="Center" Margin="0,10,0,0"
+                           Foreground="{DynamicResource Brush.FG2}"/>
                 <StackPanel Margin="0,20,0,0" IsVisible="{Binding IsDownloading}">
                     <TextBlock Text="{Binding DownloadStatus}" FontSize="12"
-                               TextAlignment="Center" TextWrapping="Wrap" Margin="0,0,0,8"/>
-                    <TextBlock Text="{Binding DownloadReason}" FontSize="11"
                                TextAlignment="Center" TextWrapping="Wrap" Margin="0,0,0,8"/>
                     <ProgressBar Height="6" Value="{Binding DownloadProgress}"
                                  Minimum="0" Maximum="100"/>
                 </StackPanel>
             </StackPanel>
         </Grid>
-        <Grid IsVisible="{Binding IsLoading, Converter={StaticResource InverseBoolConverter}}"
-              Margin="20"
-              ZIndex="0">
-            <Grid.RowDefinitions>
-                <RowDefinition Height="Auto"/>
-                <RowDefinition Height="Auto"/>
-                <RowDefinition Height="*"/>
-                <RowDefinition Height="Auto"/>
-            </Grid.RowDefinitions>
 
-            <StackPanel Grid.Row="0" Margin="0,0,0,20">
-                <TextBlock Text="リアルタイム字幕翻訳" FontSize="24" FontWeight="Bold"/>
-                <TextBlock Text="ゲームや動画の音声をリアルタイムで日本語字幕に変換します"
-                           Opacity="0.7" Margin="0,5,0,0"/>
-            </StackPanel>
+        <!-- Main Content with Sidebar Tabs -->
+        <TabControl Classes="sidebar"
+                    IsVisible="{Binding IsLoading, Converter={StaticResource InverseBoolConverter}}">
 
-            <Border Grid.Row="1" BorderBrush="{DynamicResource ThemeBorderMidBrush}" BorderThickness="1"
-                    CornerRadius="4" Padding="10">
-                <Border.Child>
-                    <StackPanel>
-                        <TextBlock Text="対象アプリケーション" FontWeight="SemiBold" Margin="0,0,0,8"/>
-                        <Grid ColumnDefinitions="*,Auto">
-                            <ComboBox Grid.Column="0" ItemsSource="{Binding Processes}"
-                                      SelectedItem="{Binding SelectedProcess}"
-                                      PlaceholderText="プロセスを選択">
+            <!-- ═══ Tab 1: メイン ═══ -->
+            <TabItem Header="メイン">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="0,0,0,16">
+
+                        <!-- Header -->
+                        <StackPanel Margin="0,0,0,16">
+                            <TextBlock Text="リアルタイム字幕翻訳" FontSize="20" FontWeight="Bold"/>
+                            <TextBlock Text="ゲームや動画の音声をリアルタイムで翻訳字幕に変換します"
+                                       FontSize="12" Foreground="{DynamicResource Brush.FG2}" Margin="0,4,0,0"/>
+                        </StackPanel>
+
+                        <!-- Process Selection -->
+                        <HeaderedContentControl Header="対象アプリケーション">
+                            <Grid ColumnDefinitions="*,Auto">
+                                <ComboBox Grid.Column="0" ItemsSource="{Binding Processes}"
+                                          SelectedItem="{Binding SelectedProcess}"
+                                          PlaceholderText="プロセスを選択"
+                                          HorizontalAlignment="Stretch">
+                                    <ComboBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <TextBlock Text="{Binding DisplayName}"/>
+                                        </DataTemplate>
+                                    </ComboBox.ItemTemplate>
+                                </ComboBox>
+                                <Button Grid.Column="1" Content="更新"
+                                        Command="{Binding RefreshProcessesCommand}"
+                                        Margin="8,0,0,0"/>
+                            </Grid>
+                        </HeaderedContentControl>
+
+                        <!-- Status -->
+                        <HeaderedContentControl Header="ステータス">
+                            <StackPanel>
+                                <StackPanel Orientation="Horizontal">
+                                    <Ellipse Width="10" Height="10" Fill="{Binding StatusColor}" Margin="0,0,8,0"
+                                             VerticalAlignment="Center"/>
+                                    <TextBlock Text="{Binding StatusText}" FontSize="14" VerticalAlignment="Center"/>
+                                </StackPanel>
+                                <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                                    <TextBlock Text="処理遅延: " FontSize="12"
+                                               Foreground="{DynamicResource Brush.FG2}"/>
+                                    <TextBlock Text="{Binding ProcessingLatency, StringFormat=\{0:F0\}ms}"
+                                               FontSize="12"/>
+                                    <TextBlock Text="  |  翻訳遅延: " Margin="16,0,0,0" FontSize="12"
+                                               Foreground="{DynamicResource Brush.FG2}"/>
+                                    <TextBlock Text="{Binding TranslationLatency, StringFormat=\{0:F0\}ms}"
+                                               FontSize="12"/>
+                                </StackPanel>
+                            </StackPanel>
+                        </HeaderedContentControl>
+
+                        <!-- Control Buttons -->
+                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,4,0,0">
+                            <Button Content="開始" Command="{Binding StartCommand}"
+                                    IsEnabled="{Binding CanStart}" Width="140"/>
+                            <Button Content="停止" Command="{Binding StopCommand}"
+                                    IsEnabled="{Binding IsRunning}" Width="140" Margin="8,0,0,0"/>
+                        </StackPanel>
+
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- ═══ Tab 2: API設定 ═══ -->
+            <TabItem Header="API設定" x:DataType="vm:MainViewModel">
+                <ScrollViewer VerticalScrollBarVisibility="Auto"
+                              DataContext="{Binding SettingsVM}">
+                    <StackPanel Margin="0,0,0,16" x:DataType="vm:SettingsViewModel">
+
+                        <TextBlock Text="OpenAI API設定" FontSize="20" FontWeight="Bold" Margin="0,0,0,16"/>
+
+                        <!-- API Key -->
+                        <HeaderedContentControl Header="APIキー">
+                            <StackPanel>
+                                <TextBox Text="{Binding ApiKey, Mode=TwoWay}"
+                                         PasswordChar="*"
+                                         PlaceholderText="sk-..."
+                                         Margin="0,0,0,10"/>
+                                <Button Content="接続テスト"
+                                        Command="{Binding TestApiConnectionCommand}"
+                                        IsEnabled="{Binding IsTestingApi, Converter={StaticResource InverseBoolConverter}}"
+                                        Margin="0,0,0,8"/>
+                                <TextBox Text="{Binding ApiTestResult, Mode=OneWay}"
+                                         IsReadOnly="True"
+                                         TextWrapping="Wrap"
+                                         BorderThickness="0"
+                                         Background="Transparent"
+                                         FontSize="13"
+                                         IsVisible="{Binding ApiTestResult, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"/>
+                            </StackPanel>
+                        </HeaderedContentControl>
+
+                        <!-- Output Language -->
+                        <HeaderedContentControl Header="出力言語（翻訳先）">
+                            <ComboBox ItemsSource="{Binding OutputLanguageOptions}"
+                                      SelectedItem="{Binding SelectedOutputLanguage, Mode=TwoWay}"
+                                      HorizontalAlignment="Stretch">
                                 <ComboBox.ItemTemplate>
-                                    <DataTemplate>
+                                    <DataTemplate x:DataType="vm:OutputLanguageOption">
                                         <TextBlock Text="{Binding DisplayName}"/>
                                     </DataTemplate>
                                 </ComboBox.ItemTemplate>
                             </ComboBox>
-                            <Button Grid.Column="1" Content="更新" Command="{Binding RefreshProcessesCommand}"
-                                    Margin="5,0,0,0"/>
-                        </Grid>
-                    </StackPanel>
-                </Border.Child>
-            </Border>
+                        </HeaderedContentControl>
 
-            <Border Grid.Row="2" BorderBrush="{DynamicResource ThemeBorderMidBrush}" BorderThickness="1"
-                    CornerRadius="4" Padding="10" Margin="0,10,0,0">
-                <Border.Child>
-                    <StackPanel>
-                        <TextBlock Text="ステータス" FontWeight="SemiBold" Margin="0,0,0,8"/>
-                        <StackPanel Orientation="Horizontal">
-                            <Ellipse Width="12" Height="12" Fill="{Binding StatusColor}" Margin="0,0,10,0"/>
-                            <TextBlock Text="{Binding StatusText}" FontSize="14"/>
-                        </StackPanel>
-                        <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
-                            <TextBlock Text="処理遅延: "/>
-                            <TextBlock Text="{Binding ProcessingLatency, StringFormat=\{0:F0\}ms}"/>
-                            <TextBlock Text="  |  翻訳遅延: " Margin="20,0,0,0"/>
-                            <TextBlock Text="{Binding TranslationLatency, StringFormat=\{0:F0\}ms}"/>
-                        </StackPanel>
                     </StackPanel>
-                </Border.Child>
-            </Border>
+                </ScrollViewer>
+            </TabItem>
 
-            <StackPanel Grid.Row="3" Orientation="Horizontal"
-                        HorizontalAlignment="Center" Margin="0,15,0,0">
-                <Button Content="開始" Command="{Binding StartCommand}"
-                        IsEnabled="{Binding CanStart}" Width="120" Margin="0,0,5,0"/>
-                <Button Content="停止" Command="{Binding StopCommand}"
-                        IsEnabled="{Binding IsRunning}" Width="120" Margin="0,0,5,0"/>
-                <Button Content="設定" Command="{Binding OpenSettingsCommand}" Width="120"/>
-            </StackPanel>
-        </Grid>
+            <!-- ═══ Tab 3: 表示設定 ═══ -->
+            <TabItem Header="表示設定" x:DataType="vm:MainViewModel">
+                <ScrollViewer VerticalScrollBarVisibility="Auto"
+                              DataContext="{Binding SettingsVM}">
+                    <StackPanel Margin="0,0,0,16" x:DataType="vm:SettingsViewModel">
+
+                        <TextBlock Text="オーバーレイ表示設定" FontSize="20" FontWeight="Bold" Margin="0,0,0,16"/>
+
+                        <!-- Font -->
+                        <HeaderedContentControl Header="フォント">
+                            <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto">
+                                <ComboBox Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="2"
+                                          ItemsSource="{Binding FontFamilies}"
+                                          SelectedItem="{Binding SelectedFontFamily, Mode=TwoWay}"
+                                          HorizontalAlignment="Stretch"
+                                          Margin="0,0,0,8"/>
+                                <TextBlock Grid.Row="1" Grid.Column="0" Text="サイズ"
+                                           VerticalAlignment="Center" Margin="0,0,8,0"
+                                           Foreground="{DynamicResource Brush.FG2}" FontSize="13"/>
+                                <ComboBox Grid.Row="1" Grid.Column="1"
+                                          ItemsSource="{Binding FontSizes}"
+                                          SelectedItem="{Binding SelectedFontSize, Mode=TwoWay}"
+                                          Width="100">
+                                    <ComboBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <TextBlock Text="{Binding StringFormat=\{0\}px}"/>
+                                        </DataTemplate>
+                                    </ComboBox.ItemTemplate>
+                                </ComboBox>
+                            </Grid>
+                        </HeaderedContentControl>
+
+                        <!-- Colors -->
+                        <HeaderedContentControl Header="字幕カラー">
+                            <Grid ColumnDefinitions="100,*" RowDefinitions="Auto,Auto,Auto">
+                                <TextBlock Grid.Row="0" Grid.Column="0" Text="仮字幕色"
+                                           VerticalAlignment="Center"
+                                           Foreground="{DynamicResource Brush.FG2}" FontSize="13"/>
+                                <ComboBox Grid.Row="0" Grid.Column="1"
+                                          ItemsSource="{Binding TextColorOptions}"
+                                          SelectedItem="{Binding SelectedPartialTextColorOption, Mode=TwoWay}"
+                                          HorizontalAlignment="Stretch" Margin="0,0,0,6">
+                                    <ComboBox.ItemTemplate>
+                                        <DataTemplate x:DataType="vm:ColorOption">
+                                            <TextBlock Text="{Binding Name}"/>
+                                        </DataTemplate>
+                                    </ComboBox.ItemTemplate>
+                                </ComboBox>
+
+                                <TextBlock Grid.Row="1" Grid.Column="0" Text="確定字幕色"
+                                           VerticalAlignment="Center"
+                                           Foreground="{DynamicResource Brush.FG2}" FontSize="13"/>
+                                <ComboBox Grid.Row="1" Grid.Column="1"
+                                          ItemsSource="{Binding TextColorOptions}"
+                                          SelectedItem="{Binding SelectedFinalTextColorOption, Mode=TwoWay}"
+                                          HorizontalAlignment="Stretch" Margin="0,6,0,6">
+                                    <ComboBox.ItemTemplate>
+                                        <DataTemplate x:DataType="vm:ColorOption">
+                                            <TextBlock Text="{Binding Name}"/>
+                                        </DataTemplate>
+                                    </ComboBox.ItemTemplate>
+                                </ComboBox>
+
+                                <TextBlock Grid.Row="2" Grid.Column="0" Text="背景色"
+                                           VerticalAlignment="Center"
+                                           Foreground="{DynamicResource Brush.FG2}" FontSize="13"/>
+                                <ComboBox Grid.Row="2" Grid.Column="1"
+                                          ItemsSource="{Binding BackgroundColorOptions}"
+                                          SelectedItem="{Binding SelectedBackgroundColorOption, Mode=TwoWay}"
+                                          HorizontalAlignment="Stretch" Margin="0,6,0,0">
+                                    <ComboBox.ItemTemplate>
+                                        <DataTemplate x:DataType="vm:ColorOption">
+                                            <TextBlock Text="{Binding Name}"/>
+                                        </DataTemplate>
+                                    </ComboBox.ItemTemplate>
+                                </ComboBox>
+                            </Grid>
+                        </HeaderedContentControl>
+
+                        <!-- Max Lines -->
+                        <HeaderedContentControl Header="表示">
+                            <Grid ColumnDefinitions="100,*">
+                                <TextBlock Grid.Column="0" Text="最大行数"
+                                           VerticalAlignment="Center"
+                                           Foreground="{DynamicResource Brush.FG2}" FontSize="13"/>
+                                <ComboBox Grid.Column="1"
+                                          ItemsSource="{Binding MaxLinesList}"
+                                          SelectedItem="{Binding SelectedMaxLines, Mode=TwoWay}"
+                                          Width="100">
+                                    <ComboBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <TextBlock Text="{Binding}"/>
+                                        </DataTemplate>
+                                    </ComboBox.ItemTemplate>
+                                </ComboBox>
+                            </Grid>
+                        </HeaderedContentControl>
+
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+        </TabControl>
     </Grid>
 </Window>

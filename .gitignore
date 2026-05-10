@@ -24,6 +24,10 @@ models/
 # Logs
 logs/
 
+# User settings (API key を含むため)
+**/settings.json
+!**/settings.template.json
+
 # Temporary files
 *.tmp
 build_output.txt

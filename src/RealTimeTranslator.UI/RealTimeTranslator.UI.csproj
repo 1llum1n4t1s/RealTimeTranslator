@@ -3,7 +3,6 @@
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <AvaloniaUseCompiledBindingsByDefault>false</AvaloniaUseCompiledBindingsByDefault>
-    <LLamaSharpCpuVariant Condition="'$(LLamaSharpCpuVariant)' == ''">avx2</LLamaSharpCpuVariant>
     <ErrorOnDuplicatePublishOutputFiles>false</ErrorOnDuplicatePublishOutputFiles>
     <ApplicationIcon>..\..\icon\app.ico</ApplicationIcon>
     <InvariantGlobalization>false</InvariantGlobalization>
@@ -11,44 +10,40 @@
 
   <ItemGroup>
     <ProjectReference Include="..\RealTimeTranslator.Core\RealTimeTranslator.Core.csproj" />
-    <ProjectReference Include="..\RealTimeTranslator.Translation\RealTimeTranslator.Translation.csproj" />
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Avalonia" Version="11.3.11" />
-    <PackageReference Include="Avalonia.Desktop" Version="11.3.11" />
-    <PackageReference Include="Avalonia.Themes.Fluent" Version="11.3.11" />
-    <PackageReference Include="Avalonia.Fonts.Inter" Version="11.3.11" />
-    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.0" />
-    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.2" />
-    <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="10.0.2" />
-    <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="10.0.2" />
-    <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.2" />
-    <PackageReference Include="Semi.Avalonia" Version="11.3.7.2" />
+    <PackageReference Include="Avalonia" Version="12.0.2" />
+    <PackageReference Include="Avalonia.Desktop" Version="12.0.2" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="12.0.2" />
+    <PackageReference Include="Avalonia.Fonts.Inter" Version="12.0.2" />
+    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.7" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="10.0.7" />
+    <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="10.0.7" />
+    <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.7" />
     <PackageReference Include="Velopack" Version="0.0.1298" />
-    <PackageReference Include="Whisper.net.Runtime" Version="1.9.0" />
   </ItemGroup>
 
   <ItemGroup>
-    <None Update="settings.json">
+    <None Update="settings.default.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
     </None>
   </ItemGroup>
 
-  <Target Name="FilterLLamaSharpCpuNativeVariants" AfterTargets="ResolveFilesToPublish">
-    <PropertyGroup>
-      <_LLamaSharpCpuVariant Condition="'$(LLamaSharpCpuVariant)' != ''">$(LLamaSharpCpuVariant)</_LLamaSharpCpuVariant>
-      <_LLamaSharpCpuVariant Condition="'$(_LLamaSharpCpuVariant)' == ''">avx2</_LLamaSharpCpuVariant>
-    </PropertyGroup>
-    <ItemGroup>
-      <ResolvedFileToPublish Remove="@(ResolvedFileToPublish)" Condition="'%(ResolvedFileToPublish.OriginalItemSpec)' != ''&#xD;&#xA;                               and $([System.String]::Copy('%(ResolvedFileToPublish.OriginalItemSpec)').ToLower().Contains('llamasharp.backend.cpu'))&#xD;&#xA;                               and ($([System.String]::Copy('%(ResolvedFileToPublish.OriginalItemSpec)').Contains('runtimes\win-x64\native\')) or $([System.String]::Copy('%(ResolvedFileToPublish.OriginalItemSpec)').Contains('runtimes/win-x64/native/')))&#xD;&#xA;                               and !($([System.String]::Copy('%(ResolvedFileToPublish.OriginalItemSpec)').Contains('runtimes\win-x64\native\$(_LLamaSharpCpuVariant)\')) or $([System.String]::Copy('%(ResolvedFileToPublish.OriginalItemSpec)').Contains('runtimes/win-x64/native/$(_LLamaSharpCpuVariant)/')))" />
-    </ItemGroup>
+  <!-- Build 時: 出力先に settings.json が無ければ settings.default.json をコピーして初期化する -->
+  <Target Name="CopyDefaultSettingsAfterBuild" AfterTargets="Build">
+    <Copy SourceFiles="$(OutputPath)settings.default.json"
+          DestinationFiles="$(OutputPath)settings.json"
+          Condition="Exists('$(OutputPath)settings.default.json') and !Exists('$(OutputPath)settings.json')" />
   </Target>
 
-  <Target Name="RemoveNonWindowsRuntimes" AfterTargets="ResolveFilesToPublish">
-    <ItemGroup>
-      <ResolvedFileToPublish Remove="@(ResolvedFileToPublish)" Condition="'%(ResolvedFileToPublish.OriginalItemSpec)' != ''&#xD;&#xA;                               and ($([System.String]::Copy('%(ResolvedFileToPublish.OriginalItemSpec)').Contains('runtimes\linux')) or&#xD;&#xA;                                    $([System.String]::Copy('%(ResolvedFileToPublish.OriginalItemSpec)').Contains('runtimes/linux')) or&#xD;&#xA;                                    $([System.String]::Copy('%(ResolvedFileToPublish.OriginalItemSpec)').Contains('runtimes\osx')) or&#xD;&#xA;                                    $([System.String]::Copy('%(ResolvedFileToPublish.OriginalItemSpec)').Contains('runtimes/osx')) or&#xD;&#xA;                                    $([System.String]::Copy('%(ResolvedFileToPublish.OriginalItemSpec)').Contains('runtimes\android')) or&#xD;&#xA;                                    $([System.String]::Copy('%(ResolvedFileToPublish.OriginalItemSpec)').Contains('runtimes/android')) or&#xD;&#xA;                                    $([System.String]::Copy('%(ResolvedFileToPublish.OriginalItemSpec)').Contains('runtimes\ios')) or&#xD;&#xA;                                    $([System.String]::Copy('%(ResolvedFileToPublish.OriginalItemSpec)').Contains('runtimes/ios')))" />
-    </ItemGroup>
+  <!-- Publish 時: 配布先にも同様に settings.json を生成する（Velopack 配布版で初期設定が無い問題を防ぐ） -->
+  <Target Name="CopyDefaultSettingsAfterPublish" AfterTargets="Publish">
+    <Copy SourceFiles="$(PublishDir)settings.default.json"
+          DestinationFiles="$(PublishDir)settings.json"
+          Condition="Exists('$(PublishDir)settings.default.json') and !Exists('$(PublishDir)settings.json')" />
   </Target>
 
 </Project>

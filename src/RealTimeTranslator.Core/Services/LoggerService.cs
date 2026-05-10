@@ -2,9 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using NLog;
-using NLog.Config;
-using NLog.Targets;
+using SuperLightLogger;
 
 namespace RealTimeTranslator.Core.Services;
 
@@ -48,15 +46,18 @@ public sealed class LoggerConfig
 }
 
 /// <summary>
-/// NLogを使用したログ出力クラス。ファイル・コンソール・UIコールバックを統一して利用する。
+/// SuperLightLoggerを使用したログ出力クラス。ファイル・コンソール・UIコールバックを統一して利用する。
 /// </summary>
 public static class LoggerService
 {
-    /// <summary>NLogロガーインスタンス</summary>
-    private static NLog.Logger? _logger;
+    /// <summary>ロガーインスタンス</summary>
+    private static ILog? _logger;
 
-    /// <summary>初期化済みフラグ</summary>
-    private static bool _isConfigured;
+    /// <summary>初期化済みフラグ（スレッドセーフ: 0=未, 1=済）</summary>
+    private static int _isConfigured;
+
+    /// <summary>初期化中ガード（再入防止: 0=未, 1=実行中）</summary>
+    private static int _initializing;
 
     /// <summary>アプリケーション名</summary>
     private static string _appName = "RealTimeTranslator";
@@ -69,9 +70,6 @@ public static class LoggerService
 
     /// <summary>UIログ出力のコールバック</summary>
     private static Action<string>? _uiLogCallback;
-
-    /// <summary>UIログターゲットが追加済みかどうか</summary>
-    private static bool _uiTargetAdded;
 
     /// <summary>
     /// 最小ログレベル（これ以上のレベルのログのみ出力）
@@ -89,58 +87,62 @@ public static class LoggerService
     /// <param name="config">ログ設定（nullの場合はデフォルト設定を使用）</param>
     public static void Initialize(LoggerConfig? config = null)
     {
-        if (_isConfigured) return;
+        if (Volatile.Read(ref _isConfigured) != 0) return;
+        if (Interlocked.CompareExchange(ref _initializing, 1, 0) != 0) return;
 
-        var effectiveConfig = config ?? new LoggerConfig
+        try
         {
-            LogDirectory = AppDomain.CurrentDomain.BaseDirectory,
-            FilePrefix = "RealTimeTranslator"
-        };
+            var effectiveConfig = config ?? new LoggerConfig
+            {
+                LogDirectory = AppDomain.CurrentDomain.BaseDirectory,
+                FilePrefix = "RealTimeTranslator"
+            };
 
-        _appName = effectiveConfig.FilePrefix;
-        _logDirectory = effectiveConfig.LogDirectory;
-        _filePrefix = effectiveConfig.FilePrefix;
+            _appName = effectiveConfig.FilePrefix;
+            _logDirectory = effectiveConfig.LogDirectory;
+            _filePrefix = effectiveConfig.FilePrefix;
 
-        if (!Directory.Exists(effectiveConfig.LogDirectory))
-        {
-            Directory.CreateDirectory(effectiveConfig.LogDirectory);
+            if (!Directory.Exists(effectiveConfig.LogDirectory))
+            {
+                Directory.CreateDirectory(effectiveConfig.LogDirectory);
+            }
+
+            var minLevel =
+#if DEBUG
+                "Debug";
+#else
+                "Information";
+#endif
+
+            LogManager.Configure(builder =>
+            {
+                builder.SetMinimumLevel(minLevel);
+                builder.AddSuperLightFile(opt =>
+                {
+                    opt.FileName = Path.Combine(effectiveConfig.LogDirectory, $"{effectiveConfig.FilePrefix}_${{shortdate}}.log");
+                    opt.Layout = "${longdate} [${level:uppercase=true}] ${message}${onexception:inner=${newline}${exception:format=tostring}}";
+                    opt.ArchiveAboveSize = effectiveConfig.MaxSizeMB * 1024 * 1024;
+                    opt.ArchiveFileName = Path.Combine(effectiveConfig.LogDirectory, $"{effectiveConfig.FilePrefix}_${{shortdate}}_{{#}}.log");
+                    opt.ArchiveNumbering = ArchiveNumbering.Sequence;
+                    opt.MaxArchiveFiles = effectiveConfig.MaxArchiveFiles;
+                    opt.Encoding = System.Text.Encoding.UTF8;
+                    opt.MinLevelName = minLevel;
+                });
+            });
+
+            _logger = LogManager.GetLogger(effectiveConfig.FilePrefix);
+            Volatile.Write(ref _isConfigured, 1);
+
+            Log("Logger initialized with SuperLightLogger (RollingFile)", LogLevel.Debug);
+
+            CleanupStaleFile(Path.Combine(effectiveConfig.LogDirectory, "0"));
+            CleanupOldLogFiles(effectiveConfig.LogDirectory, effectiveConfig.FilePrefix, effectiveConfig.RetentionDays);
         }
-
-        var nlogConfig = new LoggingConfiguration();
-
-        var fileTarget = new FileTarget("file")
+        catch
         {
-            FileName = Path.Combine(effectiveConfig.LogDirectory, $"{effectiveConfig.FilePrefix}_${{date:format=yyyyMMdd}}.log"),
-            ArchiveAboveSize = effectiveConfig.MaxSizeMB * 1024 * 1024,
-            ArchiveFileName = Path.Combine(effectiveConfig.LogDirectory, $"{effectiveConfig.FilePrefix}_${{date:format=yyyyMMdd}}_{{##}}.log"),
-            ArchiveNumbering = ArchiveNumberingMode.Rolling,
-            MaxArchiveFiles = effectiveConfig.MaxArchiveFiles,
-            Layout = "${longdate} [${uppercase:${level}}] ${message}${onexception:inner=${newline}${exception:format=tostring}}",
-            Encoding = System.Text.Encoding.UTF8
-        };
-
-        var consoleTarget = new ConsoleTarget("console")
-        {
-            Layout = "${longdate} [${uppercase:${level}}] ${message}${onexception:inner=${newline}${exception:format=tostring}}"
-        };
-
-        nlogConfig.AddTarget(fileTarget);
-        nlogConfig.AddTarget(consoleTarget);
-
-        nlogConfig.AddRule(NLog.LogLevel.Trace, NLog.LogLevel.Fatal, fileTarget);
-        nlogConfig.AddRule(NLog.LogLevel.Trace, NLog.LogLevel.Fatal, consoleTarget);
-
-        LogManager.Configuration = nlogConfig;
-        _logger = LogManager.GetLogger(effectiveConfig.FilePrefix);
-        _isConfigured = true;
-
-        Log("Logger initialized with NLog (RollingFile)", LogLevel.Debug);
-
-        // 過去のバグで作成された不要な "0" ファイルを削除
-        CleanupStaleFile(Path.Combine(effectiveConfig.LogDirectory, "0"));
-
-        // 保持期間を超えた古いログファイルを削除
-        CleanupOldLogFiles(effectiveConfig.LogDirectory, effectiveConfig.FilePrefix, effectiveConfig.RetentionDays);
+            Interlocked.Exchange(ref _initializing, 0);
+            throw;
+        }
     }
 
     /// <summary>
@@ -152,28 +154,7 @@ public static class LoggerService
         _uiLogCallback = callback;
 
         // 初期化がまだの場合は先に初期化
-        if (!_isConfigured) Initialize();
-        if (_uiTargetAdded) return;
-
-        try
-        {
-            var nlogConfig = LogManager.Configuration;
-            if (nlogConfig == null) return;
-
-            var uiTarget = new UILogTarget(() => _uiLogCallback)
-            {
-                Layout = "${message}"
-            };
-
-            nlogConfig.AddTarget("ui", uiTarget);
-            nlogConfig.AddRule(NLog.LogLevel.Trace, NLog.LogLevel.Fatal, uiTarget);
-            LogManager.ReconfigExistingLoggers();
-            _uiTargetAdded = true;
-        }
-        catch (Exception ex)
-        {
-            System.Diagnostics.Debug.WriteLine($"UILogTarget add error: {ex.Message}");
-        }
+        if (Volatile.Read(ref _isConfigured) == 0) Initialize();
     }
 
     /// <summary>
@@ -182,7 +163,8 @@ public static class LoggerService
     public static void Shutdown()
     {
         LogManager.Shutdown();
-        _isConfigured = false;
+        Interlocked.Exchange(ref _isConfigured, 0);
+        Interlocked.Exchange(ref _initializing, 0);
     }
 
     /// <summary>
@@ -258,8 +240,28 @@ public static class LoggerService
         if (level < MinLogLevel)
             return;
 
-        if (!_isConfigured) Initialize();
-        _logger?.Log(ToNLogLevel(level), message);
+        if (Volatile.Read(ref _isConfigured) == 0) Initialize();
+
+        switch (level)
+        {
+            case LogLevel.Debug:
+                _logger?.Debug(message);
+                break;
+            case LogLevel.Info:
+                _logger?.Info(message);
+                break;
+            case LogLevel.Warning:
+                _logger?.Warn(message);
+                break;
+            case LogLevel.Error:
+                _logger?.Error(message);
+                break;
+            default:
+                _logger?.Info(message);
+                break;
+        }
+
+        NotifyUI(message, level);
     }
 
     /// <summary>
@@ -272,11 +274,10 @@ public static class LoggerService
         if (messages == null || messages.Length == 0) return;
         if (level < MinLogLevel) return;
 
-        if (!_isConfigured) Initialize();
-        var nlogLevel = ToNLogLevel(level);
+        if (Volatile.Read(ref _isConfigured) == 0) Initialize();
         foreach (var message in messages)
         {
-            _logger?.Log(nlogLevel, message);
+            Log(message, level);
         }
     }
 
@@ -287,8 +288,9 @@ public static class LoggerService
     /// <param name="exception">例外オブジェクト</param>
     public static void LogException(string message, Exception exception)
     {
-        if (!_isConfigured) Initialize();
-        _logger?.Error(exception, message);
+        if (Volatile.Read(ref _isConfigured) == 0) Initialize();
+        _logger?.Error(message, exception);
+        NotifyUI(message, LogLevel.Error);
     }
 
     /// <summary>
@@ -373,56 +375,29 @@ public static class LoggerService
     }
 
     /// <summary>
-    /// 独自LogLevelをNLogのLogLevelに変換
+    /// UIコールバックにログメッセージを通知する
     /// </summary>
-    /// <param name="level">独自LogLevel</param>
-    /// <returns>NLogのLogLevel</returns>
-    private static NLog.LogLevel ToNLogLevel(LogLevel level) => level switch
+    private static void NotifyUI(string message, LogLevel level)
     {
-        LogLevel.Debug => NLog.LogLevel.Debug,
-        LogLevel.Info => NLog.LogLevel.Info,
-        LogLevel.Warning => NLog.LogLevel.Warn,
-        LogLevel.Error => NLog.LogLevel.Error,
-        _ => NLog.LogLevel.Info
-    };
+        var cb = _uiLogCallback;
+        if (cb == null) return;
 
-    /// <summary>
-    /// UIにログを転送するためのNLogカスタムTarget
-    /// </summary>
-    private sealed class UILogTarget : TargetWithLayout
-    {
-        /// <summary>UIコールバック取得用デリゲート</summary>
-        private readonly Func<Action<string>?> _getCallback;
-
-        /// <summary>
-        /// UILogTargetのコンストラクタ
-        /// </summary>
-        /// <param name="getCallback">UIコールバック取得用デリゲート</param>
-        public UILogTarget(Func<Action<string>?> getCallback)
+        var levelStr = level switch
         {
-            _getCallback = getCallback;
-            Name = "UILog";
+            LogLevel.Debug => "DEBUG",
+            LogLevel.Info => "INFO",
+            LogLevel.Warning => "WARN",
+            LogLevel.Error => "ERROR",
+            _ => "INFO"
+        };
+
+        try
+        {
+            cb($"[{levelStr}] {message}".TrimEnd());
         }
-
-        /// <summary>
-        /// ログイベントをUIコールバックに転送する
-        /// </summary>
-        /// <param name="logEvent">NLogのログイベント情報</param>
-        protected override void Write(LogEventInfo logEvent)
+        catch
         {
-            var cb = _getCallback();
-            if (cb == null) return;
-
-            var msg = Layout.Render(logEvent);
-            var level = logEvent.Level.Name.ToUpperInvariant();
-            try
-            {
-                cb($"[{level}] {msg}".TrimEnd());
-            }
-            catch
-            {
-                // UIコールバック内の例外は無視
-            }
+            // UIコールバック内の例外は無視
         }
     }
 }

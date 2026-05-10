@@ -77,10 +77,6 @@ public class AudioCaptureService : IAudioCaptureService
         lock (_bufferLock)
         {
             _settings.SampleRate = settings.SampleRate;
-            _settings.VADSensitivity = settings.VADSensitivity;
-            _settings.MinSpeechDuration = settings.MinSpeechDuration;
-            _settings.MaxSpeechDuration = settings.MaxSpeechDuration;
-            _settings.SilenceThreshold = settings.SilenceThreshold;
 
             _targetFormat = WaveFormat.CreateIeeeFloatWaveFormat(_settings.SampleRate, MonoChannelCount);
             _audioBuffer.Clear();
@@ -540,30 +536,4 @@ public class AudioCaptureService : IAudioCaptureService
         StopCapture();
     }
 
-    /// <summary>
-    /// float[] を ISampleProvider として読み出すためのラッパー（WdlResamplingSampleProvider の入力用）
-    /// </summary>
-    private sealed class BufferSampleProvider : ISampleProvider
-    {
-        private readonly float[] _samples;
-        private int _position;
-
-        public BufferSampleProvider(float[] samples, WaveFormat waveFormat)
-        {
-            _samples = samples;
-            WaveFormat = waveFormat;
-        }
-
-        public WaveFormat WaveFormat { get; }
-
-        public int Read(float[] buffer, int offset, int count)
-        {
-            var toRead = Math.Min(count, _samples.Length - _position);
-            if (toRead <= 0)
-                return 0;
-            Array.Copy(_samples, _position, buffer, offset, toRead);
-            _position += toRead;
-            return toRead;
-        }
-    }
 }

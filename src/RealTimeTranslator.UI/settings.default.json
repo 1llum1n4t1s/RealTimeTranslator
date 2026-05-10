@@ -1,23 +1,4 @@
 {
-  "ASR": {
-    "FastModelPath": "models/ggml-small.bin",
-    "AccurateModelPath": "models/ggml-large-v3.bin",
-    "Language": "en",
-    "UseBeamSearch": true,
-    "BeamSize": 5,
-    "GPU": {
-      "Enabled": true,
-      "DeviceId": 0,
-      "Type": "Auto"
-    }
-  },
-  "Translation": {
-    "ModelPath": "models/translate-en-ja",
-    "SourceLanguage": "en",
-    "TargetLanguage": "ja",
-    "CacheSize": 1000,
-    "ModelType": "Auto"
-  },
   "Overlay": {
     "FontFamily": "Yu Gothic UI",
     "FontSize": 24,
@@ -30,11 +11,15 @@
     "MaxLines": 3
   },
   "AudioCapture": {
-    "SampleRate": 16000,
-    "VADSensitivity": 0.995,
-    "MinSpeechDuration": 0.4,
-    "MaxSpeechDuration": 8.0,
-    "SilenceThreshold": 1.2
+    "SampleRate": 16000
+  },
+  "OpenAIRealtime": {
+    "ApiKey": "",
+    "OutputLanguage": "ja",
+    "Model": "gpt-realtime-translate",
+    "Endpoint": "wss://api.openai.com/v1/realtime/translations",
+    "ReconnectDelayMs": 3000,
+    "MaxReconnectAttempts": 5
   },
   "LastSelectedProcessName": "",
   "Update": {
@@ -47,7 +32,6 @@
       "Name": "サンプルプロファイル",
       "ProcessName": "game",
       "Hotwords": ["Character", "Location"],
-      "ASRCorrectionDictionary": {},
       "PreTranslationDictionary": {},
       "PostTranslationDictionary": {},
       "InitialPrompt": ""
