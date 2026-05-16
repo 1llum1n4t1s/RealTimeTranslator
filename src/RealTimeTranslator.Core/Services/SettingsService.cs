@@ -16,7 +16,7 @@ public interface ISettingsService
 
 /// <summary>
 /// 設定の保存を担当するサービスの実装。
-/// 保存先は %LocalAppData%/RealTimeTranslator/settings.json（Velopack 更新時の消失を防ぐため）。
+/// 保存先は %APPDATA%\Roaming\RealTimeTranslator\settings.json。
 /// </summary>
 public class SettingsService : ISettingsService
 {
@@ -24,11 +24,12 @@ public class SettingsService : ISettingsService
 
     /// <summary>
     /// 設定ファイルを置くディレクトリ。
-    /// 旧来は <c>AppDomain.CurrentDomain.BaseDirectory</c>（exe 隣接）だったが、Velopack のバージョン別
-    /// インストールフォルダ切り替えで設定が失われるため、%LocalAppData%/RealTimeTranslator に移行。
+    /// 旧来は AppDomain.CurrentDomain.BaseDirectory (exe 隣接) で、その後 %LocalAppData%/RealTimeTranslator
+    /// に移行したが、後者は <b>Velopack のインストールルートと衝突</b>するため、Velopack の更新時に
+    /// 設定が消失するケースがあった。Velopack の管理外である Roaming AppData に最終的に移行する。
     /// </summary>
     public static string SettingsDirectory { get; } = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
         "RealTimeTranslator");
 
     /// <summary>
@@ -37,7 +38,15 @@ public class SettingsService : ISettingsService
     public static string SettingsFilePath { get; } = Path.Combine(SettingsDirectory, "settings.json");
 
     /// <summary>
-    /// 起動時に呼ばれ、旧パス（exe 隣接 BaseDirectory / publish dir）から %LocalAppData% に
+    /// 旧 LocalAppData 配下のパス（Velopack インストールルートと衝突するため廃止対象）。
+    /// </summary>
+    private static readonly string LegacyLocalAppDataDirectory = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "RealTimeTranslator");
+    private static readonly string LegacyLocalAppDataSettingsPath = Path.Combine(LegacyLocalAppDataDirectory, "settings.json");
+
+    /// <summary>
+    /// 起動時に呼ばれ、旧パス（exe 隣接 / %LocalAppData% / publish dir）から Roaming AppData に
     /// settings.json をマイグレートする。
     /// 既に新パスにファイルがあれば何もしない。
     /// </summary>
@@ -50,7 +59,15 @@ public class SettingsService : ISettingsService
             if (File.Exists(SettingsFilePath))
                 return;
 
-            // 1) exe 隣接の旧 settings.json（既存ユーザーの設定）を最優先で移行
+            // 1) 旧 %LocalAppData%/RealTimeTranslator/settings.json から移行（v1.0.3〜1.0.6 の保存先）
+            if (File.Exists(LegacyLocalAppDataSettingsPath))
+            {
+                File.Move(LegacyLocalAppDataSettingsPath, SettingsFilePath);
+                LoggerService.LogInfo($"settings.json を {LegacyLocalAppDataSettingsPath} から {SettingsFilePath} に移行しました");
+                return;
+            }
+
+            // 2) exe 隣接の旧 settings.json (v1.0.2 以前) から移行
             var legacyPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "settings.json");
             if (File.Exists(legacyPath))
             {
@@ -59,7 +76,7 @@ public class SettingsService : ISettingsService
                 return;
             }
 
-            // 2) settings.default.json から初期化
+            // 3) settings.default.json から初期化
             var defaultPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "settings.default.json");
             if (File.Exists(defaultPath))
             {

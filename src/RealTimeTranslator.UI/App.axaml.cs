@@ -78,9 +78,10 @@ public partial class App : Application
 
         try
         {
-            // ログ出力先を %LocalAppData%/RealTimeTranslator/logs に明示固定（Velopack 更新時の消失防止）。
+            // ログ出力先は Velopack 管理外の %APPDATA%/Roaming/RealTimeTranslator/logs に固定。
+            // %LocalAppData%/RealTimeTranslator は Velopack のインストールルートと衝突するため使わない。
             var logDirectory = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
                 "RealTimeTranslator",
                 "logs");
             LoggerService.Initialize(new LoggerConfig

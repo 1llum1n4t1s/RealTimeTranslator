@@ -64,11 +64,11 @@ public static class LoggerService
 
     /// <summary>
     /// ログ出力ディレクトリ。
-    /// 実行ファイル隣接（BaseDirectory）は Velopack の `app-x.y.z` 切り替え時に消失するため、
-    /// 既定値を %LocalAppData%/RealTimeTranslator/logs に置く。
+    /// Velopack のインストールルート (%LocalAppData%/RealTimeTranslator) と衝突して
+    /// 更新時に消える可能性があるため、Velopack 管理外の %APPDATA%/Roaming に置く。
     /// </summary>
     private static string _logDirectory = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
         "RealTimeTranslator",
         "logs");
 
