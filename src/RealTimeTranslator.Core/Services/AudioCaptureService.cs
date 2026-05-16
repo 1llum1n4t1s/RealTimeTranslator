@@ -34,6 +34,14 @@ public class AudioCaptureService : IAudioCaptureService
     private bool _isCapturing;
     private bool _isDisposed;
     private int _targetProcessId;
+
+    // ⭐ rere P1 #6 修正: StopCapture と StartCaptureWithRetryAsync の race ガード。
+    // TranslationPipelineService.StopAsync は Task.Run + WaitAsync(3s) で StopCapture を
+    // バックグラウンド実行する設計なので、 3 秒タイムアウト後にユーザーが急いで「再開」を
+    // 押すと、 旧 StopCapture 完了前に新 StartCapture が走り _capture フィールドが race する。
+    // _isStopping フラグで「stop 進行中」を明示し、 新 Start は完了を待つ。
+    private readonly object _stopLock = new();
+    private volatile bool _isStopping;
     private int _dataAvailableCallCount;
     private int _packetCount;
     private const float NonSilentAmplitudeThreshold = 0.001f;
@@ -116,6 +124,18 @@ public class AudioCaptureService : IAudioCaptureService
     {
         if (processId <= 0)
             throw new ArgumentOutOfRangeException(nameof(processId), "プロセスIDは正の値で指定してください。");
+
+        // ⭐ rere P1 #6: 進行中の StopCapture を最大 5 秒待つ (race ガード)。
+        // TranslationPipelineService.StopAsync が 3 秒タイムアウトしてバックグラウンドで継続中の
+        // 場合、 新 Start で _capture フィールドが上書き race するため、 ここで完了を待つ。
+        var stopWaitStopwatch = Stopwatch.StartNew();
+        while (_isStopping && stopWaitStopwatch.ElapsedMilliseconds < 5000)
+        {
+            if (cancellationToken.IsCancellationRequested) return false;
+            await Task.Delay(50, cancellationToken).ConfigureAwait(false);
+        }
+        if (_isStopping)
+            LoggerService.LogWarning($"[キャプチャ] StopCapture が 5 秒を超えても完了せず — race の可能性 (旧 capture が残る可能性)");
 
         if (_capture != null)
             StopCapture();
@@ -307,30 +327,44 @@ public class AudioCaptureService : IAudioCaptureService
     /// </summary>
     public void StopCapture()
     {
-        if (_capture == null)
+        // ⭐ rere P1 #6: _isStopping で race ガード。 同時呼び出しは 1 回だけ実体実行。
+        lock (_stopLock)
         {
+            if (_isStopping) return;
+            _isStopping = true;
+        }
+
+        try
+        {
+            if (_capture == null)
+            {
+                _isCapturing = false;
+                return;
+            }
+
+            if (_capture is WasapiCapture wasapi)
+            {
+                wasapi.CapturePacketReceived -= OnCapturePacketReceived;
+            }
+            _capture.DataAvailable -= OnDataAvailable;
+            _capture.RecordingStopped -= OnRecordingStopped;
+
+            if (_isCapturing)
+            {
+                _capture.StopRecording();
+            }
+
+            if (_capture is IDisposable disposable)
+            {
+                disposable.Dispose();
+            }
+            _capture = null;
             _isCapturing = false;
-            return;
         }
-
-        if (_capture is WasapiCapture wasapi)
+        finally
         {
-            wasapi.CapturePacketReceived -= OnCapturePacketReceived;
+            lock (_stopLock) { _isStopping = false; }
         }
-        _capture.DataAvailable -= OnDataAvailable;
-        _capture.RecordingStopped -= OnRecordingStopped;
-
-        if (_isCapturing)
-        {
-            _capture.StopRecording();
-        }
-
-        if (_capture is IDisposable disposable)
-        {
-            disposable.Dispose();
-        }
-        _capture = null;
-        _isCapturing = false;
     }
 
     private void OnDataAvailable(object? sender, WaveInEventArgs e)

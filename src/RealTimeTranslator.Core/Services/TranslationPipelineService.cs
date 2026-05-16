@@ -48,20 +48,34 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     private long _partialEmitCount;
     private long _completedEmitCount;
 
+    // 直前の ConnectionState を保持。 Reconnecting → Connected 遷移を検出して
+    // 字幕状態 (_lastFinalizedTranscript / _currentSegmentId) をリセットするため (rere P0 #1)。
+    private ConnectionState _lastConnectionState = ConnectionState.Disconnected;
+
+    // D-7 句読点 fallback の閾値: _accumulatedText がこれを超えても句点が来ない場合、
+    // 末尾の読点で強制分割する (永久未確定字幕を防止)。
+    private const int FallbackSplitThreshold = 100;
+    private static readonly char[] FallbackSplitTerminators = ['、', ',', '・'];
+
     public event EventHandler<SubtitleItem>? SubtitleGenerated;
     public event EventHandler<PipelineStatsEventArgs>? StatsUpdated;
     public event EventHandler<Exception>? ErrorOccurred;
 
     private readonly IOptionsMonitor<AppSettings> _settingsMonitor;
+    // rere B1-003: SettingsService.DecryptApiKeyInPlace の static 直叩き (Service Locator) を
+    // ISettingsService 注入経由に置換。 テスト時のモック差し替え可能性が回復。
+    private readonly ISettingsService _settingsService;
 
     public TranslationPipelineService(
         IAudioCaptureService audioCaptureService,
         IRealtimeTranscriber realtimeClient,
-        IOptionsMonitor<AppSettings> settingsMonitor)
+        IOptionsMonitor<AppSettings> settingsMonitor,
+        ISettingsService settingsService)
     {
         _audioCaptureService = audioCaptureService;
         _realtimeClient = realtimeClient;
         _settingsMonitor = settingsMonitor;
+        _settingsService = settingsService;
         _cachedRealtimeSettings = settingsMonitor.CurrentValue.OpenAIRealtime;
         _throttleTimer = new Timer(OnThrottleTimerElapsed, null, Timeout.Infinite, Timeout.Infinite);
 
@@ -71,14 +85,8 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         _realtimeClient.StateChanged += OnConnectionStateChanged;
     }
 
-    public Task ApplySettingsAsync(OpenAIRealtimeSettings settings, CancellationToken cancellationToken = default)
-    {
-        // 現状はキャッシュ更新のみだが、将来的に再接続処理を組み込みやすいよう
-        // インターフェース規約に合わせて Task / CancellationToken を受け取る形にしている。
-        cancellationToken.ThrowIfCancellationRequested();
-        _cachedRealtimeSettings = settings;
-        return Task.CompletedTask;
-    }
+    // rere レビュー P2 B1-007: ApplySettingsAsync は dead code として削除済み
+    // (StartAsync 内で _settingsMonitor.CurrentValue から再取得して即上書きされていた)。
 
     public async Task StartAsync(CancellationToken token)
     {
@@ -90,7 +98,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         // 使っていたが、 UI で言語切替後にすぐ「開始」を押すと古い設定で接続して
         // しまうケースがあった。DPAPI で暗号化されている API キーも復号して使う。
         var freshSettings = _settingsMonitor.CurrentValue.OpenAIRealtime;
-        SettingsService.DecryptApiKeyInPlace(_settingsMonitor.CurrentValue);
+        _settingsService.DecryptApiKey(_settingsMonitor.CurrentValue);
         _cachedRealtimeSettings = freshSettings;
         Logger.Info($"StartAsync: OutputLanguage='{freshSettings.OutputLanguage}' Model='{freshSettings.Model}'");
 
@@ -202,6 +210,15 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
             Logger.Warn("WebSocket 切断中の例外", ex);
         }
 
+        // ⭐ rere P2 F-7: セッション統計を確実にログに残し、 NW 詰まり指標を可視化。
+        // DroppedAudioChunkCount はキャプチャ → API 送信の Channel<byte[]>(200) で
+        // BoundedChannelFullMode.DropOldest によって捨てられた音声チャンク累計。
+        // 「字幕が抜ける」報告時に「ローカル NW 詰まりか OpenAI 側遅延か」を切り分ける。
+        if (_realtimeClient is OpenAIRealtimeClient openAiClient)
+        {
+            Logger.Info($"セッション統計: DroppedAudioChunks={openAiClient.DroppedAudioChunkCount} 完結文emit={Interlocked.Read(ref _completedEmitCount)} partial emit={Interlocked.Read(ref _partialEmitCount)}");
+        }
+
         Logger.Info("翻訳パイプライン停止 完了");
 
         StatsUpdated?.Invoke(this, new PipelineStatsEventArgs
@@ -276,10 +293,8 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
             // ⭐ OpenAI Realtime Translation API は transcript.done を送ってこない
             // ケースがある (2026-05-17 観測: delta のみで会話が進み done が来ない)。
             // done を待つ設計だと SegmentId が永久に固定され「字幕が無限成長する」UX バグ
-            // (v1.0.11 まで継続発生) になるため、 delta 受信時にも _accumulatedText 内の
-            // 句点を検出して完結文ごとに emit + SegmentId 切り替えを行う。
-            // done が来る場合は OnTranscriptCompleted 側で _lastFinalizedTranscript の
-            // startsWith 差分で「既出ぶん」と認識されて二重 emit されない (整合性保持)。
+            // になるため、 delta 受信時にも _accumulatedText 内の句点を検出して
+            // 完結文ごとに emit + SegmentId 切り替えを行う。
             var text = _accumulatedText.ToString();
             int start = 0;
             for (int i = 0; i < text.Length; i++)
@@ -297,19 +312,42 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                 }
             }
 
+            // ⭐ D-7 句読点 fallback: 句点 (SentenceTerminators) が来なくても _accumulatedText が
+            // FallbackSplitThreshold (100文字) を超えた場合、 末尾の読点 (「、」「,」「・」) で
+            // 強制分割する。 永久未確定字幕 (partial 表示が伸び続ける UX バグ) を防止。
+            // すでに完結文を切り出した直後 (completedSentences.Count > 0) は trailing が短いので
+            // fallback 不要。 完結文ゼロかつ trailing が閾値超のケースのみ発動する。
+            if (completedSentences.Count == 0 && (text.Length - start) > FallbackSplitThreshold)
+            {
+                // 末尾から「、」を探す。 見つかった位置までを 1 文として fallback emit。
+                int trailingLength = text.Length - start;
+                for (int i = text.Length - 1; i > start; i--)
+                {
+                    if (Array.IndexOf(FallbackSplitTerminators, text[i]) >= 0)
+                    {
+                        var sentence = text[start..(i + 1)];
+                        if (!string.IsNullOrWhiteSpace(sentence))
+                        {
+                            Logger.Info($"OnTranscriptDelta: 句読点 fallback 分割 (trailing={trailingLength}文字 句点なし) → '{TruncateForLog(sentence)}'");
+                            completedSentences.Add((_currentSegmentId, sentence));
+                            _currentSegmentId = Guid.NewGuid().ToString();
+                            _lastFinalizedTranscript += sentence;
+                            start = i + 1;
+                        }
+                        break;
+                    }
+                }
+            }
+
             if (completedSentences.Count > 0)
             {
                 // 完結文を切り出した → trailing だけ _accumulatedText に残す。
-                // trailing は新 SegmentId で次の partial emit / 句点検出を受ける。
                 var trailing = text[start..];
                 _accumulatedText.Clear();
                 _accumulatedText.Append(trailing);
                 _lastEmitTime = DateTime.UtcNow;
                 _hasPendingDelta = false;
                 _throttleTimer.Change(Timeout.Infinite, Timeout.Infinite);
-                // 新 SegmentId で trailing を即座に partial 表示する (throttle 待たない)。
-                // 完結文 emit と同じ delta 内で trailing を見せないと「文末で字幕が消える瞬間」が
-                // 生じて UX として違和感が出るため。
                 emitPartial = trailing.Length > 0;
             }
             else
@@ -328,15 +366,10 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
             }
         }
 
-        // ロック外で完結文を emit。 OverlayViewModel は SegmentId が新規なら別字幕として
-        // 履歴に追加、 既存 SegmentId なら update。 今回はループ前半で _currentSegmentId を
-        // 切り替えているので、 各 completedSentences の segmentId はそれぞれ別の値。
+        // ロック外で完結文を emit。
         foreach (var (segmentId, sentence) in completedSentences)
         {
             var n = Interlocked.Increment(ref _completedEmitCount);
-            // 完結文 emit は字幕区切れ調査の中核なので全件 Info ログ。
-            // 「字幕が成長し続ける」報告時にここが鳴っていなければ delta only API 挙動か
-            // 句点不在のどちらか、 鳴っていれば overlay 表示側の問題と切り分けられる。
             Logger.Info($"完結文 emit (delta経路) #{n}: SegmentId={ShortSegmentId(segmentId)} 長さ={sentence.Length} 内容='{TruncateForLog(sentence)}'");
 
             var subtitle = new SubtitleItem
@@ -351,8 +384,6 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
 
         if (emitPartial)
         {
-            // partial 表示用 (trailing or throttled flush)。 EmitPartialSubtitle 自体は
-            // ロックを取らないので、 ここで取り直して呼ぶ。
             lock (_textLock)
             {
                 EmitPartialSubtitle();
@@ -421,20 +452,29 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                 effective = transcript;
             }
 
-            // 既に確定字幕として出した「完結文の累積」を差し引いて、 今回出すべき新規ぶん
-            // (= 前回 trailing + 新規完結文 + 新規 trailing) を得る。
-            // ⚠️ _lastFinalizedTranscript には trailing を含めないことが重要。
-            // trailing を含めて累積を進めてしまうと、 次の done で「trailing の続き」だけが
-            // newPortion になり、 完結文を emit するときに前回 trailing が消える UX バグになる
-            // (v1.0.9 で発生し v1.0.10 で修正)。
-            // trailing 部分は newPortion 先頭に毎回再登場することで、 完結時に既存 SegmentId に
-            // update され、 字幕が成長して 1 文として完結表示される設計。
-            // API 側で修正が入って prefix が崩れる稀なケースは effective 全体を新規ぶんとして扱う
-            // (重複表示よりも欠落のほうがマシ)。
-            string newPortion = effective.StartsWith(_lastFinalizedTranscript, StringComparison.Ordinal)
-                ? effective[_lastFinalizedTranscript.Length..]
-                : effective;
+            // ⚠️ rere レビュー P0 #1 修正: prefix 不一致時の「effective 全体を newPortion 扱い」
+            // を廃止し、 skip + Warn ログに倒す。
+            //
+            // 旧設計では `effective.StartsWith(_lastFinalizedTranscript) ? slice : effective` で
+            // 不一致時に effective 全体を newPortion として再 emit していたが、 これは
+            // 「_lastFinalizedTranscript と effective に重複する部分」を含めて再 emit し、
+            // 新 SegmentId で overlay に追加されるため重複字幕を作る経路があった。
+            // 「重複表示よりも欠落のほうがマシ」方針で skip に倒す。
+            // 再接続経由の不一致は OnConnectionStateChanged のリセットで吸収するので、
+            // ここに来るのは「API 側で transcript 正規化が入った」「順序入れ替わり」等の
+            // 稀ケースのみで実質ゼロ件のはず。
+            if (!effective.StartsWith(_lastFinalizedTranscript, StringComparison.Ordinal))
+            {
+                Logger.Warn($"OnTranscriptCompleted: prefix 不整合検出 — done 経路スキップ (finalized 長={_lastFinalizedTranscript.Length} effective 長={effective.Length} finalized 末尾='{TruncateForLog(_lastFinalizedTranscript.Length > 20 ? _lastFinalizedTranscript[^20..] : _lastFinalizedTranscript, 20)}' effective 先頭='{TruncateForLog(effective, 30)}')");
+                _accumulatedText.Clear();
+                _lastEmitTime = DateTime.MinValue;
+                _hasPendingDelta = false;
+                _throttleTimer.Change(Timeout.Infinite, Timeout.Infinite);
+                _latencyStopwatch.Reset();
+                return;
+            }
 
+            string newPortion = effective[_lastFinalizedTranscript.Length..];
             newPortionLength = newPortion.Length;
 
             if (string.IsNullOrEmpty(newPortion))
@@ -451,11 +491,6 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
             }
 
             // newPortion を句点で分割して、 完結した文ごとに emit する。
-            // 完結文 emit 時の SegmentId は _currentSegmentId (= 前回 trailing と同じ ID)
-            // にすることで、 前回 trailing 表示中の字幕を「完結形」に update できる。
-            // emit 後に _currentSegmentId を新規発行し、 _lastFinalizedTranscript には
-            // 完結文ぶんだけ加算 (trailing は含めない)。
-            // 末尾の未完結フラグメント (句点なし) は新しい _currentSegmentId で update 表示する。
             emissions = new List<(string, string, bool)>();
             int start = 0;
             for (int i = 0; i < newPortion.Length; i++)
@@ -475,8 +510,6 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                 }
             }
             // 残りの未完結部分 (trailing) は _currentSegmentId で emit。
-            // 次回 done で続きが来たら、 startsWith 差分で newPortion 先頭に再登場し
-            // 完結文として既存 SegmentId に update される。
             if (start < newPortion.Length)
             {
                 var trailing = newPortion[start..];
@@ -495,13 +528,11 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         }
 
         // 概況ログ: done 経路で何が起きたかをまとめて 1 行で出す。
-        // (delta only API では呼ばれないが、 通常 API / 将来の挙動変化への観測経路)
         int completedCount = emissions.Count(e => e.isSentenceEnd);
         int trailingCount = emissions.Count(e => !e.isSentenceEnd);
         Logger.Info($"OnTranscriptCompleted: newPortion長={newPortionLength} 完結文={completedCount}件 trailing={trailingCount}件 latency={latencyMs:F0}ms");
 
-        // ロック外で emit。 OverlayViewModel は SegmentId が一致する subtitle を更新、
-        // 新 SegmentId は新規追加して overlay に履歴として残す。
+        // ロック外で emit。
         foreach (var (segmentId, text, isSentenceEnd) in emissions)
         {
             if (isSentenceEnd)
@@ -536,6 +567,28 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
 
     private void OnConnectionStateChanged(ConnectionState state)
     {
+        var previousState = _lastConnectionState;
+        _lastConnectionState = state;
+
+        // 再接続成功時 (Reconnecting → Connected) に字幕状態をリセットする (rere P0 #1)。
+        // 新セッションの transcript.done は累積カウンタゼロから始まるため、 旧セッションの
+        // _lastFinalizedTranscript を保持したままだと StartsWith 仮定が崩れて、 done 経路で
+        // 重複字幕や欠落が発生する経路がある。 OnTranscriptCompleted の skip 防御だけでは
+        // 不十分なので、 ここでも明示的にリセットしてゼロから累積し直す。
+        if (state == ConnectionState.Connected && previousState == ConnectionState.Reconnecting)
+        {
+            lock (_textLock)
+            {
+                Logger.Info($"OnConnectionStateChanged: 再接続成功 — 字幕状態をリセット (旧 finalized 長={_lastFinalizedTranscript.Length})");
+                _lastFinalizedTranscript = string.Empty;
+                _accumulatedText.Clear();
+                _currentSegmentId = Guid.NewGuid().ToString();
+                _lastEmitTime = DateTime.MinValue;
+                _hasPendingDelta = false;
+                _throttleTimer.Change(Timeout.Infinite, Timeout.Infinite);
+            }
+        }
+
         var statusText = state switch
         {
             ConnectionState.Connecting => "接続中...",

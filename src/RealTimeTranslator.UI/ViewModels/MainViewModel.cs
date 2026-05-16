@@ -229,7 +229,13 @@ public partial class MainViewModel : ObservableObject, IDisposable
             // ログ I/O 削減のため、途中字幕は LoggerService.LogInfo に出さず UI Log のみ。
             if (item.IsFinal)
             {
-                LoggerService.LogInfo(logMessage);
+                // ⭐ rere P1 #2 / A3-001 / F-3 修正: PII 漏洩経路を抑制。
+                // 翻訳テキスト全文をログファイル化すると、 Issue 添付時に視聴コンテンツのセリフ
+                // や会議の機微発話が公開リポに残る経路がある。 Core 側 (TranslationPipelineService /
+                // OpenAIRealtimeClient) と同じ 40 文字 truncate をここでも適用する。
+                // UI Log() (Logs タブ) はフル文字列のまま (画面表示のみで永続化されない)。
+                var truncated = text.Length <= 40 ? text : text[..40] + "...";
+                LoggerService.LogInfo($"{prefix} →{_settings.OpenAIRealtime.OutputLanguage} {truncated}");
             }
             Log(logMessage);
         });
@@ -278,7 +284,8 @@ public partial class MainViewModel : ObservableObject, IDisposable
             var newOutputLang = e.Settings.OpenAIRealtime.OutputLanguage;
             var apiSettingsChanged = _lastApiKey != newApiKey || _lastOutputLanguage != newOutputLang;
 
-            await _pipelineService.ApplySettingsAsync(e.Settings.OpenAIRealtime);
+            // rere レビュー B1-007: ApplySettingsAsync は dead code として削除済み。
+            // 設定変更は IOptionsMonitor.OnChange 経由で各サービスに自動伝播するため呼び出し不要。
             _lastApiKey = newApiKey;
             _lastOutputLanguage = newOutputLang;
 
@@ -296,8 +303,10 @@ public partial class MainViewModel : ObservableObject, IDisposable
         }
         catch (Exception ex)
         {
-            LoggerService.LogError($"OnSettingsSaved: Error applying settings: {ex.Message}");
-            Log($"設定の適用中にエラーが発生しました: {ex.Message}");
+            // {ex.Message} だけだと例外型と stack が消えて事後解析できない。
+            // LogException で full dump して、 UI には短いメッセージだけ出す (rere P1 #14)。
+            LoggerService.LogException("OnSettingsSaved: 設定適用エラー", ex);
+            Log($"設定の適用中にエラーが発生しました: {ex.GetType().Name}: {ex.Message}");
             StatusText = "設定の適用中にエラーが発生しました";
             StatusColor = Brushes.Red;
         }
@@ -343,6 +352,52 @@ public partial class MainViewModel : ObservableObject, IDisposable
         finally
         {
             RunOnUiThread(() => IsCheckingUpdate = false);
+        }
+    }
+
+    /// <summary>
+    /// バージョンタブの「ログフォルダを開く」ボタン (rere P2 F-2 修正)。
+    /// ユーザーが Issue 提出時に該当日付のログを添付しやすくする。
+    /// </summary>
+    [RelayCommand]
+    private void OpenLogsFolder()
+    {
+        try
+        {
+            var logsDir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                "RealTimeTranslator", "logs");
+            if (!Directory.Exists(logsDir))
+                Directory.CreateDirectory(logsDir);
+            Process.Start(new ProcessStartInfo { FileName = logsDir, UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            LoggerService.LogException("OpenLogsFolder 失敗", ex);
+            UpdateStatusText = $"ログフォルダを開けませんでした: {ex.Message}";
+        }
+    }
+
+    /// <summary>
+    /// バージョンタブの「設定フォルダを開く」ボタン (rere P2 F-2 修正)。
+    /// API キーの紛失 / 移行時に settings.json の場所を素早く見せる。
+    /// </summary>
+    [RelayCommand]
+    private void OpenSettingsFolder()
+    {
+        try
+        {
+            var settingsDir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                "RealTimeTranslator");
+            if (!Directory.Exists(settingsDir))
+                Directory.CreateDirectory(settingsDir);
+            Process.Start(new ProcessStartInfo { FileName = settingsDir, UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            LoggerService.LogException("OpenSettingsFolder 失敗", ex);
+            UpdateStatusText = $"設定フォルダを開けませんでした: {ex.Message}";
         }
     }
 

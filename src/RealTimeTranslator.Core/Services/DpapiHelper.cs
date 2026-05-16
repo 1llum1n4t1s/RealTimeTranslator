@@ -36,9 +36,12 @@ internal static class DpapiHelper
         }
         catch (Exception ex)
         {
-            LoggerService.LogError($"DpapiHelper.Encrypt 失敗: {ex.GetType().Name}: {ex.Message}");
-            // 失敗時は平文のまま返す（保存自体は継続させる、ただしログで気付けるようにする）
-            return plainText;
+            LoggerService.LogException("DpapiHelper.Encrypt 失敗 — fail-closed で空文字列を返します (settings.json に平文 sk-... を書く事故を防ぐため)", ex);
+            // ⚠️ 旧実装は失敗時に plainText を返していたが、 これは settings.json に生 sk-... を
+            // 書き込む経路を作るため fail-closed に変更 (rere レビュー P1 #8)。
+            // 呼び出し側 (SettingsService.CloneWithEncryptedSecrets) で空が保存され、
+            // UI は IsApiKeyConfigured=false 経路で「API キー未設定」を表示する。
+            return string.Empty;
         }
     }
 

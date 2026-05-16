@@ -117,6 +117,42 @@ src/
 - リリースは `release/x.y.z` ブランチに push すると GitHub Actions が起動し、Velopack で nupkg を作成して GitHub Releases にアップロードします（`.github/workflows/velopack-release.yml`）。
 - バージョンは `Directory.Build.props` の `<Version>` に従います。
 
+## トラブルシュート
+
+### ログの場所
+
+ログは `%APPDATA%\RealTimeTranslator\logs\RealTimeTranslator_YYYYMMDD.log` (Roaming AppData) に
+日次でローテーション保存されます (デフォルト 7 日間保持)。 アプリ内では **バージョンタブの
+「ログフォルダを開く」ボタン** から直接エクスプローラで開けます。
+
+### 設定の場所
+
+設定は `%APPDATA%\RealTimeTranslator\settings.json` に保存されます。 API キーは Windows DPAPI で
+暗号化されているため別ユーザー / 別 PC では復号できません。 アプリ内では **バージョンタブの
+「設定フォルダを開く」ボタン** から直接エクスプローラで開けます。
+
+### 自動更新が動かない時
+
+1. **バージョンタブの「更新の確認」ボタン** を押して手動チェック
+2. 失敗する場合はログを確認 (`transcript.delta` / `transcript.done` / `OnTranscriptCompleted` /
+   `UpdateService.ShowUpdateDialogAsync 失敗` 等のキーワードで検索)
+3. それでも復旧しない場合は [Releases ページ](https://github.com/1llum1n4t1s/RealTimeTranslator/releases)
+   から最新の `RealTimeTranslator-win-Setup.exe` を手動 DL してインストール
+
+### 翻訳結果が表示されない時
+
+1. プロセス選択が正しいか確認 (オーディオ再生中のプロセスのみ翻訳対象になる)
+2. ログで `transcript.delta 受信` が出ているか確認 (出ていなければ OpenAI 接続失敗 or 音声無し)
+3. OpenAI API キー / 課金状態を [OpenAI Platform](https://platform.openai.com/) で確認
+4. WASAPI Process Loopback 仕様で「無音時はキャプチャがサイレントデータを返す」ケースあり
+   (ログに `raw16 が [-1,1] のみ` Warn が出る)
+
+### Issue 提出時のお願い
+
+不具合報告は [GitHub Issues](https://github.com/1llum1n4t1s/RealTimeTranslator/issues) に
+添付ログ + 再現手順 + 環境情報 (Windows バージョン / .NET ランタイム) でお願いします。
+ログには翻訳テキストの先頭 40 文字が含まれるため、 機密情報は事前に除去してください。
+
 ## 連絡先
 
 - 開発者: ゆろち

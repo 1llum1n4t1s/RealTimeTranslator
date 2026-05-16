@@ -37,13 +37,10 @@ public interface ITranslationPipelineService : IAsyncDisposable, IDisposable
     /// <returns>非同期操作のタスク</returns>
     Task StopAsync(CancellationToken cancellationToken = default);
 
-    /// <summary>
-    /// API設定をキャッシュに反映します。次回の接続時に新しい設定が使われます。
-    /// 既にアクティブな接続には影響しません（再接続が必要です）。
-    /// </summary>
-    /// <param name="settings">適用する API 設定</param>
-    /// <param name="cancellationToken">キャンセルトークン</param>
-    Task ApplySettingsAsync(OpenAIRealtimeSettings settings, CancellationToken cancellationToken = default);
+    // rere レビュー P2 B1-007: ApplySettingsAsync は実質 dead code だった
+    // (StartAsync 内で _settingsMonitor.CurrentValue から再取得して即上書きされるため)。
+    // hot-reload は IOptionsMonitor.OnChange 経由で各サービスに伝わるので不要。 → 削除済み。
+    // 将来 hot reconnect 機能を実装するなら IRealtimeTranscriber.ConfigureAsync を経由する設計に。
 }
 
 /// <summary>

@@ -12,6 +12,14 @@ public interface ISettingsService
     /// 設定をファイルに保存
     /// </summary>
     Task SaveAsync(AppSettings settings);
+
+    /// <summary>
+    /// AppSettings 内の機微フィールド (OpenAIRealtime.ApiKey) を DPAPI で in-place 復号する。
+    /// 設定読み込み直後と IOptionsMonitor.OnChange 後に呼ぶことで後段の consumer は平文を扱える。
+    /// rere レビュー B1-003: TranslationPipelineService が static SettingsService.DecryptApiKeyInPlace を
+    /// 直叩きする Service Locator アンチパターンを解消するため interface 経由化。
+    /// </summary>
+    void DecryptApiKey(AppSettings settings);
 }
 
 /// <summary>
@@ -171,4 +179,7 @@ public class SettingsService : ISettingsService
     /// ハンドラから呼んで、後段のコンシューマが平文を扱えるようにする。
     /// </summary>
     public static void DecryptApiKeyInPlace(AppSettings settings) => DpapiHelper.DecryptInPlace(settings);
+
+    /// <inheritdoc />
+    public void DecryptApiKey(AppSettings settings) => DpapiHelper.DecryptInPlace(settings);
 }

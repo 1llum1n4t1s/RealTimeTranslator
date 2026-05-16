@@ -32,3 +32,6 @@ updates:
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
+      # 個人 NuGet fork: アカウント乗っ取り経路でのサプライチェーン攻撃リスク軽減のため、
+      # 自動 PR を停止して手動レビュー必須化する (rere レビュー P1 #12)。
+      - dependency-name: "1llum1n4t1s.NAudio"

@@ -67,12 +67,18 @@ public partial class App : Application
         };
         TaskScheduler.UnobservedTaskException += (s, ea) =>
         {
-            LoggerService.LogError($"TaskScheduler.UnobservedTaskException: {ea.Exception}");
+            LoggerService.LogException("TaskScheduler.UnobservedTaskException", ea.Exception);
+            // SuperLightLogger のバッファに残ったログを確実に flush する (rere P1 #15)。
+            // Shutdown 後でも Log API は auto re-init するため後続ログは継続可能。
+            LoggerService.Shutdown();
             ea.SetObserved();
         };
         Dispatcher.UIThread.UnhandledException += (s, ea) =>
         {
-            LoggerService.LogError($"Dispatcher.UIThread.UnhandledException: {ea.Exception}");
+            LoggerService.LogException("Dispatcher.UIThread.UnhandledException", ea.Exception);
+            // UI スレッド例外で次の crash が起きる前に flush。 Handled=true で継続するが、
+            // この例外時点までのログを必ずディスクに残す (rere P1 #15)。
+            LoggerService.Shutdown();
             ea.Handled = true;
         };
 
@@ -175,6 +181,12 @@ public partial class App : Application
 
             if (_overlayWindow != null)
             {
+                // OverlayViewModel.Dispose を明示呼び出し。 ServiceProvider.DisposeAsync の
+                // 2 秒タイムアウト経路では Singleton Dispose が走らないことがあるため、
+                // DispatcherTimer / settings subscription の解放をここで保証する (rere P1 #13)。
+                try { (_overlayWindow.DataContext as IDisposable)?.Dispose(); }
+                catch (Exception ex) { LoggerService.LogWarning($"OnExit: OverlayViewModel Dispose 失敗: {ex.Message}"); }
+
                 _overlayWindow.Close();
                 _overlayWindow = null;
             }

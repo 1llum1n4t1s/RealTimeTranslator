@@ -72,6 +72,11 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
 
     private void OnNetworkAvailabilityChanged(object? sender, NetworkAvailabilityEventArgs e)
     {
+        // Dispose 後に発火する経路 (.NET イベントの invocation list は発火開始時にコピー
+        // されるので、 ハンドラ解除と発火がレースすると Dispose 後にもハンドラが走る) を
+        // 早期 return で塞ぐ。 これがないと _connectLock.WaitAsync で ObjectDisposedException
+        // が UnobservedTaskException 経由でログに飛ぶ (rere P1 #5)。
+        if (Interlocked.CompareExchange(ref _disposed, 0, 0) != 0) return;
         if (!e.IsAvailable) return;
         if (!_shouldReconnect) return;
         if (_state == ConnectionState.Connected) return;
@@ -655,15 +660,25 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
                 var delay = (int)Math.Clamp(baseDelay * (1.0 + jitterPercent), 100, 30000);
                 Logger.Info($"再接続試行 {_reconnectAttempts}/{_settings.MaxReconnectAttempts}（{delay}ms 後、base={baseDelay}ms）");
 
+                // ⭐ rere P1 #7: Task.Delay と _connectLock.WaitAsync の両方に CancellationToken を渡して、
+                // Disconnect / Dispose / アプリ終了で即座に reconnect ループを抜けられるようにする。
+                // 旧実装は ct 未指定で、 停止後も最大 30 秒 reconnect 試行が走り続け、 ログ汚染と
+                // バッテリー消費の原因になっていた。
+                var ctsSnapshot = _cts;
+                var ct = ctsSnapshot?.Token ?? CancellationToken.None;
                 try
                 {
-                    await Task.Delay(delay).ConfigureAwait(false);
+                    await Task.Delay(delay, ct).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) { return; }
 
                 if (!_shouldReconnect) return;
 
-                await _connectLock.WaitAsync().ConfigureAwait(false);
+                try
+                {
+                    await _connectLock.WaitAsync(ct).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) { return; }
                 try
                 {
                     if (!_shouldReconnect) return;
