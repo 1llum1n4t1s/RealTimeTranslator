@@ -138,7 +138,17 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
         try { _cts?.Cancel(); }
         catch (ObjectDisposedException) { /* race: 既に Dispose 済み */ }
 
-        await _connectLock.WaitAsync().ConfigureAwait(false);
+        // _connectLock.WaitAsync にも上限を設ける。`_cts.Cancel()` で進行中の接続は即抜けるはずだが、
+        // 万一抜けない経路（NAudio / WebSocket 内部の同期 wait 等）でも UI を 3 秒以上ブロックしない。
+        if (!await _connectLock.WaitAsync(TimeSpan.FromSeconds(3)).ConfigureAwait(false))
+        {
+            Logger.Warn("DisconnectAsync: _connectLock 取得が 3 秒でタイムアウト、強制クリーンアップに進む");
+            // lock を取らずに CleanupAsync を呼ぶ。_shouldReconnect=false + cts.Cancel 済みのため
+            // 並走する TryReconnectAsync はもう再接続を試みず、後続のクリーンアップだけ走る。
+            try { await CleanupAsync().ConfigureAwait(false); }
+            catch (Exception ex) { Logger.Warn("DisconnectAsync(timeout): CleanupAsync で例外", ex); }
+            return;
+        }
         try
         {
             await CleanupAsync().ConfigureAwait(false);

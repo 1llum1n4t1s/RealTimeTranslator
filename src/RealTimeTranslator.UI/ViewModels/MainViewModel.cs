@@ -85,9 +85,16 @@ public partial class MainViewModel : ObservableObject, IDisposable
     private bool _isDownloading;
 
     /// <summary>
+    /// OpenAI API キーが設定済みかどうか（空白のみは未設定扱い）。
+    /// 未設定だと CanStart が常に false になり、UI 側で警告メッセージを表示する。
+    /// </summary>
+    [ObservableProperty]
+    private bool _isApiKeyConfigured;
+
+    /// <summary>
     /// 開始ボタンが有効かどうか
     /// </summary>
-    public bool CanStart => SelectedProcess != null && !IsRunning && !IsLoading;
+    public bool CanStart => SelectedProcess != null && !IsRunning && !IsLoading && IsApiKeyConfigured;
 
     public SettingsViewModel SettingsVM => _settingsViewModel;
 
@@ -108,6 +115,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
         _settings = optionsMonitor.CurrentValue;
         _lastApiKey = _settings.OpenAIRealtime.ApiKey;
         _lastOutputLanguage = _settings.OpenAIRealtime.OutputLanguage;
+        IsApiKeyConfigured = !string.IsNullOrWhiteSpace(_settings.OpenAIRealtime.ApiKey);
 
         // 設定変更のイベントを購読。settings.json は DPAPI 暗号化済み API キーで保存されているため、
         // hot-reload された AppSettings も in-place で復号してから消費する。
@@ -116,6 +124,11 @@ public partial class MainViewModel : ObservableObject, IDisposable
             LoggerService.LogInfo("Settings updated detected in MainViewModel.");
             SettingsService.DecryptApiKeyInPlace(newSettings);
             _settings = newSettings;
+            // API キーの設定状態を UI スレッドで反映（CanStart 再評価が走る）
+            Dispatcher.UIThread.Post(() =>
+            {
+                IsApiKeyConfigured = !string.IsNullOrWhiteSpace(newSettings.OpenAIRealtime.ApiKey);
+            });
         });
 
         _updateService = updateService;
@@ -576,7 +589,23 @@ public partial class MainViewModel : ObservableObject, IDisposable
             _processingCancellation?.Dispose();
             _processingCancellation = null;
         }
-        await _pipelineService.StopAsync();
+
+        // pipelineService.StopAsync は内部で WS close 5s + audio task 2s 等の wait を含む。
+        // 何らかの異常で詰まった場合に UI を永久に固まらせないよう外側 5s でタイムアウトさせ、
+        // 超過したらバックグラウンドで完了させて UI は先に進める。
+        try
+        {
+            await _pipelineService.StopAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(true);
+        }
+        catch (TimeoutException)
+        {
+            LoggerService.LogWarning("StopAsync: pipelineService.StopAsync が 5 秒を超えたため UI を先に進めます（後始末はバックグラウンド継続）");
+        }
+        catch (Exception ex)
+        {
+            LoggerService.LogError($"StopAsync: pipelineService.StopAsync で例外: {ex}");
+        }
+
         _audioCaptureService.StopCapture();
         _overlayViewModel.ClearSubtitles();
 
@@ -660,6 +689,11 @@ public partial class MainViewModel : ObservableObject, IDisposable
     }
 
     partial void OnIsLoadingChanged(bool value)
+    {
+        OnPropertyChanged(nameof(CanStart));
+    }
+
+    partial void OnIsApiKeyConfiguredChanged(bool value)
     {
         OnPropertyChanged(nameof(CanStart));
     }
