@@ -46,6 +46,15 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
     private volatile ConnectionState _state = ConnectionState.Disconnected;
     private readonly SemaphoreSlim _connectLock = new(1, 1);
 
+    // 受信した event type を最初の 1 回だけ Info ログに出すための記憶（診断用）。
+    // OpenAI Realtime Translation API がどんな event を返してくるか分からない状況で、
+    // 「文が区切られず長文化する」原因を切り分けるためのフィールド。
+    private readonly HashSet<string> _seenEventTypes = new(StringComparer.Ordinal);
+    private readonly object _seenEventTypesLock = new();
+    // 受信したdelta件数（done発火時の診断のため）
+    private long _totalDeltaCount;
+    private long _totalDoneCount;
+
     public ConnectionState State => _state;
 
     /// <summary>
@@ -492,6 +501,19 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
 
             if (!root.TryGetProperty("type", out var typeElement)) return;
             var type = typeElement.GetString();
+            if (string.IsNullOrEmpty(type)) return;
+
+            // 診断ログ: 初見のevent typeはInfoで1回だけ吐く（文が区切られない問題のため）。
+            // 既知typeも含めて全部最初の1回はログに出すことで、API実装が変わって新event名が来ても気付ける。
+            bool isFirstSighting;
+            lock (_seenEventTypesLock)
+            {
+                isFirstSighting = _seenEventTypes.Add(type);
+            }
+            if (isFirstSighting)
+            {
+                Logger.Info($"OpenAI Realtime event 初見: type='{type}'");
+            }
 
             switch (type)
             {
@@ -499,14 +521,18 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
                 // ・現行 GPT Realtime API: response.output_audio_transcript.delta / response.output_text.delta
                 // ・Translation 専用エンドポイント: session.output_transcript.delta / output_transcript.delta
                 // ・互換のため旧 response.audio_transcript.delta も残す
-                // 参考: https://platform.openai.com/docs/api-reference/realtime-server-events
+                // 参照: https://platform.openai.com/docs/api-reference/realtime-server-events
                 case "response.output_audio_transcript.delta":
                 case "response.output_text.delta":
                 case "session.output_transcript.delta":
                 case "response.audio_transcript.delta":
                 case "output_transcript.delta":
                     if (root.TryGetProperty("delta", out var delta))
-                        TranscriptDeltaReceived?.Invoke(delta.GetString() ?? "");
+                    {
+                        var deltaStr = delta.GetString() ?? "";
+                        Interlocked.Increment(ref _totalDeltaCount);
+                        TranscriptDeltaReceived?.Invoke(deltaStr);
+                    }
                     break;
 
                 // 翻訳結果の完了（done）— done では transcript または text プロパティに最終結果が入る
@@ -515,15 +541,54 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
                 case "session.output_transcript.done":
                 case "response.audio_transcript.done":
                 case "output_transcript.done":
+                {
                     var transcript = "";
                     if (root.TryGetProperty("transcript", out var t))
                         transcript = t.GetString() ?? "";
                     else if (root.TryGetProperty("text", out var txt))
                         transcript = txt.GetString() ?? "";
+
+                    var doneCount = Interlocked.Increment(ref _totalDoneCount);
+                    var deltaCount = Interlocked.Read(ref _totalDeltaCount);
+                    Logger.Info($"transcript.done 受信: type='{type}' transcript長={transcript.Length} 累計done={doneCount} 累計delta={deltaCount}");
+
                     TranscriptCompleted?.Invoke(transcript);
                     break;
+                }
+
+                // VAD / 入力バッファ系イベント（segment 区切りの間接シグナル）
+                // 文が区切られない問題の診断のため明示的にログ化。done が来ない場合は
+                // input_audio_buffer.committed / response.done を fallback の区切りとして使う。
+                case "input_audio_buffer.speech_started":
+                case "session.input_audio_buffer.speech_started":
+                    Logger.Debug($"VAD: speech_started ({type})");
+                    break;
+                case "input_audio_buffer.speech_stopped":
+                case "session.input_audio_buffer.speech_stopped":
+                    Logger.Debug($"VAD: speech_stopped ({type})");
+                    break;
+                case "input_audio_buffer.committed":
+                case "session.input_audio_buffer.committed":
+                    Logger.Debug($"VAD: buffer committed ({type})");
+                    break;
+
+                // response.done: transcript.done が来ない API 仕様の場合の fallback 区切り。
+                // 既に transcript.done で TranscriptCompleted を発火していれば、Pipeline 側で
+                // 空 transcript の done として処理される（_accumulatedText が空なのでスキップされる）。
+                case "response.done":
+                case "session.response.done":
+                {
+                    var deltaCount = Interlocked.Read(ref _totalDeltaCount);
+                    var doneCount = Interlocked.Read(ref _totalDoneCount);
+                    Logger.Info($"response.done 受信: type='{type}' 累計delta={deltaCount} 累計transcript.done={doneCount}");
+                    // transcript.done が一度も来ないまま response.done が来ているなら、
+                    // それを区切りとして使う（空 transcript で発火 → Pipeline 側の fallbackText で確定）
+                    TranscriptCompleted?.Invoke("");
+                    break;
+                }
 
                 case "error":
+                {
                     var errorMsg = "Unknown error";
                     if (root.TryGetProperty("error", out var err))
                     {
@@ -542,6 +607,7 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
                     Logger.Error($"OpenAI API エラー: {errorMsg}");
                     ErrorReceived?.Invoke(new InvalidOperationException(errorMsg));
                     break;
+                }
             }
         }
         catch (JsonException ex)

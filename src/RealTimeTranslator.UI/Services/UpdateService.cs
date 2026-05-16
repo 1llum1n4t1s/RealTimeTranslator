@@ -22,6 +22,11 @@ public class UpdateService : IUpdateService
 
     private static readonly TimeSpan UpdateCheckInterval = TimeSpan.FromHours(UpdateCheckIntervalHours);
     private readonly object _syncLock = new();
+    // Velopack の Check / Download / Apply 操作はプロセス内で直列化する。
+    // .velopack_lock ファイルは Velopack 側がプロセス間排他のために確保するが、
+    // 同一プロセスから並走させると AcquireLockFailedException が出るので、
+    // ここで先に直列化して衝突を防ぐ（起動時の自動チェックと PeriodicTimer の同時発火対策）。
+    private static readonly SemaphoreSlim _velopackOpLock = new(1, 1);
     private UpdateSettings _settings = new();
     private UpdateInfo? _pendingUpdateInfo;
     private string? _pendingFeedUrl;
@@ -101,6 +106,14 @@ public class UpdateService : IUpdateService
             return false;
         }
 
+        // 別の Velopack 操作（同プロセス内）が進行中なら、startup の自動チェックは譲る。
+        // 0 秒 timeout で TryWait し、取れなければスキップ（次回の Periodic で拾えるので問題ない）。
+        if (!await _velopackOpLock.WaitAsync(TimeSpan.Zero, cancellationToken).ConfigureAwait(false))
+        {
+            LoggerService.LogInfo("UpdateService: 別の Velopack 操作が進行中のため、今回のチェックはスキップ");
+            return false;
+        }
+
         OnStatusChanged(UpdateStatus.Checking, "更新を確認しています...");
 
         try
@@ -146,6 +159,14 @@ public class UpdateService : IUpdateService
         {
             throw;
         }
+        catch (Exception ex) when (ex.GetType().Name == "AcquireLockFailedException")
+        {
+            // Velopack の .velopack_lock 衝突: 別プロセス（同じインストール先の別バージョン起動など）が
+            // 操作中。ユーザーに見せる必要はなく、次回 Periodic で自然に再試行されるのでログだけ残す。
+            LoggerService.LogInfo($"UpdateService: Velopack ロック取得失敗（次回チェック時に再試行）— {ex.Message}");
+            OnStatusChanged(UpdateStatus.Idle, "別の更新処理が実行中です。後で再試行します。");
+            return false;
+        }
         catch (Exception ex)
         {
             // スタックトレース / InnerException を永続ログに残す（UI イベントだけでは事後解析できない）。
@@ -153,9 +174,13 @@ public class UpdateService : IUpdateService
             OnStatusChanged(UpdateStatus.Failed, $"更新チェックに失敗しました: {ex.Message}");
             return false;
         }
+        finally
+        {
+            _velopackOpLock.Release();
+        }
     }
 
-    public Task ApplyUpdateAsync(CancellationToken cancellationToken)
+    public async Task ApplyUpdateAsync(CancellationToken cancellationToken)
     {
         UpdateInfo? updateInfo;
         string? feedUrl;
@@ -168,14 +193,23 @@ public class UpdateService : IUpdateService
         if (updateInfo is null || string.IsNullOrWhiteSpace(feedUrl))
         {
             OnStatusChanged(UpdateStatus.Failed, "適用可能な更新がありません。");
-            return Task.CompletedTask;
+            return;
         }
 
         if (!TryGetValidFeedUri(feedUrl!, out var feedUri, out var validationReason))
         {
             LoggerService.LogError($"UpdateService.ApplyUpdateAsync: FeedUrl 検証失敗 — {validationReason}");
             OnStatusChanged(UpdateStatus.Failed, validationReason);
-            return Task.CompletedTask;
+            return;
+        }
+
+        // CheckAndDownloadCoreAsync が走っていたら、その完了を最大 30 秒待つ。
+        // 30 秒経っても降りなければ apply は諦める（裏で更新作業中なので強制すると .velopack_lock 衝突になる）。
+        if (!await _velopackOpLock.WaitAsync(TimeSpan.FromSeconds(30), cancellationToken).ConfigureAwait(false))
+        {
+            LoggerService.LogError("UpdateService.ApplyUpdateAsync: 他の Velopack 操作が 30 秒で終わらず、apply を中止");
+            OnStatusChanged(UpdateStatus.Failed, "他の更新処理が実行中のため適用できませんでした。");
+            return;
         }
 
         try
@@ -188,13 +222,20 @@ public class UpdateService : IUpdateService
             var manager = new UpdateManager(source);
             manager.ApplyUpdatesAndRestart(updateInfo);
         }
+        catch (Exception ex) when (ex.GetType().Name == "AcquireLockFailedException")
+        {
+            LoggerService.LogError($"UpdateService.ApplyUpdateAsync: Velopack ロック取得失敗 — {ex.Message}");
+            OnStatusChanged(UpdateStatus.Failed, "別の更新処理が実行中です。アプリを再起動してから再試行してください。");
+        }
         catch (Exception ex)
         {
             LoggerService.LogError($"UpdateService.ApplyUpdateAsync 失敗: {ex}");
             OnStatusChanged(UpdateStatus.Failed, $"更新の適用に失敗しました: {ex.Message}");
         }
-
-        return Task.CompletedTask;
+        finally
+        {
+            _velopackOpLock.Release();
+        }
     }
 
     /// <summary>
