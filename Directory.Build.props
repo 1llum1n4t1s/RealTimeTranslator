@@ -16,16 +16,14 @@
     <!--
       NuGet 依存のサプライチェーン保護: lockfile (packages.lock.json) を生成・検証する。
       これにより「リパッケージ攻撃」(既存バージョンの差し替え) を検知可能になる。
-      Condition で MinimalProcessLoopbackWpf（試作/廃止予定）を除外しており、本体 3 プロジェクト
-      (Core, UI, Tests) のみが lockfile 対象。
-      MinimalProcessLoopbackWpf は本リリース成果物に含まないため lockfile を作らない。
+      本体 3 プロジェクト (Core, UI, Tests) すべてが lockfile 対象。
     -->
-    <RestorePackagesWithLockFile Condition="'$(MSBuildProjectName)' != 'MinimalProcessLoopbackWpf'">true</RestorePackagesWithLockFile>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
     <!--
       CI ビルド時のみ lockfile を厳格モードで検証する（ローカル開発では新規パッケージ追加を許可）。
       `$(ContinuousIntegrationBuild)` は GitHub Actions の `dotnet` 関連 step が暗黙設定する。
     -->
-    <RestoreLockedMode Condition="'$(ContinuousIntegrationBuild)' == 'true' And '$(MSBuildProjectName)' != 'MinimalProcessLoopbackWpf'">true</RestoreLockedMode>
+    <RestoreLockedMode Condition="'$(ContinuousIntegrationBuild)' == 'true'">true</RestoreLockedMode>
     <!-- bin/obj を Platform/TargetFramework を含めず 1 か所に統一（単一 TFM のため簡潔化） -->
     <BaseOutputPath>$(MSBuildProjectDirectory)\bin\</BaseOutputPath>
     <OutputPath>$(BaseOutputPath)$(Configuration)\</OutputPath>

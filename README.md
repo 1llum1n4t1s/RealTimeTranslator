@@ -109,8 +109,7 @@ src/
 │   ├── ViewModels/                      # MainViewModel, OverlayViewModel, SettingsViewModel
 │   ├── Services/                        # TranslationPipelineService（パイプラインオーケストレーター）, UpdateService
 │   └── App.axaml.cs / Program.cs        # DI 構成 / エントリポイント
-├── RealTimeTranslator.Tests/            # MSTest ユニットテスト
-└── MinimalProcessLoopbackWpf/           # WASAPI Process Loopback 試作（プロトタイプ・Production には未統合）
+└── RealTimeTranslator.Tests/            # MSTest ユニットテスト
 ```
 
 ## リリース・公開手順
