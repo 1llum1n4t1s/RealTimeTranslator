@@ -102,15 +102,25 @@ public partial class App : Application
 
             var updateService = _serviceProvider.GetRequiredService<IUpdateService>();
             var optionsMonitor = _serviceProvider.GetRequiredService<IOptionsMonitor<AppSettings>>();
-            updateService.UpdateSettings(optionsMonitor.CurrentValue.Update);
+            var updateSettings = optionsMonitor.CurrentValue.Update;
+            updateService.UpdateSettings(updateSettings);
             _updateCancellation = new CancellationTokenSource();
 
             // 起動時更新チェックは fire-and-forget（UI スレッドを最大 31 秒ブロックしない）。
-            // 更新を適用すべき結果なら Dispatcher.UIThread から Shutdown を呼んで Velopack に再起動を任せる。
+            // AutoApply=true の時のみ自動再起動。false の時は通知だけ出して、ユーザー操作で適用させる
+            //（v1.0.3 で AutoApply 設定を無視して強制 ApplyUpdatesAndRestart していたバグの修正）。
             _ = Task.Run(async () =>
             {
                 try
                 {
+                    if (!updateSettings.AutoApply)
+                    {
+                        // チェックだけ実行。更新検出時は UpdateReady イベント → MainViewModel.OnUpdateReady で
+                        // ユーザーに「再起動して適用しますか？」ダイアログを出す。
+                        await updateService.CheckOnceAsync(_updateCancellation.Token).ConfigureAwait(false);
+                        return;
+                    }
+
                     var shouldRestart = await updateService.CheckAndApplyStartupAsync(_updateCancellation.Token)
                         .ConfigureAwait(false);
                     if (shouldRestart)
