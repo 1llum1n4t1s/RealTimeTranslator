@@ -75,14 +75,17 @@ jobs:
             --notes "Auto-update packages for Velopack."
           gh release upload "velopack-$TAG" velopack-packages/*
       - name: Create release
-        # 人間向け本リリース。Setup.exe のみアップロードして「ダウンロードしてインストール」体験を簡潔にする。
+        # 人間向け本リリース (latest)。
+        # Velopack の GithubSource は `latest` リリースの assets から releases-{channel}.json と
+        # 対応 nupkg を取得するため、Setup.exe だけでなく velopack-packages の全 asset を
+        # 上げる必要がある（v1.0.5 まで Setup.exe のみで自動更新が機能しなかった）。
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ needs.version.outputs.tag }}
           VERSION: ${{ needs.version.outputs.version }}
         run: |
           gh release create "$TAG" -t "$VERSION" --generate-notes
-          gh release upload "$TAG" velopack-packages/*-Setup.exe
+          gh release upload "$TAG" velopack-packages/*
       - name: Cleanup old releases (keep latest 3)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

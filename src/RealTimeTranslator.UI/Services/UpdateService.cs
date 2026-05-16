@@ -106,7 +106,11 @@ public class UpdateService : IUpdateService
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var source = new SimpleWebSource(feedUri);
+            // GithubSource は GitHub Releases API で latest release の assets を解析する。
+            // SimpleWebSource は `<FeedUrl>/releases-{channel}.json` を直接 GET するため、
+            // GitHub のリポジトリトップ URL (https://github.com/owner/repo) には対応できず 404 になる。
+            // Komorebi も GithubSource を使用している。
+            var source = new GithubSource(feedUri.AbsoluteUri.TrimEnd('/'), accessToken: string.Empty, prerelease: false);
             var manager = new UpdateManager(source);
             var updateInfo = await manager.CheckForUpdatesAsync();
             if (updateInfo is null)
@@ -176,7 +180,11 @@ public class UpdateService : IUpdateService
 
         try
         {
-            var source = new SimpleWebSource(feedUri);
+            // GithubSource は GitHub Releases API で latest release の assets を解析する。
+            // SimpleWebSource は `<FeedUrl>/releases-{channel}.json` を直接 GET するため、
+            // GitHub のリポジトリトップ URL (https://github.com/owner/repo) には対応できず 404 になる。
+            // Komorebi も GithubSource を使用している。
+            var source = new GithubSource(feedUri.AbsoluteUri.TrimEnd('/'), accessToken: string.Empty, prerelease: false);
             var manager = new UpdateManager(source);
             manager.ApplyUpdatesAndRestart(updateInfo);
         }
