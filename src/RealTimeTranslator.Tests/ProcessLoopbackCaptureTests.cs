@@ -50,14 +50,16 @@ public sealed class ProcessLoopbackCaptureTests
         Assert.IsNotNull(type, "ProcessLoopbackCapture type should be found");
 
         // Act
+        // VirtualAudioDeviceProcessLoopback (重複定数) は削除されたため、ProcessLoopbackDeviceInterfaceGuid 単独で検証する。
         var iidField = type.GetField("IID_IAudioClient", BindingFlags.NonPublic | BindingFlags.Static);
-        var virtualDeviceField = type.GetField("VirtualAudioDeviceProcessLoopback", BindingFlags.NonPublic | BindingFlags.Static);
+        var processLoopbackGuidField = type.GetField("ProcessLoopbackDeviceInterfaceGuid", BindingFlags.NonPublic | BindingFlags.Static)
+            ?? type.GetField("ProcessLoopbackDeviceInterfaceGuid", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
 
         Assert.IsNotNull(iidField, "IID_IAudioClient field should be found");
-        Assert.IsNotNull(virtualDeviceField, "VirtualAudioDeviceProcessLoopback field should be found");
+        Assert.IsNotNull(processLoopbackGuidField, "ProcessLoopbackDeviceInterfaceGuid field should be found");
 
         var actualAudioClientGuid = (Guid)iidField.GetValue(null)!;
-        var actualProcessLoopbackGuid = (string)virtualDeviceField.GetValue(null)!;
+        var actualProcessLoopbackGuid = (string)processLoopbackGuidField.GetValue(null)!;
 
         // Assert - GUID定数の検証
         Assert.AreEqual(expectedProcessLoopbackGuid, actualProcessLoopbackGuid, "Process Loopback GUID should match");

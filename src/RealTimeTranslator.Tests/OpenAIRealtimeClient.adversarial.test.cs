@@ -193,7 +193,10 @@ public sealed class OpenAIRealtimeClientAdversarialTests
             "ProcessMessage",
             System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
         Assert.IsNotNull(method, "ProcessMessage メソッドが見つからない");
-        method.Invoke(client, new object[] { json });
+        // ProcessMessage は ReadOnlyMemory<byte> を取る（UTF-16 経由を避けるためのホットパス最適化）。
+        // リフレクションは厳密な型一致を要求するため、Memory<byte> ではなく ReadOnlyMemory<byte> に明示変換して box 化する。
+        ReadOnlyMemory<byte> bytes = System.Text.Encoding.UTF8.GetBytes(json);
+        method.Invoke(client, new object[] { bytes });
     }
 
     // ═══════════════════════════════════════════════════════════════

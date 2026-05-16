@@ -109,9 +109,23 @@ public static class LoggerService
             _logDirectory = effectiveConfig.LogDirectory;
             _filePrefix = effectiveConfig.FilePrefix;
 
-            if (!Directory.Exists(effectiveConfig.LogDirectory))
+            // ディレクトリ作成失敗（権限なし / 不正パス）でも crash させない。
+            // 失敗時はファイルロガーを無効化しつつ初期化済みフラグを立てて、
+            // 後続の Log() 呼び出しが auto-init ループに陥らないようにする。
+            try
             {
-                Directory.CreateDirectory(effectiveConfig.LogDirectory);
+                if (!Directory.Exists(effectiveConfig.LogDirectory))
+                {
+                    Directory.CreateDirectory(effectiveConfig.LogDirectory);
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Trace.WriteLine(
+                    $"LoggerService.Initialize: ログディレクトリ '{effectiveConfig.LogDirectory}' へのアクセスに失敗。ファイルログを無効化します: {ex.Message}");
+                // _logger は null のまま、_isConfigured を 1 に立てて auto-init を抑止する。
+                Volatile.Write(ref _isConfigured, 1);
+                return;
             }
 
             var minLevel =
