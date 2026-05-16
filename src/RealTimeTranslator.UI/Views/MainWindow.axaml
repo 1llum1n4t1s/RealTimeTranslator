@@ -12,7 +12,10 @@
         Width="750" Height="550"
         MinWidth="650" MinHeight="450"
         CanResize="False"
-        Background="{DynamicResource Brush.Window}"
+        Background="Transparent"
+        ExtendClientAreaTitleBarHeightHint="32"
+        ExtendClientAreaToDecorationsHint="True"
+        TransparencyLevelHint="AcrylicBlur"
         WindowStartupLocation="CenterScreen">
 
     <Window.Resources>
@@ -23,7 +26,20 @@
         <vm:MainViewModel/>
     </Design.DataContext>
 
-    <Grid Margin="16">
+    <Panel>
+        <!-- ウィンドウ背景: アクリルブラー（Lhamiel と統一） -->
+        <ExperimentalAcrylicBorder IsHitTestVisible="False">
+            <ExperimentalAcrylicBorder.Material>
+                <ExperimentalAcrylicMaterial
+                    BackgroundSource="Digger"
+                    MaterialOpacity="0.85"
+                    TintColor="{DynamicResource Color.Window}"
+                    TintOpacity="0.9" />
+            </ExperimentalAcrylicBorder.Material>
+        </ExperimentalAcrylicBorder>
+
+        <!-- メインコンテンツ。タイトルバー (32px) の下にレイアウトされるよう上 Margin を 36 に -->
+        <Grid Margin="16,36,16,16">
         <!-- Loading Overlay -->
         <Grid IsVisible="{Binding IsLoading}"
               ZIndex="100">
@@ -279,4 +295,5 @@
 
         </TabControl>
     </Grid>
+    </Panel>
 </Window>
