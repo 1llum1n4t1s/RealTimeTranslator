@@ -1,0 +1,48 @@
+name: Build
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build Windows x64
+    runs-on: windows-2022
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - name: Setup .NET
+        uses: actions/setup-dotnet@c2fa09f4bde5ebb9d1777cf28262a3eb3db3ced7 # v5
+        with:
+          dotnet-version: 10.0.x
+      - name: Cache NuGet packages
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj', '**/Directory.Build.props', '**/packages.lock.json') }}
+          restore-keys: ${{ runner.os }}-nuget-
+      - name: Publish
+        # WASAPI Process Loopback が必要なため win-x64 self-contained に固定。
+        # GuardAgainstSettingsJsonInPublish Target が settings.json 混入を MSBuild レベルで拒否する。
+        run: >
+          dotnet publish src/RealTimeTranslator.UI/RealTimeTranslator.UI.csproj
+          -c Release
+          -r win-x64
+          --self-contained true
+          -o publish
+      - name: Verify executable
+        shell: pwsh
+        run: |
+          $exePath = Join-Path "publish" "RealTimeTranslator.UI.exe"
+          if (-not (Test-Path $exePath)) {
+            Write-Error "publish が失敗: $exePath が見つかりません"
+            exit 1
+          }
+          Write-Host "Build OK: $exePath ($(Get-Item $exePath | Select-Object -ExpandProperty Length) bytes)"
+      - name: Upload artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: realtimetranslator.win-x64
+          path: publish/*
+          retention-days: 3

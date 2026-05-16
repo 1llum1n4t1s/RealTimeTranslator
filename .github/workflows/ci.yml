@@ -1,0 +1,42 @@
+name: Continuous Integration
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: Build & Test
+    runs-on: windows-2022
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - name: Setup .NET
+        uses: actions/setup-dotnet@c2fa09f4bde5ebb9d1777cf28262a3eb3db3ced7 # v5
+        with:
+          dotnet-version: 10.0.x
+      - name: Cache NuGet packages
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj', '**/Directory.Build.props', '**/packages.lock.json') }}
+          restore-keys: ${{ runner.os }}-nuget-
+      - name: Restore
+        # WASAPI Process Loopback が必要なため Windows / x64 専用ビルド。
+        run: dotnet restore RealTimeTranslator.slnx -p:Configuration=Release -p:Platform=x64
+      - name: Build
+        run: dotnet build RealTimeTranslator.slnx -c Release -p:Platform=x64 --no-restore
+      - name: Test
+        run: dotnet test src/RealTimeTranslator.Tests/RealTimeTranslator.Tests.csproj -c Release -p:Platform=x64 --no-build --logger "trx;LogFileName=test-results.trx"
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: test-results
+          path: '**/TestResults/*.trx'
+          retention-days: 3

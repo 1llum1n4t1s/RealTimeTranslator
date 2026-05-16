@@ -13,15 +13,15 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Avalonia" Version="12.0.2" />
-    <PackageReference Include="Avalonia.Desktop" Version="12.0.2" />
-    <PackageReference Include="Avalonia.Themes.Fluent" Version="12.0.2" />
-    <PackageReference Include="Avalonia.Fonts.Inter" Version="12.0.2" />
+    <PackageReference Include="Avalonia" Version="12.0.3" />
+    <PackageReference Include="Avalonia.Desktop" Version="12.0.3" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="12.0.3" />
+    <PackageReference Include="Avalonia.Fonts.Inter" Version="12.0.3" />
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
-    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.7" />
-    <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="10.0.7" />
-    <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="10.0.7" />
-    <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.7" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.8" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="10.0.8" />
+    <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="10.0.8" />
+    <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.8" />
     <PackageReference Include="Velopack" Version="0.0.1298" />
   </ItemGroup>
 
@@ -32,18 +32,20 @@
     </None>
   </ItemGroup>
 
-  <!-- Build 時: 出力先に settings.json が無ければ settings.default.json をコピーして初期化する -->
-  <Target Name="CopyDefaultSettingsAfterBuild" AfterTargets="Build">
-    <Copy SourceFiles="$(OutputPath)settings.default.json"
-          DestinationFiles="$(OutputPath)settings.json"
-          Condition="Exists('$(OutputPath)settings.default.json') and !Exists('$(OutputPath)settings.json')" />
-  </Target>
+  <!--
+    Build / Publish 時に settings.json を出力先に生成する処理は削除した。
+    settings.json は実行時に SettingsService.MigrateLegacySettingsIfNeeded() が
+    %LocalAppData%/RealTimeTranslator/ に settings.default.json から初期化する。
+    Publish 配布物に settings.json を含めると開発者ローカルの API キーが混入するリスクが
+    あるため（A3-002 / 過去のサプライチェーン事故ケース）、配布物には .default のみ含める。
+  -->
 
-  <!-- Publish 時: 配布先にも同様に settings.json を生成する（Velopack 配布版で初期設定が無い問題を防ぐ） -->
-  <Target Name="CopyDefaultSettingsAfterPublish" AfterTargets="Publish">
-    <Copy SourceFiles="$(PublishDir)settings.default.json"
-          DestinationFiles="$(PublishDir)settings.json"
-          Condition="Exists('$(PublishDir)settings.default.json') and !Exists('$(PublishDir)settings.json')" />
+  <!--
+    配布物に万一 settings.json が紛れていたらビルドを失敗させる。
+    開発者ローカルでの API キー混入事故を MSBuild レベルで止める。
+  -->
+  <Target Name="GuardAgainstSettingsJsonInPublish" AfterTargets="Publish">
+    <Error Condition="Exists('$(PublishDir)settings.json')" Text="Publish dir に settings.json が含まれています。開発者の API キーが配布物に混入するリスクがあるため、ローカル publish 前に削除してください: $(PublishDir)settings.json" />
   </Target>
 
 </Project>

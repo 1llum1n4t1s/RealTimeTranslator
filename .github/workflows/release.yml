@@ -1,0 +1,104 @@
+name: Release
+on:
+  push:
+    branches:
+      - 'release/**'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build
+    uses: ./.github/workflows/build.yml
+
+  version:
+    name: Prepare version string
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - name: Output version string
+        id: version
+        run: |
+          version=$(grep -oP '(?<=<Version>)[^<]+' Directory.Build.props)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$version" >> "$GITHUB_OUTPUT"
+
+  velopack:
+    needs: [build, version]
+    name: Velopack
+    uses: ./.github/workflows/velopack.yml
+    with:
+      version: ${{ needs.version.outputs.version }}
+
+  release:
+    needs: [velopack, version]
+    name: Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - name: Delete existing releases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.version.outputs.tag }}
+        run: |
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release delete "$TAG" --yes --cleanup-tag
+          fi
+          if gh release view "velopack-$TAG" > /dev/null 2>&1; then
+            gh release delete "velopack-$TAG" --yes --cleanup-tag
+          fi
+      - name: Download Velopack artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: velopack.*
+          path: velopack-packages
+          merge-multiple: true
+      - name: Create Velopack release
+        # Velopack 自動更新クライアント (UpdateService) が参照する RELEASES-* / nupkg を別タグで管理する。
+        # `latest=false` にすることで「最新リリース」表示は人間向けの本リリース側で維持。
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.version.outputs.tag }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          gh release create "velopack-$TAG" \
+            -t "Velopack $VERSION" \
+            --latest=false \
+            --notes "Auto-update packages for Velopack."
+          gh release upload "velopack-$TAG" velopack-packages/*
+      - name: Create release
+        # 人間向け本リリース。Setup.exe のみアップロードして「ダウンロードしてインストール」体験を簡潔にする。
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.version.outputs.tag }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          gh release create "$TAG" -t "$VERSION" --generate-notes
+          gh release upload "$TAG" velopack-packages/*-Setup.exe
+      - name: Cleanup old releases (keep latest 3)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # 通常リリース: タグが数字始まり (1.0.2 等) で velopack- を含まないものを作成日降順で取得
+          gh release list --limit 100 --json tagName,createdAt \
+            --jq '[.[] | select(.tagName | test("^[0-9]"))] | sort_by(.createdAt) | reverse | .[3:] | .[].tagName' \
+          | while read -r tag; do
+              echo "Deleting old release: $tag"
+              gh release delete "$tag" --yes --cleanup-tag || true
+            done
+
+          # Velopack リリース: velopack-x.y.z 形式のものを作成日降順で取得
+          gh release list --limit 100 --json tagName,createdAt \
+            --jq '[.[] | select(.tagName | startswith("velopack-"))] | sort_by(.createdAt) | reverse | .[3:] | .[].tagName' \
+          | while read -r tag; do
+              echo "Deleting old velopack release: $tag"
+              gh release delete "$tag" --yes --cleanup-tag || true
+            done
