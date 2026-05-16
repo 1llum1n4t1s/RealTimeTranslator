@@ -8,6 +8,7 @@
         x:Class="RealTimeTranslator.UI.Views.MainWindow"
         x:DataType="vm:MainViewModel"
         Title="リアルタイム字幕翻訳"
+        Icon="avares://RealTimeTranslator.UI/Assets/app.ico"
         Width="750" Height="550"
         MinWidth="650" MinHeight="450"
         CanResize="False"

@@ -350,27 +350,29 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
 
     private async Task SendSessionUpdateAsync(CancellationToken ct)
     {
+        // 会話セグメントを自動で区切る Voice Activity Detection。
+        // これが無いと delta が無限累積して done が発火せず、字幕が 1 セグメントに溜まり続ける。
+        // silence_duration_ms: 無音継続時間（区切り検出のしきい値）。
+        //   200(default)=細切れすぎ / 500=自然 / 1000+=区切れない。500ms をデフォルトに。
+        // 注: turn_detection は session 直下に置く（v1.0.3 で `session.audio.input.turn_detection` に
+        //     置いたところ `Unknown parameter` エラーが出て発覚）。
         var sessionUpdate = new
         {
             type = "session.update",
             session = new
             {
+                turn_detection = new
+                {
+                    type = "server_vad",
+                    threshold = 0.5,
+                    prefix_padding_ms = 300,
+                    silence_duration_ms = 500
+                },
                 audio = new
                 {
                     input = new
                     {
-                        noise_reduction = new { type = "far_field" },
-                        // 会話セグメントを自動で区切る Voice Activity Detection。
-                        // これが無いと delta が無限累積して done が発火せず、字幕が 1 セグメントに溜まり続ける。
-                        // silence_duration_ms: 無音継続時間（区切り検出のしきい値）。
-                        //   200(default)=細切れすぎ / 500=自然 / 1000+=区切れない。500ms をデフォルトに。
-                        turn_detection = new
-                        {
-                            type = "server_vad",
-                            threshold = 0.5,
-                            prefix_padding_ms = 300,
-                            silence_duration_ms = 500
-                        }
+                        noise_reduction = new { type = "far_field" }
                     },
                     output = new { language = _settings.OutputLanguage }
                 }

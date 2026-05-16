@@ -30,6 +30,12 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
     </None>
+    <!--
+      Avalonia Window の Icon プロパティから `avares://RealTimeTranslator.UI/Assets/app.ico` で
+      参照できるようにリソース化する。ApplicationIcon (exe アイコン) とは別系統で、
+      Window タイトルバー / タスクバー / Alt+Tab に表示される。
+    -->
+    <AvaloniaResource Include="..\..\icon\app.ico" Link="Assets\app.ico" />
   </ItemGroup>
 
   <!--
