@@ -43,6 +43,11 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     // 「、」(読点) は文の区切りではないので含めない (一文の中で複数現れるため)。
     private static readonly char[] SentenceTerminators = ['。', '！', '？', '!', '?', '.'];
 
+    // 観測用カウンタ: partial / 完結文 emit の累計回数を頻度抑制ログで間引きながら吐く。
+    // 「字幕が来ない」「文が切れない」「字幕が成長し続ける」系の調査で経路を可視化する。
+    private long _partialEmitCount;
+    private long _completedEmitCount;
+
     public event EventHandler<SubtitleItem>? SubtitleGenerated;
     public event EventHandler<PipelineStatsEventArgs>? StatsUpdated;
     public event EventHandler<Exception>? ErrorOccurred;
@@ -290,6 +295,12 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         // 切り替えているので、 各 completedSentences の segmentId はそれぞれ別の値。
         foreach (var (segmentId, sentence) in completedSentences)
         {
+            var n = Interlocked.Increment(ref _completedEmitCount);
+            // 完結文 emit は字幕区切れ調査の中核なので全件 Info ログ。
+            // 「字幕が成長し続ける」報告時にここが鳴っていなければ delta only API 挙動か
+            // 句点不在のどちらか、 鳴っていれば overlay 表示側の問題と切り分けられる。
+            Logger.Info($"完結文 emit (delta経路) #{n}: SegmentId={ShortSegmentId(segmentId)} 長さ={sentence.Length} 内容='{TruncateForLog(sentence)}'");
+
             var subtitle = new SubtitleItem
             {
                 SegmentId = segmentId,
@@ -325,15 +336,26 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         _lastEmitTime = DateTime.UtcNow;
         _hasPendingDelta = false;
 
+        var partialText = _accumulatedText.ToString();
+        var segmentId = _currentSegmentId;
+
         var subtitle = new SubtitleItem
         {
-            SegmentId = _currentSegmentId,
-            OriginalText = _accumulatedText.ToString(),
+            SegmentId = segmentId,
+            OriginalText = partialText,
             TranslatedText = "",
             IsFinal = false
         };
 
         SubtitleGenerated?.Invoke(this, subtitle);
+
+        // 頻度抑制: partial は throttle で 100ms ごとに発火するので全件 Info にすると爆発する。
+        // 1, 10, 50, 100, ... と間引いて累積長と SegmentId 推移を観測できるようにする。
+        var count = Interlocked.Increment(ref _partialEmitCount);
+        if (ShouldLogAtCount(count))
+        {
+            Logger.Info($"partial emit #{count}: SegmentId={ShortSegmentId(segmentId)} 累積長={partialText.Length} 内容='{TruncateForLog(partialText)}'");
+        }
     }
 
     private void OnTranscriptCompleted(string transcript)
@@ -342,6 +364,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         // ロックの外で emit するため、 lock 内ではプランだけ作って終わる。
         List<(string segmentId, string text, bool isSentenceEnd)> emissions;
         double latencyMs;
+        int newPortionLength;
 
         lock (_textLock)
         {
@@ -373,6 +396,8 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
             string newPortion = effective.StartsWith(_lastFinalizedTranscript, StringComparison.Ordinal)
                 ? effective[_lastFinalizedTranscript.Length..]
                 : effective;
+
+            newPortionLength = newPortion.Length;
 
             if (string.IsNullOrEmpty(newPortion))
             {
@@ -431,10 +456,22 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
             _latencyStopwatch.Reset();
         }
 
+        // 概況ログ: done 経路で何が起きたかをまとめて 1 行で出す。
+        // (delta only API では呼ばれないが、 通常 API / 将来の挙動変化への観測経路)
+        int completedCount = emissions.Count(e => e.isSentenceEnd);
+        int trailingCount = emissions.Count(e => !e.isSentenceEnd);
+        Logger.Info($"OnTranscriptCompleted: newPortion長={newPortionLength} 完結文={completedCount}件 trailing={trailingCount}件 latency={latencyMs:F0}ms");
+
         // ロック外で emit。 OverlayViewModel は SegmentId が一致する subtitle を更新、
         // 新 SegmentId は新規追加して overlay に履歴として残す。
         foreach (var (segmentId, text, isSentenceEnd) in emissions)
         {
+            if (isSentenceEnd)
+            {
+                var n = Interlocked.Increment(ref _completedEmitCount);
+                Logger.Info($"完結文 emit (done経路) #{n}: SegmentId={ShortSegmentId(segmentId)} 長さ={text.Length} 内容='{TruncateForLog(text)}'");
+            }
+
             var subtitle = new SubtitleItem
             {
                 SegmentId = segmentId,
@@ -517,5 +554,32 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         _realtimeClient.ErrorReceived -= OnClientError;
         _realtimeClient.StateChanged -= OnConnectionStateChanged;
         _audioCaptureService.AudioDataAvailable -= OnAudioDataAvailable;
+    }
+
+    // 観測ログ用ヘルパー: 長文を 40 文字までに切り詰めて、 余ったぶんは "..." で省略する。
+    // 高頻度ログで全文を出すとログが膨張するため、 観測には先頭プレフィックスで十分という方針。
+    private static string TruncateForLog(string? text, int maxLength = 40)
+    {
+        if (string.IsNullOrEmpty(text)) return string.Empty;
+        return text.Length <= maxLength ? text : text[..maxLength] + "...";
+    }
+
+    // 観測ログ用ヘルパー: GUID 形式の SegmentId を先頭 8 文字だけに省略する。
+    // GUID 全体は 36 文字あって読みづらいが、 先頭 8 文字でも識別には十分なため。
+    private static string ShortSegmentId(string? segmentId, int prefixLength = 8)
+    {
+        if (string.IsNullOrEmpty(segmentId)) return string.Empty;
+        return segmentId.Length <= prefixLength ? segmentId : segmentId[..prefixLength];
+    }
+
+    // 観測ログ用ヘルパー: 高頻度ログのうちログに残すカウントを判定する。
+    // 1, 10, 50, 100, 200, 300, ..., 1000, 1500, 2000, ..., 10000, 11000, ... と
+    // 序盤は密に、 後半は粗にログを出して全体傾向と異常を両方追えるようにする。
+    private static bool ShouldLogAtCount(long count)
+    {
+        if (count == 1 || count == 10 || count == 50) return true;
+        if (count < 1000) return count % 100 == 0;
+        if (count < 10000) return count % 500 == 0;
+        return count % 1000 == 0;
     }
 }

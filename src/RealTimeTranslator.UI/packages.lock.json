@@ -104,6 +104,18 @@
           "NuGet.Versioning": "6.14.0"
         }
       },
+      "VelopackUpdateDialog.Avalonia": {
+        "type": "Direct",
+        "requested": "[1.0.1, )",
+        "resolved": "1.0.1",
+        "contentHash": "na6a2PCETAV5iQjoegNg6i53P+DLve2GUS6yUl+a1cBlrBu4O40HuJu+cDZqivbf+1cEb6l58Ol9diISUpMYRg==",
+        "dependencies": {
+          "Avalonia": "12.0.3",
+          "Avalonia.Themes.Fluent": "12.0.3",
+          "CommunityToolkit.Mvvm": "8.4.2",
+          "Velopack": "0.0.1298"
+        }
+      },
       "1llum1n4t1s.NAudio": {
         "type": "Transitive",
         "resolved": "1.0.42",
