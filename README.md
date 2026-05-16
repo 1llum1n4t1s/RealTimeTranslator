@@ -85,7 +85,7 @@ rtk dotnet publish src/RealTimeTranslator.UI -c Release -r win-x64 --self-contai
 
 ## 設定（settings.json）
 
-初回起動時、実行ファイルと同じディレクトリにコピーされる `settings.json` を編集するか、アプリ内の設定画面から変更できます。
+初回起動時、`%APPDATA%\RealTimeTranslator\settings.json`（Roaming AppData）にコピーされる設定ファイルを編集するか、アプリ内の設定画面から変更できます。
 
 | セクション | 主な項目 |
 | --- | --- |
@@ -94,7 +94,7 @@ rtk dotnet publish src/RealTimeTranslator.UI -c Release -r win-x64 --self-contai
 | `AudioCapture` | `SampleRate`（既定 16000） |
 | `Update` | `Enabled`、`FeedUrl`、`AutoApply` |
 
-> ⚠️ **API キーの取り扱い**: `ApiKey` は現状 `settings.json` に保存されます（暗号化対応は順次強化中）。**他人と settings.json を共有しない**でください。
+> ⚠️ **API キーの取り扱い**: `ApiKey` は Windows DPAPI（CurrentUser scope）で暗号化されたうえで `settings.json` に `dpapi:` プレフィックス付き base64 として保存されます。別ユーザー / 別 PC では復号できないため、他環境への持ち出しはできません。
 
 ## プロジェクト構成
 

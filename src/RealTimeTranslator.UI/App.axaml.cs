@@ -107,39 +107,9 @@ public partial class App : Application
             updateService.UpdateSettings(updateSettings);
             _updateCancellation = new CancellationTokenSource();
 
-            // 起動時更新チェックは fire-and-forget（UI スレッドを最大 31 秒ブロックしない）。
-            // AutoApply=true の時のみ自動再起動。false の時は通知だけ出して、ユーザー操作で適用させる
-            //（v1.0.3 で AutoApply 設定を無視して強制 ApplyUpdatesAndRestart していたバグの修正）。
-            _ = Task.Run(async () =>
-            {
-                try
-                {
-                    if (!updateSettings.AutoApply)
-                    {
-                        // チェックだけ実行。更新検出時は UpdateReady イベント → MainViewModel.OnUpdateReady で
-                        // ユーザーに「再起動して適用しますか？」ダイアログを出す。
-                        await updateService.CheckOnceAsync(_updateCancellation.Token).ConfigureAwait(false);
-                        return;
-                    }
-
-                    var shouldRestart = await updateService.CheckAndApplyStartupAsync(_updateCancellation.Token)
-                        .ConfigureAwait(false);
-                    if (shouldRestart)
-                    {
-                        await Dispatcher.UIThread.InvokeAsync(() =>
-                        {
-                            LoggerService.LogInfo("OnStartup: 更新適用のためアプリを再起動します。");
-                            desktop.Shutdown(0);
-                        });
-                    }
-                }
-                catch (OperationCanceledException) { /* shutdown 中 */ }
-                catch (Exception ex)
-                {
-                    LoggerService.LogError($"OnStartup: 更新チェック失敗: {ex}");
-                }
-            });
-
+            // Komorebi 流: 起動時の自動チェック + 周期チェックを 1 本の StartAsync に集約。
+            // 更新検出時は UpdateAvailable イベント → MainViewModel.OnUpdateAvailable で
+            // SelfUpdateWindow を開き、ユーザーが「ダウンロード＆インストール」を押してから DL → Apply する。
             _ = updateService.StartAsync(_updateCancellation.Token).ContinueWith(t =>
             {
                 if (t.IsFaulted)

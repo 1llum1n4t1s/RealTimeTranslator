@@ -1,0 +1,96 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:m="using:RealTimeTranslator.Core.Models"
+        xmlns:um="using:RealTimeTranslator.UI.Models"
+        xmlns:vm="using:RealTimeTranslator.UI.ViewModels"
+        mc:Ignorable="d" d:DesignWidth="500" d:DesignHeight="200"
+        x:Class="RealTimeTranslator.UI.Views.SelfUpdateWindow"
+        x:DataType="vm:SelfUpdateViewModel"
+        x:Name="ThisWindow"
+        Title="ソフトウェアの更新"
+        Icon="avares://RealTimeTranslator.UI/Assets/app.ico"
+        SizeToContent="WidthAndHeight"
+        CanResize="False"
+        MinWidth="380"
+        WindowStartupLocation="CenterOwner">
+    <Grid>
+        <ContentControl Content="{Binding Data}">
+            <ContentControl.DataTemplates>
+
+                <!-- 新バージョン通知: ProgressBar + 「ダウンロード＆インストール」 -->
+                <DataTemplate DataType="um:VelopackUpdate">
+                    <StackPanel Orientation="Vertical" Margin="24,20">
+                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,4,0,12">
+                            <TextBlock FontWeight="Bold" FontSize="14"
+                                       VerticalAlignment="Center"
+                                       Text="このソフトウェアの新しいバージョンが利用できます: "/>
+                            <Border Margin="4,0,0,0" Height="22" CornerRadius="11"
+                                    Background="{DynamicResource SystemAccentColorBrush}">
+                                <TextBlock Margin="10,0" Text="{Binding TagName}" FontSize="12"
+                                           Foreground="White" VerticalAlignment="Center"/>
+                            </Border>
+                        </StackPanel>
+
+                        <ProgressBar Minimum="0" Maximum="100"
+                                     Value="{Binding #ThisWindow.((vm:SelfUpdateViewModel)DataContext).DownloadProgress}"
+                                     IsVisible="{Binding #ThisWindow.((vm:SelfUpdateViewModel)DataContext).IsDownloading}"
+                                     Height="8" Margin="0,8,0,0" Width="420"/>
+
+                        <StackPanel Margin="0,16,0,0" Orientation="Horizontal" HorizontalAlignment="Center">
+                            <Button Classes="accent"
+                                    Height="32" MinWidth="200"
+                                    Click="DownloadAndInstall"
+                                    IsVisible="{Binding #ThisWindow.((vm:SelfUpdateViewModel)DataContext).!IsDownloading}"
+                                    HorizontalContentAlignment="Center"
+                                    VerticalContentAlignment="Center"
+                                    Content="ダウンロード＆インストール"/>
+                        </StackPanel>
+                    </StackPanel>
+                </DataTemplate>
+
+                <!-- 最新版: シンプル通知 + 閉じる -->
+                <DataTemplate DataType="m:AlreadyUpToDate">
+                    <StackPanel Orientation="Vertical" Margin="24,20">
+                        <TextBlock HorizontalAlignment="Center" Margin="0,8"
+                                   FontSize="14"
+                                   Text="利用できる更新はありません。"/>
+
+                        <Button Classes="accent"
+                                Height="32" MinWidth="120"
+                                Margin="0,12,0,0"
+                                Click="CloseWindow"
+                                Content="閉じる"
+                                HorizontalAlignment="Center"
+                                HorizontalContentAlignment="Center"
+                                VerticalContentAlignment="Center"/>
+                    </StackPanel>
+                </DataTemplate>
+
+                <!-- 失敗: エラー表示 + 閉じる -->
+                <DataTemplate DataType="m:SelfUpdateFailed">
+                    <StackPanel Orientation="Vertical" Margin="24,20" MaxWidth="460">
+                        <TextBlock FontWeight="Bold" FontSize="14"
+                                   HorizontalAlignment="Center"
+                                   Foreground="#D13438"
+                                   Text="更新の確認に失敗しました！"/>
+
+                        <TextBlock Text="{Binding Reason}" TextWrapping="Wrap"
+                                   Margin="0,12,0,0" TextAlignment="Center"/>
+
+                        <Button Classes="accent"
+                                Height="32" MinWidth="120"
+                                Margin="0,16,0,0"
+                                Click="CloseWindow"
+                                Content="閉じる"
+                                HorizontalAlignment="Center"
+                                HorizontalContentAlignment="Center"
+                                VerticalContentAlignment="Center"/>
+                    </StackPanel>
+                </DataTemplate>
+
+            </ContentControl.DataTemplates>
+        </ContentControl>
+    </Grid>
+</Window>

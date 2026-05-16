@@ -31,6 +31,18 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     private volatile bool _disposed;
     private DateTime _lastAudioErrorLogTime = DateTime.MinValue;
 
+    // OpenAI Realtime Translation API は transcript.done を「セッション累積の全文」で
+    // 返してくる挙動が観測されている (2026-05-16)。 そのまま finalText として overlay に出すと
+    // 「まあ → まあ、 → まあ、ノ → ...」と1つの subtitle が際限なく成長する UX 不具合になる。
+    // _lastFinalizedTranscript で「既に確定字幕として出した累積テキスト」を保持し、
+    // done のたびに差分だけを抽出 → 句点で分割 → 文ごとに新 SegmentId で emit することで
+    // 「会話が途切れず長文化する」問題を回避する。
+    private string _lastFinalizedTranscript = string.Empty;
+
+    // 句点として扱う文字。 ASCII 終端も入れて英語訳出力にも対応する。
+    // 「、」(読点) は文の区切りではないので含めない (一文の中で複数現れるため)。
+    private static readonly char[] SentenceTerminators = ['。', '！', '？', '!', '?', '.'];
+
     public event EventHandler<SubtitleItem>? SubtitleGenerated;
     public event EventHandler<PipelineStatsEventArgs>? StatsUpdated;
     public event EventHandler<Exception>? ErrorOccurred;
@@ -86,6 +98,18 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         }
 
         Logger.Info("翻訳パイプライン開始（OpenAI Realtime API）");
+
+        // 前セッションの累積 transcript / SegmentId をリセットしないと、 再 Start 時に
+        // 「前回 done で確定したテキストを prefix として保持」した状態から始まり、
+        // 新セッションの最初の done で全文が emit されない (or 重複検知される) 不具合になる。
+        lock (_textLock)
+        {
+            _lastFinalizedTranscript = string.Empty;
+            _accumulatedText.Clear();
+            _currentSegmentId = Guid.NewGuid().ToString();
+            _lastEmitTime = DateTime.MinValue;
+            _hasPendingDelta = false;
+        }
 
         await _realtimeClient.ConnectAsync(settings, token);
 
@@ -242,19 +266,79 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
 
     private void OnTranscriptCompleted(string transcript)
     {
-        string segmentId;
+        // 確定字幕として出すべき「新規ぶん」と、 各文の SegmentId を計算して
+        // ロックの外で emit するため、 lock 内ではプランだけ作って終わる。
+        List<(string segmentId, string text, bool isSentenceEnd)> emissions;
         double latencyMs;
-        string fallbackText;
 
         lock (_textLock)
         {
-            segmentId = _currentSegmentId;
             latencyMs = _latencyStopwatch.Elapsed.TotalMilliseconds;
-            // done で transcript が空のとき、直前まで delta で蓄積した文字列を確定字幕として使う。
-            // これがないと「partial 表示 → 空の done で字幕が消える」UX バグになる。
-            fallbackText = _accumulatedText.ToString();
 
-            _currentSegmentId = Guid.NewGuid().ToString();
+            // API から transcript が空で done が来た場合 (response.done fallback 経路など) は
+            // 直前まで delta で蓄積してきた _accumulatedText を確定字幕として使う。
+            // transcript が空でなければ「セッション累積の全文」が来ている前提で扱う。
+            string effective;
+            if (string.IsNullOrEmpty(transcript))
+            {
+                effective = _lastFinalizedTranscript + _accumulatedText.ToString();
+            }
+            else
+            {
+                effective = transcript;
+            }
+
+            // 既に確定字幕として出したぶんを差し引いて、 今回出すべき新規ぶんを得る。
+            // 通常は effective が _lastFinalizedTranscript で始まるはずだが、 API 側で
+            // 修正が入って prefix が崩れる稀なケースもあり得るので、 startsWith が成立しない時は
+            // effective 全体を新規ぶんとして扱う (重複表示よりも欠落のほうがマシ)。
+            string newPortion = effective.StartsWith(_lastFinalizedTranscript, StringComparison.Ordinal)
+                ? effective[_lastFinalizedTranscript.Length..]
+                : effective;
+
+            if (string.IsNullOrEmpty(newPortion))
+            {
+                // 累積 done が来たが新規ぶんが無い (同 transcript を 2 回受信した等)
+                // → emit すべきものがない。 状態だけリセットして抜ける。
+                _accumulatedText.Clear();
+                _lastEmitTime = DateTime.MinValue;
+                _hasPendingDelta = false;
+                _throttleTimer.Change(Timeout.Infinite, Timeout.Infinite);
+                _latencyStopwatch.Reset();
+                Logger.Debug("OnTranscriptCompleted: 新規ぶんなし。emit スキップ");
+                return;
+            }
+
+            // newPortion を句点で分割して、 完結した文ごとに新 SegmentId を割り当てる。
+            // 末尾の未完結フラグメント (句点なし) は現 SegmentId で更新表示する。
+            emissions = new List<(string, string, bool)>();
+            int start = 0;
+            for (int i = 0; i < newPortion.Length; i++)
+            {
+                if (Array.IndexOf(SentenceTerminators, newPortion[i]) >= 0)
+                {
+                    // start..i が 1 文 (句点含む) として完結
+                    var sentence = newPortion[start..(i + 1)];
+                    if (!string.IsNullOrWhiteSpace(sentence))
+                    {
+                        emissions.Add((_currentSegmentId, sentence, true));
+                        _currentSegmentId = Guid.NewGuid().ToString();
+                    }
+                    start = i + 1;
+                }
+            }
+            // 残りの未完結部分
+            if (start < newPortion.Length)
+            {
+                var trailing = newPortion[start..];
+                if (!string.IsNullOrWhiteSpace(trailing))
+                {
+                    emissions.Add((_currentSegmentId, trailing, false));
+                }
+            }
+
+            // 累積基準を進める + partial 表示用の蓄積をクリア
+            _lastFinalizedTranscript = effective;
             _accumulatedText.Clear();
             _lastEmitTime = DateTime.MinValue;
             _hasPendingDelta = false;
@@ -262,23 +346,19 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
             _latencyStopwatch.Reset();
         }
 
-        var finalText = string.IsNullOrEmpty(transcript) ? fallbackText : transcript;
-        if (string.IsNullOrEmpty(finalText))
+        // ロック外で emit。 OverlayViewModel は SegmentId が一致する subtitle を更新、
+        // 新 SegmentId は新規追加して overlay に履歴として残す。
+        foreach (var (segmentId, text, isSentenceEnd) in emissions)
         {
-            // done も partial も両方空なら、UI に通知する意味がない（空の SubtitleItem は overlay に空表示を残す）
-            Logger.Debug("OnTranscriptCompleted: 空の done を受信、字幕通知をスキップ");
-            return;
+            var subtitle = new SubtitleItem
+            {
+                SegmentId = segmentId,
+                OriginalText = string.Empty,
+                TranslatedText = text,
+                IsFinal = true,
+            };
+            SubtitleGenerated?.Invoke(this, subtitle);
         }
-
-        var subtitle = new SubtitleItem
-        {
-            SegmentId = segmentId,
-            OriginalText = string.Empty,
-            TranslatedText = finalText,
-            IsFinal = true
-        };
-
-        SubtitleGenerated?.Invoke(this, subtitle);
 
         StatsUpdated?.Invoke(this, new PipelineStatsEventArgs
         {

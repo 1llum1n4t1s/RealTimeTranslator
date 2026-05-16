@@ -93,6 +93,39 @@ public partial class MainViewModel : ObservableObject, IDisposable
     private bool _isApiKeyConfigured;
 
     /// <summary>
+    /// バージョンタブの「更新の確認」ボタン押下中フラグ。
+    /// ボタンの IsEnabled / 連打防止に使う。
+    /// </summary>
+    [ObservableProperty]
+    private bool _isCheckingUpdate;
+
+    /// <summary>
+    /// バージョンタブに表示する更新チェックのステータスメッセージ。
+    /// 既存の OnUpdateStatusChanged 経由で更新する。
+    /// </summary>
+    [ObservableProperty]
+    private string _updateStatusText = string.Empty;
+
+    /// <summary>
+    /// バージョンタブのコピーライト表示。AssemblyCopyrightAttribute から取得。
+    /// </summary>
+    public string CopyrightText { get; } = LoadCopyrightText();
+
+    private static string LoadCopyrightText()
+    {
+        try
+        {
+            var assembly = typeof(MainViewModel).Assembly;
+            return assembly.GetCustomAttribute<AssemblyCopyrightAttribute>()?.Copyright
+                   ?? "Copyright © 2024-2026 ゆろち";
+        }
+        catch
+        {
+            return "Copyright © 2024-2026 ゆろち";
+        }
+    }
+
+    /// <summary>
     /// タイトルバーに表示するアプリバージョン（Lhamiel と統一）。
     /// AssemblyInformationalVersion から取得し、'+' 以降のビルドメタを除去。
     /// </summary>
@@ -167,7 +200,6 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
         _updateService.StatusChanged += OnUpdateStatusChanged;
         _updateService.UpdateAvailable += OnUpdateAvailable;
-        _updateService.UpdateReady += OnUpdateReady;
         _updateService.UpdateSettings(_settings.Update);
 
         // RefreshProcesses は Process.GetProcesses + 全 audio session 列挙で 100-500ms かかるため、
@@ -275,6 +307,9 @@ public partial class MainViewModel : ObservableObject, IDisposable
         RunOnUiThread(() =>
         {
             Log($"更新: {e.Message}");
+            // バージョンタブの「更新の確認」結果表示にもメッセージを流す。
+            // 既存の Log（ログタブ）はそのまま、バージョンタブのテキストブロックに UpdateStatusText が出る。
+            UpdateStatusText = e.Message;
             if (!IsRunning && e.Status == UpdateStatus.Failed)
             {
                 StatusText = "更新エラー";
@@ -288,45 +323,91 @@ public partial class MainViewModel : ObservableObject, IDisposable
         RunOnUiThread(() =>
         {
             Log($"更新: {e.Message}");
-            if (!_settings.Update.AutoApply)
-            {
-                _ = Services.MessageBoxService.ShowAsync("更新通知", $"更新が見つかりました。\n{e.Message}");
-            }
+            // 自動チェックで更新が見つかった場合は SelfUpdateWindow を開く。
+            // Komorebi の ShowSelfUpdateResult と同じ挙動。
+            _ = ShowSelfUpdateDialogAsync(e.UpdateData);
         });
     }
 
-    private async void OnUpdateReady(object? sender, UpdateReadyEventArgs e)
+
+    /// <summary>
+    /// バージョンタブの「更新の確認」ボタン。手動チェック結果は SelfUpdateWindow ダイアログで表示する。
+    /// Komorebi の Check4Update(manually:true) → ShowSelfUpdateResult と同じ挙動。
+    /// </summary>
+    [RelayCommand]
+    private async Task CheckForUpdateAsync()
+    {
+        if (IsCheckingUpdate) return;
+
+        IsCheckingUpdate = true;
+        UpdateStatusText = "更新を確認しています...";
+        try
+        {
+            var data = await _updateService.Check4UpdateAsync(manually: true, CancellationToken.None)
+                .ConfigureAwait(false);
+            await RunOnUiThreadAsync(async () =>
+            {
+                if (data is not null)
+                    await ShowSelfUpdateDialogAsync(data);
+            });
+        }
+        catch (Exception ex)
+        {
+            LoggerService.LogError($"CheckForUpdateAsync 失敗: {ex.Message}");
+            RunOnUiThread(() => UpdateStatusText = $"更新確認でエラー: {ex.Message}");
+        }
+        finally
+        {
+            RunOnUiThread(() => IsCheckingUpdate = false);
+        }
+    }
+
+    /// <summary>
+    /// SelfUpdateWindow を MainWindow の上にモーダル表示する。
+    /// data は VelopackUpdate / AlreadyUpToDate / SelfUpdateFailed のいずれか。
+    /// </summary>
+    private static async Task ShowSelfUpdateDialogAsync(object data)
     {
         try
         {
-            await RunOnUiThreadAsync(async () =>
+            await Dispatcher.UIThread.InvokeAsync(async () =>
             {
-                Log($"更新: {e.Message}");
-                if (_settings.Update.AutoApply)
-                {
-                    Log("更新を自動適用します。");
-                    await _updateService.ApplyUpdateAsync(CancellationToken.None);
-                    return;
-                }
+                var vm = new SelfUpdateViewModel { Data = data };
+                var window = new Views.SelfUpdateWindow { DataContext = vm };
 
-                var result = await Services.MessageBoxService.ShowYesNoAsync(
-                    "更新適用", "更新のダウンロードが完了しました。今すぐ適用しますか？");
-
-                if (result)
+                if (Avalonia.Application.Current?.ApplicationLifetime
+                    is Avalonia.Controls.ApplicationLifetimes.IClassicDesktopStyleApplicationLifetime desktop
+                    && desktop.MainWindow is not null)
                 {
-                    await _updateService.ApplyUpdateAsync(CancellationToken.None);
+                    await window.ShowDialog(desktop.MainWindow);
                 }
                 else
                 {
-                    _updateService.DismissPendingUpdate();
-                    Log("更新の適用を保留しました。");
+                    window.Show();
                 }
             });
         }
         catch (Exception ex)
         {
-            LoggerService.LogError($"OnUpdateReady: Error handling update: {ex.Message}");
-            Log($"更新の処理中にエラーが発生しました: {ex.Message}");
+            LoggerService.LogError($"ShowSelfUpdateDialogAsync 失敗: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// バージョンタブの「ご意見・ご要望」ボタン。GitHub Issues を既定ブラウザで開く。
+    /// </summary>
+    [RelayCommand]
+    private void OpenFeedbackLink()
+    {
+        const string url = "https://github.com/1llum1n4t1s/RealTimeTranslator/issues";
+        try
+        {
+            Process.Start(new ProcessStartInfo { FileName = url, UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            LoggerService.LogError($"OpenFeedbackLink 失敗: {ex.Message}");
+            UpdateStatusText = $"ブラウザを起動できませんでした: {ex.Message}";
         }
     }
 
@@ -938,7 +1019,6 @@ public partial class MainViewModel : ObservableObject, IDisposable
         _settingsViewModel.SettingsSaved -= OnSettingsSaved;
         _updateService.StatusChanged -= OnUpdateStatusChanged;
         _updateService.UpdateAvailable -= OnUpdateAvailable;
-        _updateService.UpdateReady -= OnUpdateReady;
 
         LoggerService.LogInfo("MainViewModel.Dispose: イベントハンドラ解除完了");
 

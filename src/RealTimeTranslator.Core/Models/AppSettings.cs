@@ -16,9 +16,6 @@ public class UpdateSettings
     // objects.githubusercontent.com ホスト allowlist で安全性確保済み。
     public bool Enabled { get; set; } = true;
     public string FeedUrl { get; set; } = string.Empty;
-    // 自動再起動はデフォルト無効: 起動時に強制 ApplyUpdatesAndRestart して UI が
-    // 固まる事故 (v1.0.3) があったため、明示的なユーザー操作で適用させる。
-    public bool AutoApply { get; set; } = false;
 }
 
 

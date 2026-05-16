@@ -293,6 +293,86 @@
                 </ScrollViewer>
             </TabItem>
 
+            <!-- ═══ Tab 4: バージョン ═══ -->
+            <TabItem Header="バージョン">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="8,0,8,12">
+                        <TextBlock Margin="4,0,0,4" FontSize="28" FontWeight="Bold"
+                                   Text="リアルタイム字幕翻訳"/>
+                        <TextBlock Margin="4,0,0,20" FontSize="14"
+                                   Foreground="{DynamicResource Brush.FG2}"
+                                   Text="ゲームや動画の音声をリアルタイムで翻訳字幕に変換するデスクトップアプリ"/>
+
+                        <!-- バージョン情報パネル -->
+                        <Border Margin="0,0,0,12" Padding="16"
+                                Background="{DynamicResource Brush.Container}"
+                                BorderBrush="{DynamicResource Brush.Border}"
+                                BorderThickness="1" CornerRadius="14">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                </Grid.RowDefinitions>
+
+                                <TextBlock Grid.Row="0" Grid.Column="0"
+                                           Margin="0,0,12,0" VerticalAlignment="Center"
+                                           FontSize="13"
+                                           Foreground="{DynamicResource Brush.FG2}"
+                                           Text="バージョン"/>
+                                <TextBlock Grid.Row="0" Grid.Column="1"
+                                           VerticalAlignment="Center" FontSize="13"
+                                           Text="{Binding VersionText}"/>
+                                <Button Grid.Row="0" Grid.Column="2"
+                                        Command="{Binding CheckForUpdateCommand}"
+                                        Content="更新の確認" FontSize="12"
+                                        IsEnabled="{Binding !IsCheckingUpdate}"/>
+                                <TextBlock Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="3"
+                                           Margin="0,6,0,0" FontSize="12"
+                                           Foreground="{DynamicResource Brush.FG2}"
+                                           IsVisible="{Binding UpdateStatusText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"
+                                           Text="{Binding UpdateStatusText}"
+                                           TextWrapping="Wrap"/>
+                            </Grid>
+                        </Border>
+
+                        <!-- ご意見・ご要望 -->
+                        <Border Margin="0,0,0,12" Padding="16"
+                                Background="{DynamicResource Brush.Container}"
+                                BorderBrush="{DynamicResource Brush.Border}"
+                                BorderThickness="1" CornerRadius="14">
+                            <StackPanel>
+                                <TextBlock Margin="0,0,0,8" FontSize="13"
+                                           Foreground="{DynamicResource Brush.FG2}"
+                                           Text="不具合報告・ご要望は GitHub Issues へどうぞ。"
+                                           TextWrapping="Wrap"/>
+                                <Button Command="{Binding OpenFeedbackLinkCommand}"
+                                        Content="GitHub Issues を開く" FontSize="12"/>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- コピーライト -->
+                        <Border Padding="16"
+                                Background="{DynamicResource Brush.Container}"
+                                BorderBrush="{DynamicResource Brush.Border}"
+                                BorderThickness="1" CornerRadius="14">
+                            <StackPanel>
+                                <TextBlock Margin="0,0,0,6" FontSize="13" FontWeight="SemiBold"
+                                           Text="コピーライト"/>
+                                <TextBlock FontSize="13"
+                                           Foreground="{DynamicResource Brush.FG2}"
+                                           Text="{Binding CopyrightText}"
+                                           TextWrapping="Wrap"/>
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
         </TabControl>
     </Grid>
     </Panel>
