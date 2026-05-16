@@ -288,10 +288,16 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                 effective = transcript;
             }
 
-            // 既に確定字幕として出したぶんを差し引いて、 今回出すべき新規ぶんを得る。
-            // 通常は effective が _lastFinalizedTranscript で始まるはずだが、 API 側で
-            // 修正が入って prefix が崩れる稀なケースもあり得るので、 startsWith が成立しない時は
-            // effective 全体を新規ぶんとして扱う (重複表示よりも欠落のほうがマシ)。
+            // 既に確定字幕として出した「完結文の累積」を差し引いて、 今回出すべき新規ぶん
+            // (= 前回 trailing + 新規完結文 + 新規 trailing) を得る。
+            // ⚠️ _lastFinalizedTranscript には trailing を含めないことが重要。
+            // trailing を含めて累積を進めてしまうと、 次の done で「trailing の続き」だけが
+            // newPortion になり、 完結文を emit するときに前回 trailing が消える UX バグになる
+            // (v1.0.9 で発生し v1.0.10 で修正)。
+            // trailing 部分は newPortion 先頭に毎回再登場することで、 完結時に既存 SegmentId に
+            // update され、 字幕が成長して 1 文として完結表示される設計。
+            // API 側で修正が入って prefix が崩れる稀なケースは effective 全体を新規ぶんとして扱う
+            // (重複表示よりも欠落のほうがマシ)。
             string newPortion = effective.StartsWith(_lastFinalizedTranscript, StringComparison.Ordinal)
                 ? effective[_lastFinalizedTranscript.Length..]
                 : effective;
@@ -309,8 +315,12 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                 return;
             }
 
-            // newPortion を句点で分割して、 完結した文ごとに新 SegmentId を割り当てる。
-            // 末尾の未完結フラグメント (句点なし) は現 SegmentId で更新表示する。
+            // newPortion を句点で分割して、 完結した文ごとに emit する。
+            // 完結文 emit 時の SegmentId は _currentSegmentId (= 前回 trailing と同じ ID)
+            // にすることで、 前回 trailing 表示中の字幕を「完結形」に update できる。
+            // emit 後に _currentSegmentId を新規発行し、 _lastFinalizedTranscript には
+            // 完結文ぶんだけ加算 (trailing は含めない)。
+            // 末尾の未完結フラグメント (句点なし) は新しい _currentSegmentId で update 表示する。
             emissions = new List<(string, string, bool)>();
             int start = 0;
             for (int i = 0; i < newPortion.Length; i++)
@@ -323,11 +333,15 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                     {
                         emissions.Add((_currentSegmentId, sentence, true));
                         _currentSegmentId = Guid.NewGuid().ToString();
+                        // 確定累積を完結文ぶんだけ進める (trailing は次回更新時に再登場させる)
+                        _lastFinalizedTranscript += sentence;
                     }
                     start = i + 1;
                 }
             }
-            // 残りの未完結部分
+            // 残りの未完結部分 (trailing) は _currentSegmentId で emit。
+            // 次回 done で続きが来たら、 startsWith 差分で newPortion 先頭に再登場し
+            // 完結文として既存 SegmentId に update される。
             if (start < newPortion.Length)
             {
                 var trailing = newPortion[start..];
@@ -337,8 +351,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                 }
             }
 
-            // 累積基準を進める + partial 表示用の蓄積をクリア
-            _lastFinalizedTranscript = effective;
+            // partial 表示用の delta 蓄積はクリア (次の done までの partial 用に再使用)
             _accumulatedText.Clear();
             _lastEmitTime = DateTime.MinValue;
             _hasPendingDelta = false;
