@@ -87,4 +87,14 @@ Audio Capture (WASAPI) → Resample 16kHz→24kHz → PCM16 → OpenAI Realtime 
 - **Error propagation**: Event-based (`ErrorOccurred` events bubble up to UI)
 - **Output paths**: Simplified — `bin/{Configuration}/` (no TFM/platform subdirectories, set in Directory.Build.props)
 - **Auto-update**: Velopack. Release via `release/**` branch push → GitHub Actions → GitHub Releases
-- **API Key**: BYOK model. User provides their own OpenAI API key, stored in `settings.json` (runtime copy in bin/)
+- **API Key**: BYOK model. User provides their own OpenAI API key, stored DPAPI-encrypted (`dpapi:` prefix) in `%LocalAppData%/RealTimeTranslator/settings.json`. Legacy plain-text settings in `bin/settings.json` are auto-migrated on startup.
+- **Logging**: SuperLightLogger (NLog-compatible API). Log files live in `%LocalAppData%/RealTimeTranslator/logs/`. The earlier "log4net → NLog" commit message refers to the migration off log4net; the actual implementation uses SuperLightLogger's `LogManager.Configure(... AddSuperLightFile ...)`.
+
+## Operations / トラブルシュート
+
+- **ログの場所**: `%LocalAppData%/RealTimeTranslator/logs/RealTimeTranslator_yyyyMMdd.log`（ローテーションあり、デフォルト 7 日間保持）。Velopack 更新で消失しない。
+- **設定ファイルの場所**: `%LocalAppData%/RealTimeTranslator/settings.json`。API キーは DPAPI で暗号化されており、別ユーザー / 別 PC では復号できない。
+- **API キー漏洩疑惑時の対応**: `settings.json` の `OpenAIRealtime.ApiKey` は `dpapi:` プレフィックス付き base64 で保存されている必要がある。生の `sk-...` 形式が見えたら旧形式のまま（次回保存で自動暗号化）。
+- **Velopack 更新失敗時**: `LoggerService.LogError` で `UpdateService.CheckAndDownloadCoreAsync 失敗` の例外詳細が記録される。FeedUrl が `github.com` または `objects.githubusercontent.com` 以外を指している場合、`TryGetValidFeedUri` で拒否される。
+- **接続失敗時**: `OpenAIRealtimeClient.ValidateEndpoint` で wss + `api.openai.com` 以外は拒否される。`KeepAliveInterval=15s` / `KeepAliveTimeout=20s` で半切断を検知し、`NetworkChange.NetworkAvailabilityChanged` で復帰時に再接続カウンタをリセットする。
+- **クラッシュレポート**: `AppDomain.UnhandledException` / `TaskScheduler.UnobservedTaskException` / `Dispatcher.UIThread.UnhandledException` の 3 つのハンドラがログに記録する。バックグラウンド Task の例外もここで拾える。

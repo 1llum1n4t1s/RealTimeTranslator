@@ -20,7 +20,13 @@ public static class AudioFormatConverter
         var outputCount = (int)(samples16k.Length * (double)TargetSampleRate / SourceSampleRate) + 1;
         var output = new float[outputCount];
         var read = resampler.Read(output, 0, outputCount);
-        return output.AsSpan(0, read).ToArray();
+        if (read == 0) return [];
+        if (read == outputCount) return output; // 全長取れた場合は再確保しない（約 9 割のケース）
+
+        // 端数のみ trim（AsSpan().ToArray() は内部で new float[read] + CopyTo を呼ぶので等価だが明示する）
+        var trimmed = new float[read];
+        Array.Copy(output, trimmed, read);
+        return trimmed;
     }
 
     public static byte[] Float32ToPcm16(float[] samples)

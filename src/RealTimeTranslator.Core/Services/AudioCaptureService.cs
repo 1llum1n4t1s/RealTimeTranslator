@@ -27,7 +27,9 @@ public class AudioCaptureService : IAudioCaptureService
     private IWaveIn? _capture;
     private WaveFormat? _targetFormat;
     private readonly AudioCaptureSettings _settings;
-    private readonly List<float> _audioBuffer = [];
+    // Queue&lt;float&gt; を使うことで先頭からの Dequeue が O(1) になる。
+    // 旧 List&lt;float&gt;.RemoveRange(0, N) は内部 memmove で O(残量) だった。
+    private readonly Queue<float> _audioBuffer = new();
     private readonly object _bufferLock = new();
     private bool _isCapturing;
     private bool _isDisposed;
@@ -393,23 +395,31 @@ public class AudioCaptureService : IAudioCaptureService
                 ? Resample(samples, sourceFormat.SampleRate, targetSampleRate)
                 : samples;
 
-            _audioBuffer.AddRange(resampledForVad);
+            foreach (var s in resampledForVad)
+            {
+                _audioBuffer.Enqueue(s);
+            }
 
-            // バッファサイズが上限を超えた場合は古いデータを削除
+            // バッファサイズが上限を超えた場合は先頭から O(1) で破棄
             if (_audioBuffer.Count > MaxBufferSize)
             {
                 var excessSamples = _audioBuffer.Count - MaxBufferSize;
-                _audioBuffer.RemoveRange(0, excessSamples);
+                for (var i = 0; i < excessSamples; i++)
+                {
+                    _audioBuffer.Dequeue();
+                }
                 LoggerService.LogDebug($"Audio buffer overflow prevented: removed {excessSamples} samples");
             }
 
-            // 一定量のデータが溜まったらイベントを発火
+            // 一定量のデータが溜まったらイベントを発火（Queue.Dequeue は O(1)）
             var samplesPerChunk = targetSampleRate * AudioChunkDurationMs / 1000;
             while (_audioBuffer.Count >= samplesPerChunk)
             {
                 var chunk = new float[samplesPerChunk];
-                _audioBuffer.CopyTo(0, chunk, 0, samplesPerChunk);
-                _audioBuffer.RemoveRange(0, samplesPerChunk);
+                for (var i = 0; i < samplesPerChunk; i++)
+                {
+                    chunk[i] = _audioBuffer.Dequeue();
+                }
 
                 AudioDataAvailable?.Invoke(this, new AudioDataEventArgs(chunk, DateTime.Now));
             }

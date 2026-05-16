@@ -27,9 +27,8 @@ RealTimeTranslator と同じ 1llum1n4t1s.NAudio を使い、**UI スレッドで
 
 ## NAudio の参照
 
-- **現状**: ローカルの `1llum1n4t1s.NAudio` を **ProjectReference** で参照しています。  
-  NuGet の 1.0.22 には Process Loopback の STA 修正（IntPtr 返却・STA での RCW 構築・COM 呼び出しの syncContext 実行）が入っていない可能性があり、パッケージ参照のままでは `raw16=[-1,1]` のプレースホルダーのみになることがあります。
-- **切り分け**: この状態で実音が取れれば、本番は「STA 修正を含んだ NAudio の新バージョン」をパッケージで参照するか、必要な間だけ ProjectReference のままにしてください。修正入りパッケージが出たら `MinimalProcessLoopbackWpf.csproj` の ProjectReference を PackageReference に戻して問題ありません。
+- **現状**: `1llum1n4t1s.NAudio` を **PackageReference (Version=1.0.42)** で参照しています（`MinimalProcessLoopbackWpf.csproj` を参照）。STA 修正（IntPtr 返却・STA での RCW 構築・COM 呼び出しの syncContext 実行）はこのバージョン以降に含まれています。
+- **切り分け**: 過去にはローカル `ProjectReference` を使った時期もあったため、historical 文脈で記述された記述はその名残です。NuGet 公式の本家 NAudio が Windows 11 Process Loopback を正式サポートしたら、フォークから本家への戻しを検討予定。
 
 ## 参照
 

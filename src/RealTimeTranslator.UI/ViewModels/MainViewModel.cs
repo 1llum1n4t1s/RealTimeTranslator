@@ -109,10 +109,12 @@ public partial class MainViewModel : ObservableObject, IDisposable
         _lastApiKey = _settings.OpenAIRealtime.ApiKey;
         _lastOutputLanguage = _settings.OpenAIRealtime.OutputLanguage;
 
-        // 設定変更のイベントを購読
+        // 設定変更のイベントを購読。settings.json は DPAPI 暗号化済み API キーで保存されているため、
+        // hot-reload された AppSettings も in-place で復号してから消費する。
         _settingsChangeSubscription = optionsMonitor.OnChange(newSettings =>
         {
             LoggerService.LogInfo("Settings updated detected in MainViewModel.");
+            SettingsService.DecryptApiKeyInPlace(newSettings);
             _settings = newSettings;
         });
 
@@ -132,9 +134,14 @@ public partial class MainViewModel : ObservableObject, IDisposable
         _updateService.UpdateReady += OnUpdateReady;
         _updateService.UpdateSettings(_settings.Update);
 
-        RefreshProcesses();
-        RestoreLastSelectedProcess();
-        Log("アプリケーションを起動しました");
+        // RefreshProcesses は Process.GetProcesses + 全 audio session 列挙で 100-500ms かかるため、
+        // 起動クリティカルパス（コンストラクタ同期実行）から外して MainWindow 表示後に走らせる。
+        Dispatcher.UIThread.Post(() =>
+        {
+            RefreshProcesses();
+            RestoreLastSelectedProcess();
+            Log("アプリケーションを起動しました");
+        }, DispatcherPriority.Background);
     }
 
     /// <summary>
@@ -145,8 +152,16 @@ public partial class MainViewModel : ObservableObject, IDisposable
         RunOnUiThread(() =>
         {
             _overlayViewModel.AddOrUpdateSubtitle(item);
-            var logMessage = $"[確定] →{_settings.OpenAIRealtime.OutputLanguage} {item.OriginalText} → {item.TranslatedText}";
-            LoggerService.LogInfo(logMessage);
+            // partial(delta) と final(done) を区別してログ表示する。
+            // partial 中に蓄積されているのは OriginalText、final 確定時は TranslatedText（SubtitleItem コメント参照）。
+            var prefix = item.IsFinal ? "[確定]" : "[途中]";
+            var text = item.IsFinal ? item.TranslatedText : item.OriginalText;
+            var logMessage = $"{prefix} →{_settings.OpenAIRealtime.OutputLanguage} {text}";
+            // ログ I/O 削減のため、途中字幕は LoggerService.LogInfo に出さず UI Log のみ。
+            if (item.IsFinal)
+            {
+                LoggerService.LogInfo(logMessage);
+            }
             Log(logMessage);
         });
     }
@@ -314,48 +329,20 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
         if (activeProcessIds.Count > 0)
         {
-            // オーディオセッションを持つプロセス名を収集（Chrome など親だけセッション持ち・子が実際に再生する場合に同名の子も一覧に出す）
-            var activeProcessNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var pid in activeProcessIds)
-            {
-                try
-                {
-                    using var p = Process.GetProcessById(pid);
-                    if (p.Id != currentProcessId && !string.IsNullOrEmpty(p.ProcessName))
-                        activeProcessNames.Add(p.ProcessName);
-                }
-                catch
-                {
-                    // プロセス終了等で取得できない場合は無視
-                }
-            }
-
+            // 旧実装は「セッションを持つプロセス名」で同名プロセスも一覧に出していたが、
+            // Chrome の数十個の子プロセス・RtkAudUService64 等のシステム常駐サービスまで全部表示される問題があった。
+            // Process Loopback は「セッション所有者の PID」を指定すれば子プロセスの音声も含めて取れるため、
+            // 実際にオーディオセッションを持っているプロセスだけに絞る。
             var allRawProcesses = Process.GetProcesses();
             try
             {
                 var allProcesses = allRawProcesses
-                    .Where(p => p.Id != currentProcessId && (activeProcessIds.Contains(p.Id) || activeProcessNames.Contains(p.ProcessName)))
+                    .Where(p => p.Id != currentProcessId && activeProcessIds.Contains(p.Id))
                     .OrderBy(p => p.ProcessName)
                     .ThenBy(p => p.Id)
                     .ToList();
 
-                LoggerService.LogInfo($"RefreshProcesses: オーディオセッション＋同名プロセスで{allProcesses.Count}個を特定（自分自身を除外）");
-
-                // プロセス名 → セッション所有者の PID（Process Loopback はセッションを持つプロセスを指定する必要がある）
-                var sessionOwnerByProcessName = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-                foreach (var pid in activeProcessIds)
-                {
-                    try
-                    {
-                        using var proc = Process.GetProcessById(pid);
-                        if (proc.Id != currentProcessId && !string.IsNullOrEmpty(proc.ProcessName) && !sessionOwnerByProcessName.ContainsKey(proc.ProcessName))
-                            sessionOwnerByProcessName[proc.ProcessName] = proc.Id;
-                    }
-                    catch
-                    {
-                        // プロセス終了等で取得できない場合は無視
-                    }
-                }
+                LoggerService.LogInfo($"RefreshProcesses: オーディオセッションを持つプロセス {allProcesses.Count} 個を特定（自分自身を除外）");
 
                 var processList = new List<ProcessInfo>();
                 var processNames = new Dictionary<string, int>();
@@ -377,18 +364,15 @@ public partial class MainViewModel : ObservableObject, IDisposable
                             ? $"{title} (PID: {p.Id})"
                             : title;
 
-                        var capturePid = activeProcessIds.Contains(p.Id)
-                            ? p.Id
-                            : (sessionOwnerByProcessName.TryGetValue(name, out var owner) ? owner : p.Id);
-
+                        // セッション所有者がそのまま CaptureProcessId。子プロセスの音声も含まれる。
                         processList.Add(new ProcessInfo
                         {
                             Id = p.Id,
-                            CaptureProcessId = capturePid,
+                            CaptureProcessId = p.Id,
                             Name = name,
                             Title = displayTitle
                         });
-                        LoggerService.LogInfo($"RefreshProcesses: プロセス追加 - {name} (PID: {p.Id}, CaptureProcessId: {capturePid}, Title: {displayTitle})");
+                        LoggerService.LogInfo($"RefreshProcesses: プロセス追加 - {name} (PID: {p.Id}, Title: {displayTitle})");
                     }
                     catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
                     {
@@ -475,13 +459,8 @@ public partial class MainViewModel : ObservableObject, IDisposable
             StatusText = "起動中...";
             StatusColor = Brushes.Orange;
 
-            var profile = _settings.GameProfiles
-                .FirstOrDefault(p => p.ProcessName.Equals(SelectedProcess.Name, StringComparison.OrdinalIgnoreCase));
-
-            if (profile != null)
-            {
-                Log($"プロファイル '{profile.Name}' を適用しました");
-            }
+            // GameProfile（ホットワード / 辞書 / InitialPrompt）は OpenAI Realtime API 移行で削除済み。
+            // 必要なら API の `instructions` フィールドにマップして復活させる。
 
             Log($"翻訳開始（翻訳先: {_settings.OpenAIRealtime.OutputLanguage}）");
 
@@ -625,31 +604,25 @@ public partial class MainViewModel : ObservableObject, IDisposable
         var timestamp = DateTime.Now.ToString("HH:mm:ss");
         var logLine = $"[{timestamp}] {message}";
 
+        // LogText を `+=` で組み立てると、1000 行に達するまで毎回 string 全体を再構築して
+        // 累計で O(N²) のヒープを通過する。常に Queue から StringBuilder で組み立てて
+        // 1 呼び出しを O(N)（N = 現在の行数, 上限 MaxLogLines）に抑える。
+        string newText;
         lock (_logLock)
         {
             _logLines.Enqueue(logLine);
-
-            var dequeued = false;
             while (_logLines.Count > MaxLogLines)
             {
                 _logLines.Dequeue();
-                dequeued = true;
             }
-
-            if (dequeued)
+            var sb = new StringBuilder(_logLines.Count * 80);
+            foreach (var line in _logLines)
             {
-                var sb = new StringBuilder(_logLines.Count * 50);
-                foreach (var line in _logLines)
-                {
-                    sb.AppendLine(line);
-                }
-                LogText = sb.ToString();
+                sb.AppendLine(line);
             }
-            else
-            {
-                LogText += logLine + Environment.NewLine;
-            }
+            newText = sb.ToString();
         }
+        LogText = newText;
     }
 
     /// <summary>

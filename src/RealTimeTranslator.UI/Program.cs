@@ -11,7 +11,9 @@ namespace RealTimeTranslator.UI;
 /// </summary>
 internal static class Program
 {
-    private const string SingleInstanceMutexName = "Global\\RealTimeTranslator_SingleInstance_7B3F9E2A";
+    // 単一インスタンス Mutex はユーザーセッション単位で十分（BringExistingWindowToFront も現セッション内のプロセスしか列挙しないため）。
+    // Global\ は別ユーザーからの DoS スプーフィングを許してしまうので Local\ を使う。
+    private const string SingleInstanceMutexName = "Local\\RealTimeTranslator_SingleInstance_7B3F9E2A";
 
     [DllImport("user32.dll")]
     private static extern bool SetForegroundWindow(IntPtr hWnd);

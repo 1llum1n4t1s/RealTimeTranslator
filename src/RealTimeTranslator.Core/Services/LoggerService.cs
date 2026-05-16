@@ -62,8 +62,15 @@ public static class LoggerService
     /// <summary>アプリケーション名</summary>
     private static string _appName = "RealTimeTranslator";
 
-    /// <summary>ログ出力ディレクトリ</summary>
-    private static string _logDirectory = AppDomain.CurrentDomain.BaseDirectory;
+    /// <summary>
+    /// ログ出力ディレクトリ。
+    /// 実行ファイル隣接（BaseDirectory）は Velopack の `app-x.y.z` 切り替え時に消失するため、
+    /// 既定値を %LocalAppData%/RealTimeTranslator/logs に置く。
+    /// </summary>
+    private static string _logDirectory = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "RealTimeTranslator",
+        "logs");
 
     /// <summary>ログファイル名のプレフィックス</summary>
     private static string _filePrefix = "RealTimeTranslator";
@@ -94,7 +101,7 @@ public static class LoggerService
         {
             var effectiveConfig = config ?? new LoggerConfig
             {
-                LogDirectory = AppDomain.CurrentDomain.BaseDirectory,
+                LogDirectory = _logDirectory,
                 FilePrefix = "RealTimeTranslator"
             };
 
@@ -140,8 +147,14 @@ public static class LoggerService
         }
         catch
         {
+            // 失敗時は再試行を許す
             Interlocked.Exchange(ref _initializing, 0);
             throw;
+        }
+        finally
+        {
+            // 成功時も _initializing を 0 に戻す（Shutdown → Initialize の遷移で次回ガードが意図通り効くようにする）
+            Interlocked.Exchange(ref _initializing, 0);
         }
     }
 

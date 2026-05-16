@@ -6,6 +6,7 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Markup.Xaml;
+using Avalonia.Threading;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
@@ -57,8 +58,39 @@ public partial class App : Application
 
         VelopackApp.Build().Run();
 
+        // クラッシュ・未捕捉例外を %LocalAppData% のログに残す。
+        // Task.Run(...) 経由の例外や Dispatcher の予期しない例外を取りこぼさないための最後の砦。
+        AppDomain.CurrentDomain.UnhandledException += (s, ea) =>
+        {
+            LoggerService.LogError($"AppDomain.UnhandledException: IsTerminating={ea.IsTerminating}: {ea.ExceptionObject}");
+            LoggerService.Shutdown();
+        };
+        TaskScheduler.UnobservedTaskException += (s, ea) =>
+        {
+            LoggerService.LogError($"TaskScheduler.UnobservedTaskException: {ea.Exception}");
+            ea.SetObserved();
+        };
+        Dispatcher.UIThread.UnhandledException += (s, ea) =>
+        {
+            LoggerService.LogError($"Dispatcher.UIThread.UnhandledException: {ea.Exception}");
+            ea.Handled = true;
+        };
+
         try
         {
+            // ログ出力先を %LocalAppData%/RealTimeTranslator/logs に明示固定（Velopack 更新時の消失防止）。
+            var logDirectory = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "RealTimeTranslator",
+                "logs");
+            LoggerService.Initialize(new LoggerConfig
+            {
+                LogDirectory = logDirectory,
+                FilePrefix = "RealTimeTranslator"
+            });
+
+            // インシデント解析に必須の OS / .NET / CPU / バージョン情報をログ冒頭に必ず残す。
+            LoggerService.LogStartup();
             LoggerService.LogInfo("OnStartup: 起動開始");
             RegisterApplicationInARP();
             LoggerService.LogInfo("OnStartup: ARP登録完了");
@@ -73,19 +105,29 @@ public partial class App : Application
             updateService.UpdateSettings(optionsMonitor.CurrentValue.Update);
             _updateCancellation = new CancellationTokenSource();
 
-            var updateCheckTask = Task.Run(async () =>
-                await updateService.CheckAndApplyStartupAsync(_updateCancellation.Token));
-            var waitTask = Task.Run(() => updateCheckTask.Wait(TimeSpan.FromSeconds(30)));
-            if (!waitTask.Wait(TimeSpan.FromSeconds(31)))
+            // 起動時更新チェックは fire-and-forget（UI スレッドを最大 31 秒ブロックしない）。
+            // 更新を適用すべき結果なら Dispatcher.UIThread から Shutdown を呼んで Velopack に再起動を任せる。
+            _ = Task.Run(async () =>
             {
-                LoggerService.LogWarning("OnStartup: 更新チェックがタイムアウトしました。");
-            }
-            else if (updateCheckTask.IsCompletedSuccessfully && updateCheckTask.Result)
-            {
-                LoggerService.LogInfo("OnStartup: 更新適用のためアプリを再起動します。");
-                desktop.Shutdown(0);
-                return;
-            }
+                try
+                {
+                    var shouldRestart = await updateService.CheckAndApplyStartupAsync(_updateCancellation.Token)
+                        .ConfigureAwait(false);
+                    if (shouldRestart)
+                    {
+                        await Dispatcher.UIThread.InvokeAsync(() =>
+                        {
+                            LoggerService.LogInfo("OnStartup: 更新適用のためアプリを再起動します。");
+                            desktop.Shutdown(0);
+                        });
+                    }
+                }
+                catch (OperationCanceledException) { /* shutdown 中 */ }
+                catch (Exception ex)
+                {
+                    LoggerService.LogError($"OnStartup: 更新チェック失敗: {ex}");
+                }
+            });
 
             _ = updateService.StartAsync(_updateCancellation.Token).ContinueWith(t =>
             {
@@ -168,21 +210,29 @@ public partial class App : Application
 
     private void ConfigureServices(IServiceCollection services)
     {
+        // settings.json の旧パス（exe 隣接）から %LocalAppData%/RealTimeTranslator に移行する。
+        // Velopack の `app-x.y.z` フォルダ切り替えで設定が失われる問題を防ぐ。
+        SettingsService.MigrateLegacySettingsIfNeeded();
+
         var configurationBuilder = new ConfigurationBuilder()
-            .SetBasePath(AppDomain.CurrentDomain.BaseDirectory)
+            .SetBasePath(SettingsService.SettingsDirectory)
             .AddJsonFile("settings.json", optional: true, reloadOnChange: true);
         var configuration = configurationBuilder.Build();
         LoggerService.LogInfo("ConfigureServices: 設定ファイルを読み込み完了");
         services.AddSingleton<IConfiguration>(configuration);
         services.Configure<AppSettings>(configuration);
         services.AddSingleton<AppSettings>(sp =>
-            sp.GetRequiredService<IOptionsMonitor<AppSettings>>().CurrentValue);
+        {
+            var current = sp.GetRequiredService<IOptionsMonitor<AppSettings>>().CurrentValue;
+            // settings.json に DPAPI 暗号化済みで保存されている API キーを平文化する。
+            SettingsService.DecryptApiKeyInPlace(current);
+            return current;
+        });
         services.AddSingleton<AudioCaptureSettings>(sp =>
             sp.GetRequiredService<AppSettings>().AudioCapture);
         services.AddSingleton<ISettingsService, SettingsService>();
         services.AddSingleton<IAudioCaptureService, AudioCaptureService>();
-        services.AddSingleton<OpenAIRealtimeClient>();
-        services.AddSingleton<IOpenAIRealtimeClient>(sp => sp.GetRequiredService<OpenAIRealtimeClient>());
+        services.AddSingleton<IRealtimeTranscriber, OpenAIRealtimeClient>();
         services.AddSingleton<IUpdateService, UpdateService>();
         services.AddSingleton<ITranslationPipelineService, TranslationPipelineService>();
         services.AddSingleton<OverlayViewModel>();

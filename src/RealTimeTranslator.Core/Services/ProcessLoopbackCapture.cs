@@ -18,14 +18,10 @@ namespace RealTimeTranslator.Core.Services;
 internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
 {
     /// <summary>
-    /// Process Loopback 用のデバイスインターフェースパス GUID
-    /// 完全なパスは \\?\SWD#MMDEVAPI#{GUID} 形式
+    /// Process Loopback の仮想オーディオデバイス GUID。
+    /// `VAD\Process_Loopback` パスと組み合わせて WASAPI Process Loopback の activation に使う。
     /// </summary>
     internal const string ProcessLoopbackDeviceInterfaceGuid = "{2eef81be-33fa-4800-9670-1cd474972c3f}";
-    /// <summary>
-    /// Process Loopback 用の仮想オーディオデバイスID
-    /// </summary>
-    private const string VirtualAudioDeviceProcessLoopback = "{2eef81be-33fa-4800-9670-1cd474972c3f}";
     private const int AudioBufferDurationMs = 100; // オーディオバッファの長さ（ミリ秒）
     private const int CaptureThreadSleepMs = 5; // キャプチャスレッドのスリープ時間（ミリ秒）
     private const long HundredNanosecondsPerSecond = 10000000L; // 1秒あたりの100ナノ秒単位数

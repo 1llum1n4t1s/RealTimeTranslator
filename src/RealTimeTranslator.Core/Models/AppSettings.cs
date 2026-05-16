@@ -5,7 +5,6 @@ public class AppSettings
     public OverlaySettings Overlay { get; set; } = new();
     public AudioCaptureSettings AudioCapture { get; set; } = new();
     public OpenAIRealtimeSettings OpenAIRealtime { get; set; } = new();
-    public List<GameProfile> GameProfiles { get; set; } = new();
     public string LastSelectedProcessName { get; set; } = string.Empty;
     public int LastSelectedProcessId { get; set; }
     public UpdateSettings Update { get; set; } = new();
@@ -44,15 +43,10 @@ public class OpenAIRealtimeSettings
     public string Model { get; set; } = "gpt-realtime-translate";
     public string Endpoint { get; set; } = "wss://api.openai.com/v1/realtime/translations";
     public int ReconnectDelayMs { get; set; } = 3000;
-    public int MaxReconnectAttempts { get; set; } = 5;
+    // モバイル / Wi-Fi の一時切断（数十秒オーダー）でも諦めず、NetworkChange 復帰でもカウンタリセットされる。
+    public int MaxReconnectAttempts { get; set; } = 30;
 }
 
-public class GameProfile
-{
-    public string Name { get; set; } = string.Empty;
-    public string ProcessName { get; set; } = string.Empty;
-    public List<string> Hotwords { get; set; } = new();
-    public Dictionary<string, string> PreTranslationDictionary { get; set; } = new();
-    public Dictionary<string, string> PostTranslationDictionary { get; set; } = new();
-    public string InitialPrompt { get; set; } = string.Empty;
-}
+// GameProfile / GameProfiles は旧 Whisper+LLM ローカル翻訳時代の設定。
+// OpenAI Realtime API 移行（コミット 5de5297）で適用処理が消えたため削除。
+// 必要なら将来 OpenAI Realtime API の `instructions` フィールドにマップして復活させる。

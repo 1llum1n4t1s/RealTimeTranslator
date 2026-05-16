@@ -19,22 +19,12 @@
     "Model": "gpt-realtime-translate",
     "Endpoint": "wss://api.openai.com/v1/realtime/translations",
     "ReconnectDelayMs": 3000,
-    "MaxReconnectAttempts": 5
+    "MaxReconnectAttempts": 30
   },
   "LastSelectedProcessName": "",
   "Update": {
     "Enabled": false,
-    "FeedUrl": "https://github.com/1llum1n4t1s",
-    "AutoApply": true
-  },
-  "GameProfiles": [
-    {
-      "Name": "サンプルプロファイル",
-      "ProcessName": "game",
-      "Hotwords": ["Character", "Location"],
-      "PreTranslationDictionary": {},
-      "PostTranslationDictionary": {},
-      "InitialPrompt": ""
-    }
-  ]
+    "FeedUrl": "https://github.com/1llum1n4t1s/RealTimeTranslator",
+    "AutoApply": false
+  }
 }

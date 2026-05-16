@@ -1,3 +1,5 @@
+using System.Buffers;
+using System.Net.NetworkInformation;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
@@ -7,18 +9,28 @@ using RealTimeTranslator.Core.Models;
 
 namespace RealTimeTranslator.Core.Services;
 
-public enum ConnectionState
-{
-    Disconnected,
-    Connecting,
-    Connected,
-    Reconnecting,
-    Failed
-}
+// ConnectionState は Core.Models に移動済（Interface→Services 逆方向依存を解消するため）。
 
-public sealed class OpenAIRealtimeClient : Interfaces.IOpenAIRealtimeClient
+public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
 {
     private static readonly ILog Logger = LogManager.GetLogger<OpenAIRealtimeClient>();
+
+    // 接続を許可する OpenAI Realtime のホスト。
+    // settings.json が改竄されて任意の wss:// に Authorization ヘッダー（API キー）を送る経路を塞ぐ。
+    private static readonly HashSet<string> AllowedHosts = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "api.openai.com",
+    };
+
+    private static void ValidateEndpoint(Uri uri)
+    {
+        if (uri.Scheme != "wss")
+            throw new InvalidOperationException(
+                $"セキュアでない WebSocket スキーム '{uri.Scheme}' は許可されていません。Endpoint には wss:// を使用してください。");
+        if (!AllowedHosts.Contains(uri.Host))
+            throw new InvalidOperationException(
+                $"Endpoint のホスト '{uri.Host}' は許可リスト外です（api.openai.com のみ）。settings.json を確認してください。");
+    }
 
     private ClientWebSocket? _ws;
     private CancellationTokenSource? _cts;
@@ -28,11 +40,42 @@ public sealed class OpenAIRealtimeClient : Interfaces.IOpenAIRealtimeClient
     private OpenAIRealtimeSettings _settings = new();
     private int _reconnectAttempts;
     private int _disposed;
+    private int _reconnectInFlight; // 0 = idle, 1 = TryReconnectAsync 実行中（多重起動防止）
+    private long _totalDroppedAudioChunks;
     private volatile bool _shouldReconnect;
     private volatile ConnectionState _state = ConnectionState.Disconnected;
     private readonly SemaphoreSlim _connectLock = new(1, 1);
 
     public ConnectionState State => _state;
+
+    /// <summary>
+    /// 送信前にチャネルから DropOldest で破棄された音声チャンクの累計数。
+    /// 字幕が抜けた原因が NW 詰まりか API 遅延か判別する診断メトリクス。
+    /// </summary>
+    public long DroppedAudioChunkCount => Interlocked.Read(ref _totalDroppedAudioChunks);
+
+    public OpenAIRealtimeClient()
+    {
+        // ネットワーク復帰イベントで再接続カウンタをリセットする。モバイル NW 切替や
+        // 一時切断（5〜30 秒）で MaxReconnectAttempts に達した後でも、復帰後に再試行できるようにする。
+        NetworkChange.NetworkAvailabilityChanged += OnNetworkAvailabilityChanged;
+    }
+
+    private void OnNetworkAvailabilityChanged(object? sender, NetworkAvailabilityEventArgs e)
+    {
+        if (!e.IsAvailable) return;
+        if (!_shouldReconnect) return;
+        if (_state == ConnectionState.Connected) return;
+
+        Logger.Info("ネットワーク復帰検知: 再接続カウンタをリセットして再接続を試みます");
+        Interlocked.Exchange(ref _reconnectAttempts, 0);
+        // Failed 状態だったら Reconnecting に戻して再試行ループを再起動
+        if (_state == ConnectionState.Failed)
+        {
+            SetState(ConnectionState.Reconnecting);
+        }
+        _ = Task.Run(() => TryReconnectAsync(), CancellationToken.None);
+    }
 
     public event Action<string>? TranscriptDeltaReceived;
     public event Action<string>? TranscriptCompleted;
@@ -70,13 +113,31 @@ public sealed class OpenAIRealtimeClient : Interfaces.IOpenAIRealtimeClient
     public void SendAudio(byte[] pcm16Audio)
     {
         if (pcm16Audio is null || pcm16Audio.Length == 0) return;
+        // 再接続中・接続前は音声を捨てる（新セッションでコンテキスト連続性がないため送っても無駄）。
         if (State != ConnectionState.Connected) return;
-        _sendChannel?.Writer.TryWrite(pcm16Audio);
+
+        var writer = _sendChannel?.Writer;
+        if (writer is null) return;
+
+        if (!writer.TryWrite(pcm16Audio))
+        {
+            // BoundedChannel(200, DropOldest) で最古チャンクが捨てられた場合に到達する経路。
+            // TryWrite 自体は DropOldest でも true を返すのが通常だが、Channel が Complete されていると false。
+            // どちらにせよ書けなかった事実をメトリクス化する。
+            Interlocked.Increment(ref _totalDroppedAudioChunks);
+        }
     }
 
     public async Task DisconnectAsync()
     {
         _shouldReconnect = false;
+
+        // 進行中の接続試行 (TryReconnectAsync が _connectLock を保持したまま ClientWebSocket.ConnectAsync を
+        // 待っているケース) を即座に中断させる。これがないと _connectLock.WaitAsync が永久ブロックして
+        // 「停止」ボタン押下後にアプリがフリーズする。
+        try { _cts?.Cancel(); }
+        catch (ObjectDisposedException) { /* race: 既に Dispose 済み */ }
+
         await _connectLock.WaitAsync().ConfigureAwait(false);
         try
         {
@@ -91,6 +152,7 @@ public sealed class OpenAIRealtimeClient : Interfaces.IOpenAIRealtimeClient
     public void Dispose()
     {
         if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0) return;
+        NetworkChange.NetworkAvailabilityChanged -= OnNetworkAvailabilityChanged;
         DisconnectAsync().GetAwaiter().GetResult();
         _cts?.Dispose();
         _connectLock.Dispose();
@@ -99,6 +161,7 @@ public sealed class OpenAIRealtimeClient : Interfaces.IOpenAIRealtimeClient
     public async ValueTask DisposeAsync()
     {
         if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0) return;
+        NetworkChange.NetworkAvailabilityChanged -= OnNetworkAvailabilityChanged;
         await DisconnectAsync().ConfigureAwait(false);
         _cts?.Dispose();
         _connectLock.Dispose();
@@ -109,8 +172,14 @@ public sealed class OpenAIRealtimeClient : Interfaces.IOpenAIRealtimeClient
     {
         var uri = new Uri($"{settings.Endpoint}?model={Uri.EscapeDataString(settings.Model)}");
 
-        if (uri.Scheme != "wss")
-            return (false, $"セキュアでない WebSocket スキーム '{uri.Scheme}' は許可されていません。Endpoint には wss:// を使用してください。");
+        try
+        {
+            ValidateEndpoint(uri);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return (false, ex.Message);
+        }
 
         using var ws = new ClientWebSocket();
         ws.Options.SetRequestHeader("Authorization", $"Bearer {settings.ApiKey}");
@@ -227,12 +296,16 @@ public sealed class OpenAIRealtimeClient : Interfaces.IOpenAIRealtimeClient
         SetState(ConnectionState.Connecting);
         _ws?.Dispose();
         _ws = new ClientWebSocket();
+        // NAT 越え / プロキシ / モバイル NW で半切断（TCP は生きているように見えるがサーバ応答なし）を
+        // 検知できるよう、ping/pong + pong タイムアウトを明示設定する。.NET 8+ で利用可能。
+        _ws.Options.KeepAliveInterval = TimeSpan.FromSeconds(15);
+        _ws.Options.KeepAliveTimeout = TimeSpan.FromSeconds(20);
         _ws.Options.SetRequestHeader("Authorization", $"Bearer {_settings.ApiKey}");
 
         var uri = new Uri($"{_settings.Endpoint}?model={Uri.EscapeDataString(_settings.Model)}");
 
-        if (uri.Scheme != "wss")
-            throw new InvalidOperationException($"セキュアでない WebSocket スキーム '{uri.Scheme}' は許可されていません。Endpoint には wss:// を使用してください。");
+        // スキーム + ホスト両方を検証（settings.json 改竄で API キーを攻撃者サーバに送る経路を塞ぐ）。
+        ValidateEndpoint(uri);
 
         try
         {
@@ -286,7 +359,18 @@ public sealed class OpenAIRealtimeClient : Interfaces.IOpenAIRealtimeClient
                 {
                     input = new
                     {
-                        noise_reduction = new { type = "far_field" }
+                        noise_reduction = new { type = "far_field" },
+                        // 会話セグメントを自動で区切る Voice Activity Detection。
+                        // これが無いと delta が無限累積して done が発火せず、字幕が 1 セグメントに溜まり続ける。
+                        // silence_duration_ms: 無音継続時間（区切り検出のしきい値）。
+                        //   200(default)=細切れすぎ / 500=自然 / 1000+=区切れない。500ms をデフォルトに。
+                        turn_detection = new
+                        {
+                            type = "server_vad",
+                            threshold = 0.5,
+                            prefix_padding_ms = 300,
+                            silence_duration_ms = 500
+                        }
                     },
                     output = new { language = _settings.OutputLanguage }
                 }
@@ -300,21 +384,32 @@ public sealed class OpenAIRealtimeClient : Interfaces.IOpenAIRealtimeClient
 
     private async Task SendLoopAsync(CancellationToken ct)
     {
+        // ホットパス最適化:
+        // 旧: 匿名型 -> JsonSerializer.Serialize (string) -> Encoding.UTF8.GetBytes (byte[]) -> SendAsync
+        //   1 メッセージあたり ~25KB 以上を Gen0 ヒープに通過させていた。
+        // 新: ArrayBufferWriter<byte> + Utf8JsonWriter で UTF8 byte に直書き、ループ間で再利用。
+        //   string 中間表現と byte[] コピーを排除し、Base64 string のみが allocate される（こちらは後の最適化対象）。
+        var bufferWriter = new ArrayBufferWriter<byte>(initialCapacity: 8192);
+        var jsonWriter = new Utf8JsonWriter(bufferWriter, new JsonWriterOptions { SkipValidation = true });
+
         try
         {
             await foreach (var audioData in _sendChannel!.Reader.ReadAllAsync(ct))
             {
                 if (_ws is not { State: WebSocketState.Open }) continue;
 
-                var message = new
-                {
-                    type = "input_audio_buffer.append",
-                    audio = Convert.ToBase64String(audioData)
-                };
+                bufferWriter.ResetWrittenCount();
+                jsonWriter.Reset(bufferWriter);
+                jsonWriter.WriteStartObject();
+                // OpenAI Realtime Translation エンドポイント (/v1/realtime/translations) は
+                // `session.input_audio_buffer.append` 形式（session. プレフィックス必須）。
+                // 通常の /v1/realtime エンドポイントの `input_audio_buffer.append` ではないので注意。
+                jsonWriter.WriteString("type", "session.input_audio_buffer.append");
+                jsonWriter.WriteString("audio", Convert.ToBase64String(audioData));
+                jsonWriter.WriteEndObject();
+                await jsonWriter.FlushAsync(ct).ConfigureAwait(false);
 
-                var json = JsonSerializer.Serialize(message);
-                var bytes = Encoding.UTF8.GetBytes(json);
-                await _ws.SendAsync(bytes, WebSocketMessageType.Text, true, ct).ConfigureAwait(false);
+                await _ws.SendAsync(bufferWriter.WrittenMemory, WebSocketMessageType.Text, true, ct).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException) { }
@@ -322,6 +417,10 @@ public sealed class OpenAIRealtimeClient : Interfaces.IOpenAIRealtimeClient
         {
             Logger.Error("WebSocket 送信ループエラー", ex);
             ErrorReceived?.Invoke(ex);
+        }
+        finally
+        {
+            await jsonWriter.DisposeAsync().ConfigureAwait(false);
         }
     }
 
@@ -346,9 +445,12 @@ public sealed class OpenAIRealtimeClient : Interfaces.IOpenAIRealtimeClient
 
                 if (!result.EndOfMessage) continue;
 
-                var json = Encoding.UTF8.GetString(messageStream.GetBuffer(), 0, (int)messageStream.Length);
+                // UTF-16 string 化を経由せず byte のまま Parse することで、
+                // メッセージ 1 件あたり 2 倍幅の string allocation を回避する。
+                var length = (int)messageStream.Length;
+                var jsonMemory = messageStream.GetBuffer().AsMemory(0, length);
+                ProcessMessage(jsonMemory);
                 messageStream.SetLength(0);
-                ProcessMessage(json);
             }
         }
         catch (OperationCanceledException) { }
@@ -366,7 +468,7 @@ public sealed class OpenAIRealtimeClient : Interfaces.IOpenAIRealtimeClient
             _ = Task.Run(() => TryReconnectAsync(), CancellationToken.None);
     }
 
-    private void ProcessMessage(string json)
+    private void ProcessMessage(ReadOnlyMemory<byte> json)
     {
         try
         {
@@ -435,64 +537,77 @@ public sealed class OpenAIRealtimeClient : Interfaces.IOpenAIRealtimeClient
 
     private async Task TryReconnectAsync()
     {
-        if (!_shouldReconnect) return;
-
-        _reconnectAttempts++;
-        if (_reconnectAttempts > _settings.MaxReconnectAttempts)
-        {
-            Logger.Error($"再接続上限 ({_settings.MaxReconnectAttempts}) 到達");
-            _shouldReconnect = false;
-            SetState(ConnectionState.Failed);
-            ErrorReceived?.Invoke(new InvalidOperationException(
-                $"再接続の上限（{_settings.MaxReconnectAttempts}回）に達しました。接続を確認してください。"));
+        // CompareExchange で複数経路（ReceiveLoop 終了 + 末尾の再試行）から同時に呼ばれても
+        // 1 つだけが実行される。while ループで全試行を消費し、末尾の自己再帰起動を排除する。
+        if (Interlocked.CompareExchange(ref _reconnectInFlight, 1, 0) != 0)
             return;
-        }
-
-        SetState(ConnectionState.Reconnecting);
-        var shift = Math.Min(_reconnectAttempts - 1, 30);
-        var delay = (int)Math.Min((long)_settings.ReconnectDelayMs << shift, 30000L);
-        Logger.Info($"再接続試行 {_reconnectAttempts}/{_settings.MaxReconnectAttempts}（{delay}ms 後）");
 
         try
         {
-            await Task.Delay(delay).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) { return; }
-
-        if (!_shouldReconnect) return;
-
-        await _connectLock.WaitAsync().ConfigureAwait(false);
-        try
-        {
-            if (!_shouldReconnect) return;
-            if (_state == ConnectionState.Connected) return;
-
-            await CleanupAsync().ConfigureAwait(false);
-
-            _cts = new CancellationTokenSource();
-            _sendChannel = Channel.CreateBounded<byte[]>(new BoundedChannelOptions(200)
+            while (_shouldReconnect
+                   && _state != ConnectionState.Connected
+                   && _state != ConnectionState.Failed)
             {
-                FullMode = BoundedChannelFullMode.DropOldest,
-                SingleReader = true
-            });
+                _reconnectAttempts++;
+                if (_reconnectAttempts > _settings.MaxReconnectAttempts)
+                {
+                    Logger.Error($"再接続上限 ({_settings.MaxReconnectAttempts}) 到達");
+                    _shouldReconnect = false;
+                    SetState(ConnectionState.Failed);
+                    ErrorReceived?.Invoke(new InvalidOperationException(
+                        $"再接続の上限（{_settings.MaxReconnectAttempts}回）に達しました。接続を確認してください。"));
+                    return;
+                }
 
-            await ConnectWebSocketAsync(_cts.Token).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) { }
-        catch (Exception ex)
-        {
-            Logger.Warn("再接続失敗", ex);
+                SetState(ConnectionState.Reconnecting);
+                var shift = Math.Min(_reconnectAttempts - 1, 30);
+                var baseDelay = (int)Math.Min((long)_settings.ReconnectDelayMs << shift, 30000L);
+                // 同期再接続で OpenAI 側に集中アクセスしないよう ±20% の jitter を加える。
+                // Random.Shared は thread-safe (.NET 6+)。
+                var jitterPercent = (Random.Shared.NextDouble() * 0.4) - 0.2;
+                var delay = (int)Math.Clamp(baseDelay * (1.0 + jitterPercent), 100, 30000);
+                Logger.Info($"再接続試行 {_reconnectAttempts}/{_settings.MaxReconnectAttempts}（{delay}ms 後、base={baseDelay}ms）");
+
+                try
+                {
+                    await Task.Delay(delay).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) { return; }
+
+                if (!_shouldReconnect) return;
+
+                await _connectLock.WaitAsync().ConfigureAwait(false);
+                try
+                {
+                    if (!_shouldReconnect) return;
+                    if (_state == ConnectionState.Connected) return;
+
+                    await CleanupAsync().ConfigureAwait(false);
+
+                    _cts = new CancellationTokenSource();
+                    _sendChannel = Channel.CreateBounded<byte[]>(new BoundedChannelOptions(200)
+                    {
+                        FullMode = BoundedChannelFullMode.DropOldest,
+                        SingleReader = true
+                    });
+
+                    await ConnectWebSocketAsync(_cts.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) { return; }
+                catch (Exception ex)
+                {
+                    Logger.Warn("再接続失敗", ex);
+                    // ConnectWebSocketAsync が失敗してもループ継続して次の試行へ
+                }
+                finally
+                {
+                    _connectLock.Release();
+                }
+            }
         }
         finally
         {
-            _connectLock.Release();
-        }
-
-        if (_shouldReconnect
-            && _state != ConnectionState.Connected
-            && _state != ConnectionState.Failed)
-        {
-            _ = Task.Run(() => TryReconnectAsync(), CancellationToken.None);
+            Interlocked.Exchange(ref _reconnectInFlight, 0);
         }
     }
 
