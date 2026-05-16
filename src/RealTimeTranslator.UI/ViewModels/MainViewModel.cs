@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
+using System.Reflection;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -90,6 +91,28 @@ public partial class MainViewModel : ObservableObject, IDisposable
     /// </summary>
     [ObservableProperty]
     private bool _isApiKeyConfigured;
+
+    /// <summary>
+    /// タイトルバーに表示するアプリバージョン（Lhamiel と統一）。
+    /// AssemblyInformationalVersion から取得し、'+' 以降のビルドメタを除去。
+    /// </summary>
+    public string VersionText { get; } = LoadVersionText();
+
+    private static string LoadVersionText()
+    {
+        try
+        {
+            var assembly = typeof(MainViewModel).Assembly;
+            var raw = assembly.GetCustomAttribute<System.Reflection.AssemblyInformationalVersionAttribute>()?.InformationalVersion
+                      ?? assembly.GetName().Version?.ToString(3)
+                      ?? "0.0.0";
+            return raw.Contains('+') ? raw.Split('+')[0] : raw;
+        }
+        catch
+        {
+            return "0.0.0";
+        }
+    }
 
     /// <summary>
     /// 開始ボタンが有効かどうか

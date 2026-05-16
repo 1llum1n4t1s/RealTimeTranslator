@@ -7,7 +7,7 @@
         mc:Ignorable="d" d:DesignWidth="750" d:DesignHeight="550"
         x:Class="RealTimeTranslator.UI.Views.MainWindow"
         x:DataType="vm:MainViewModel"
-        Title="リアルタイム字幕翻訳"
+        Title="{Binding VersionText, StringFormat='リアルタイム字幕翻訳 v{0}'}"
         Icon="avares://RealTimeTranslator.UI/Assets/app.ico"
         Width="750" Height="550"
         MinWidth="650" MinHeight="450"

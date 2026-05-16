@@ -179,25 +179,44 @@ public partial class App : Application
         e.Cancel = true;
         _shutdownCleanupDone = true;
 
+        // どんな経路を通っても最終的にプロセスを強制終了する保険を発動させる。
+        // 内側 finally → Environment.Exit(0)、それも効かなければ 5 秒後にこの保険が
+        // Process.Kill() で確実にプロセスを落とす（NAudio MMCSS スレッド等が
+        // non-background で残ってプロセスが exit しない事故対策）。
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            try { System.Diagnostics.Process.GetCurrentProcess().Kill(); }
+            catch { /* best effort */ }
+        });
+
         try
         {
             LoggerService.LogInfo("OnExit: アプリケーション終了開始");
             _updateCancellation?.Cancel();
             _updateCancellation?.Dispose();
+
+            // 明示的に audio capture を停止する（NAudio の WASAPI スレッドを確実に解放）
+            try
+            {
+                _serviceProvider?.GetService<IAudioCaptureService>()?.StopCapture();
+            }
+            catch (Exception ex) { LoggerService.LogWarning($"OnExit: AudioCapture 停止失敗: {ex.Message}"); }
+
             if (_overlayWindow != null)
             {
                 _overlayWindow.Close();
                 _overlayWindow = null;
             }
 
-            // サービス破棄にタイムアウトを設定（無限待ちでハング防止）
+            // サービス破棄にタイムアウトを設定（無限待ちでハング防止、2 秒に短縮）
             if (_serviceProvider != null)
             {
-                using var disposeCts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                using var disposeCts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
                 try
                 {
                     var disposeTask = _serviceProvider.DisposeAsync().AsTask();
-                    await disposeTask.WaitAsync(disposeCts.Token);
+                    await disposeTask.WaitAsync(disposeCts.Token).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException)
                 {
@@ -210,12 +229,16 @@ public partial class App : Application
         }
         catch (Exception ex)
         {
-            LoggerService.LogError($"シャットダウン中にエラー: {ex}");
+            try { LoggerService.LogError($"シャットダウン中にエラー: {ex}"); } catch { }
         }
         finally
         {
             // 残存スレッドがあっても確実にプロセスを終了
-            Environment.Exit(0);
+            try { Environment.Exit(0); }
+            catch
+            {
+                try { System.Diagnostics.Process.GetCurrentProcess().Kill(); } catch { }
+            }
         }
     }
 

@@ -35,6 +35,8 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     public event EventHandler<PipelineStatsEventArgs>? StatsUpdated;
     public event EventHandler<Exception>? ErrorOccurred;
 
+    private readonly IOptionsMonitor<AppSettings> _settingsMonitor;
+
     public TranslationPipelineService(
         IAudioCaptureService audioCaptureService,
         IRealtimeTranscriber realtimeClient,
@@ -42,6 +44,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     {
         _audioCaptureService = audioCaptureService;
         _realtimeClient = realtimeClient;
+        _settingsMonitor = settingsMonitor;
         _cachedRealtimeSettings = settingsMonitor.CurrentValue.OpenAIRealtime;
         _throttleTimer = new Timer(OnThrottleTimerElapsed, null, Timeout.Infinite, Timeout.Infinite);
 
@@ -63,6 +66,16 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     public async Task StartAsync(CancellationToken token)
     {
         if (_isRunning) return;
+
+        // settings.json で変更したばかりの内容 (OutputLanguage 等) が反映されるよう、
+        // 起動直前に IOptionsMonitor から最新値を取り直す。
+        // 旧実装は _cachedRealtimeSettings (構築時 or ApplySettingsAsync の値) を
+        // 使っていたが、 UI で言語切替後にすぐ「開始」を押すと古い設定で接続して
+        // しまうケースがあった。DPAPI で暗号化されている API キーも復号して使う。
+        var freshSettings = _settingsMonitor.CurrentValue.OpenAIRealtime;
+        SettingsService.DecryptApiKeyInPlace(_settingsMonitor.CurrentValue);
+        _cachedRealtimeSettings = freshSettings;
+        Logger.Info($"StartAsync: OutputLanguage='{freshSettings.OutputLanguage}' Model='{freshSettings.Model}'");
 
         var settings = _cachedRealtimeSettings;
         if (string.IsNullOrWhiteSpace(settings.ApiKey))
