@@ -694,23 +694,26 @@ public partial class MainViewModel : ObservableObject, IDisposable
             _processingCancellation = null;
         }
 
-        // pipelineService.StopAsync は内部で WS close 5s + audio task 2s 等の wait を含む。
-        // 何らかの異常で詰まった場合に UI を永久に固まらせないよう外側 5s でタイムアウトさせ、
+        // pipelineService.StopAsync は内部で WASAPI 停止 (Task.Run+3s) + audio task (2s) +
+        // WS close (3s) の wait を順次含む。 全体で最大 ~8s だが通常は数百ms 以下で完了する。
+        // 何らかの異常で詰まった場合に UI を永久に固まらせないよう外側 10s でタイムアウトさせ、
         // 超過したらバックグラウンドで完了させて UI は先に進める。
+        // ⚠️ _audioCaptureService.StopCapture() を UI スレッドから直接呼ぶと NAudio/WASAPI の
+        // native callback 完了待ちでフリーズするため (2026-05-17 観測)、 ここでは呼ばない。
+        // pipelineService.StopAsync の内部で Task.Run 経由で停止する設計に変更済み。
         try
         {
-            await _pipelineService.StopAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(true);
+            await _pipelineService.StopAsync().WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(true);
         }
         catch (TimeoutException)
         {
-            LoggerService.LogWarning("StopAsync: pipelineService.StopAsync が 5 秒を超えたため UI を先に進めます（後始末はバックグラウンド継続）");
+            LoggerService.LogWarning("StopAsync: pipelineService.StopAsync が 10 秒を超えたため UI を先に進めます（後始末はバックグラウンド継続）");
         }
         catch (Exception ex)
         {
             LoggerService.LogError($"StopAsync: pipelineService.StopAsync で例外: {ex}");
         }
 
-        _audioCaptureService.StopCapture();
         _overlayViewModel.ClearSubtitles();
 
         IsRunning = false;

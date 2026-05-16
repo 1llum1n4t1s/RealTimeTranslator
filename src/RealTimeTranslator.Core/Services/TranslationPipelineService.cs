@@ -149,6 +149,28 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         _latencyStopwatch.Stop();
         _throttleTimer.Change(Timeout.Infinite, Timeout.Infinite);
 
+        // ⭐ WASAPI ネイティブ解放を UI スレッドから外す。
+        // AudioCaptureService.StopCapture() は内部で NAudio の WasapiCapture.StopRecording +
+        // Dispose を同期実行する。 これらは native callback スレッド完了待ち (WaitForSingleObject 系)
+        // を含むため、 UI スレッドから直接呼ぶと「停止ボタン押下でアプリ全体フリーズ」になる
+        // (2026-05-17 ゆろさん環境で観測)。 Task.Run + WaitAsync(3s) で別スレッドに逃がし、
+        // タイムアウト時もログを残してフリーズを防ぐ。
+        try
+        {
+            await Task.Run(() => _audioCaptureService.StopCapture())
+                      .WaitAsync(TimeSpan.FromSeconds(3))
+                      .ConfigureAwait(false);
+            Logger.Info("audio キャプチャ停止 完了");
+        }
+        catch (TimeoutException)
+        {
+            Logger.Warn("audio キャプチャ停止が 3 秒を超過 (バックグラウンドで継続)");
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn("audio キャプチャ停止中の例外", ex);
+        }
+
         // audio 処理タスクの停止: writer 完了 → cts キャンセル → タスク完了待ち
         _audioInputChannel?.Writer.TryComplete();
         _audioProcessingCts?.Cancel();
@@ -164,7 +186,23 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         _audioProcessingCts = null;
         _audioInputChannel = null;
 
-        await _realtimeClient.DisconnectAsync().ConfigureAwait(false);
+        // WebSocket 切断も外部待機を入れて UI スレッドに戻る前に確実に完了させる
+        try
+        {
+            await _realtimeClient.DisconnectAsync()
+                  .WaitAsync(TimeSpan.FromSeconds(3))
+                  .ConfigureAwait(false);
+        }
+        catch (TimeoutException)
+        {
+            Logger.Warn("WebSocket 切断が 3 秒を超過 (バックグラウンドで継続)");
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn("WebSocket 切断中の例外", ex);
+        }
+
+        Logger.Info("翻訳パイプライン停止 完了");
 
         StatsUpdated?.Invoke(this, new PipelineStatsEventArgs
         {
