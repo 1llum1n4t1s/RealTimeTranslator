@@ -219,6 +219,10 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     {
         if (string.IsNullOrEmpty(delta)) return;
 
+        // 完結文をロック外で emit するため、 ロック内ではプランだけ作って退出する。
+        List<(string segmentId, string sentence)> completedSentences = new();
+        bool emitPartial = false;
+
         lock (_textLock)
         {
             _accumulatedText.Append(delta);
@@ -226,15 +230,83 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
             if (!_latencyStopwatch.IsRunning)
                 _latencyStopwatch.Restart();
 
-            var now = DateTime.UtcNow;
-            if (now - _lastEmitTime >= DeltaThrottle)
+            // ⭐ OpenAI Realtime Translation API は transcript.done を送ってこない
+            // ケースがある (2026-05-17 観測: delta のみで会話が進み done が来ない)。
+            // done を待つ設計だと SegmentId が永久に固定され「字幕が無限成長する」UX バグ
+            // (v1.0.11 まで継続発生) になるため、 delta 受信時にも _accumulatedText 内の
+            // 句点を検出して完結文ごとに emit + SegmentId 切り替えを行う。
+            // done が来る場合は OnTranscriptCompleted 側で _lastFinalizedTranscript の
+            // startsWith 差分で「既出ぶん」と認識されて二重 emit されない (整合性保持)。
+            var text = _accumulatedText.ToString();
+            int start = 0;
+            for (int i = 0; i < text.Length; i++)
+            {
+                if (Array.IndexOf(SentenceTerminators, text[i]) >= 0)
+                {
+                    var sentence = text[start..(i + 1)];
+                    if (!string.IsNullOrWhiteSpace(sentence))
+                    {
+                        completedSentences.Add((_currentSegmentId, sentence));
+                        _currentSegmentId = Guid.NewGuid().ToString();
+                        _lastFinalizedTranscript += sentence;
+                    }
+                    start = i + 1;
+                }
+            }
+
+            if (completedSentences.Count > 0)
+            {
+                // 完結文を切り出した → trailing だけ _accumulatedText に残す。
+                // trailing は新 SegmentId で次の partial emit / 句点検出を受ける。
+                var trailing = text[start..];
+                _accumulatedText.Clear();
+                _accumulatedText.Append(trailing);
+                _lastEmitTime = DateTime.UtcNow;
+                _hasPendingDelta = false;
+                _throttleTimer.Change(Timeout.Infinite, Timeout.Infinite);
+                // 新 SegmentId で trailing を即座に partial 表示する (throttle 待たない)。
+                // 完結文 emit と同じ delta 内で trailing を見せないと「文末で字幕が消える瞬間」が
+                // 生じて UX として違和感が出るため。
+                emitPartial = trailing.Length > 0;
+            }
+            else
+            {
+                // 完結文無し → 従来の throttled partial emit 経路
+                var now = DateTime.UtcNow;
+                if (now - _lastEmitTime >= DeltaThrottle)
+                {
+                    emitPartial = true;
+                }
+                else if (!_hasPendingDelta)
+                {
+                    _hasPendingDelta = true;
+                    _throttleTimer.Change(DeltaThrottle, Timeout.InfiniteTimeSpan);
+                }
+            }
+        }
+
+        // ロック外で完結文を emit。 OverlayViewModel は SegmentId が新規なら別字幕として
+        // 履歴に追加、 既存 SegmentId なら update。 今回はループ前半で _currentSegmentId を
+        // 切り替えているので、 各 completedSentences の segmentId はそれぞれ別の値。
+        foreach (var (segmentId, sentence) in completedSentences)
+        {
+            var subtitle = new SubtitleItem
+            {
+                SegmentId = segmentId,
+                OriginalText = string.Empty,
+                TranslatedText = sentence,
+                IsFinal = true,
+            };
+            SubtitleGenerated?.Invoke(this, subtitle);
+        }
+
+        if (emitPartial)
+        {
+            // partial 表示用 (trailing or throttled flush)。 EmitPartialSubtitle 自体は
+            // ロックを取らないので、 ここで取り直して呼ぶ。
+            lock (_textLock)
             {
                 EmitPartialSubtitle();
-            }
-            else if (!_hasPendingDelta)
-            {
-                _hasPendingDelta = true;
-                _throttleTimer.Change(DeltaThrottle, Timeout.InfiniteTimeSpan);
             }
         }
     }
