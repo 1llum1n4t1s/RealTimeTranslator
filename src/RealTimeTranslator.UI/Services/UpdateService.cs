@@ -2,12 +2,16 @@ using System;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
+using Avalonia;
+using Avalonia.Controls.ApplicationLifetimes;
+using Avalonia.Media;
+using Avalonia.Threading;
 using RealTimeTranslator.Core.Interfaces;
 using RealTimeTranslator.Core.Models;
 using RealTimeTranslator.Core.Services;
-using RealTimeTranslator.UI.Models;
 using Velopack;
 using Velopack.Sources;
+using VelopackUpdateDialog;
 
 namespace RealTimeTranslator.UI.Services;
 
@@ -16,7 +20,7 @@ public class UpdateService : IUpdateService
     private const int UpdateCheckIntervalHours = 6; // 更新チェック間隔（時間）
 
     // FeedUrl で許可するホスト（HTTPS + 完全一致）。
-    // Authenticode / RSA 署名は今回見送りのため、最低限のホスト固定でフィッシング feed への接続を防ぐ。
+    // Authenticode / RSA 署名は今回見送りのため、 最低限のホスト固定でフィッシング feed への接続を防ぐ。
     private static readonly HashSet<string> AllowedFeedHosts = new(StringComparer.OrdinalIgnoreCase)
     {
         "github.com",
@@ -33,7 +37,6 @@ public class UpdateService : IUpdateService
     private UpdateSettings _settings = new();
 
     public event EventHandler<UpdateStatusChangedEventArgs>? StatusChanged;
-    public event EventHandler<UpdateAvailableEventArgs>? UpdateAvailable;
 
     public void UpdateSettings(UpdateSettings settings)
     {
@@ -54,13 +57,13 @@ public class UpdateService : IUpdateService
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
-        await Check4UpdateAsync(manually: false, cancellationToken);
+        await ShowUpdateDialogAsync(manualCheck: false, cancellationToken).ConfigureAwait(false);
         using var timer = new PeriodicTimer(UpdateCheckInterval);
         try
         {
-            while (await timer.WaitForNextTickAsync(cancellationToken))
+            while (await timer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false))
             {
-                await Check4UpdateAsync(manually: false, cancellationToken);
+                await ShowUpdateDialogAsync(manualCheck: false, cancellationToken).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException)
@@ -68,9 +71,20 @@ public class UpdateService : IUpdateService
         }
     }
 
-    public async Task<object?> Check4UpdateAsync(bool manually, CancellationToken cancellationToken)
+    public Task CheckForUpdateAsync(CancellationToken cancellationToken)
+    {
+        return ShowUpdateDialogAsync(manualCheck: true, cancellationToken);
+    }
+
+    /// <summary>
+    /// VelopackUpdateDialog.Avalonia の UpdateDialogWindow を表示して更新フロー全体を委譲する。
+    /// 検出 → DL → 適用 → 再起動までダイアログ側で完結する。
+    /// 自動チェック (manualCheck=false) では「最新版です」表示を抑制する (UI を邪魔しない設計)。
+    /// </summary>
+    private async Task ShowUpdateDialogAsync(bool manualCheck, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+
         UpdateSettings snapshot;
         lock (_syncLock)
         {
@@ -84,26 +98,24 @@ public class UpdateService : IUpdateService
         if (!snapshot.Enabled || string.IsNullOrWhiteSpace(snapshot.FeedUrl))
         {
             OnStatusChanged(UpdateStatus.Disabled, "更新チェックは無効です。");
-            return manually ? new AlreadyUpToDate() : null;
+            return;
         }
 
         if (!TryGetValidFeedUri(snapshot.FeedUrl, out var feedUri, out var validationReason))
         {
             LoggerService.LogError($"UpdateService: FeedUrl 検証失敗 — {validationReason}");
             OnStatusChanged(UpdateStatus.Failed, validationReason);
-            return manually ? new SelfUpdateFailed(validationReason) : null;
+            return;
         }
 
         // 別の Velopack 操作（同プロセス内）が進行中なら:
         //  - 自動チェック: 譲る（次回の Periodic で拾えるので問題ない）
         //  - 手動チェック: 最大 30 秒待つ（ユーザー操作を空振りで終わらせないため）
-        var waitTimeout = manually ? TimeSpan.FromSeconds(30) : TimeSpan.Zero;
+        var waitTimeout = manualCheck ? TimeSpan.FromSeconds(30) : TimeSpan.Zero;
         if (!await _velopackOpLock.WaitAsync(waitTimeout, cancellationToken).ConfigureAwait(false))
         {
-            LoggerService.LogInfo("UpdateService: 別の Velopack 操作が進行中のため、今回のチェックはスキップ");
-            return manually
-                ? new SelfUpdateFailed("別の更新処理が実行中です。後で再試行してください。")
-                : null;
+            LoggerService.LogInfo("UpdateService: 別の Velopack 操作が進行中のため、 今回のチェックはスキップ");
+            return;
         }
 
         OnStatusChanged(UpdateStatus.Checking, "更新を確認しています...");
@@ -122,29 +134,15 @@ public class UpdateService : IUpdateService
             // 手動チェック時のみ「最新版です」と扱ってダイアログを出す（Komorebi と同じ挙動）。
             if (!manager.IsInstalled)
             {
-                OnStatusChanged(UpdateStatus.Idle, "Velopack でインストールされていないため、更新確認をスキップします。");
-                return manually ? new AlreadyUpToDate() : null;
+                OnStatusChanged(UpdateStatus.Idle, "Velopack でインストールされていないため、 更新確認をスキップします。");
+                if (manualCheck)
+                {
+                    await ShowDialogOnUiThreadAsync(manager, manualCheck).ConfigureAwait(false);
+                }
+                return;
             }
 
-            var updateInfo = await manager.CheckForUpdatesAsync();
-            if (updateInfo is null)
-            {
-                OnStatusChanged(UpdateStatus.Idle, "利用可能な更新はありません。");
-                return manually ? new AlreadyUpToDate() : null;
-            }
-
-            var result = new VelopackUpdate(manager, updateInfo);
-            OnStatusChanged(UpdateStatus.UpdateAvailable, $"新しいバージョン {result.TagName} が利用できます。");
-
-            // 自動チェックでは MainViewModel に SelfUpdateWindow を開かせるためイベントを発火する。
-            // 手動チェックは戻り値経由でダイアログを開くため、二重に開かないようイベントは発火しない。
-            if (!manually)
-            {
-                UpdateAvailable?.Invoke(this, new UpdateAvailableEventArgs(
-                    $"新しいバージョン {result.TagName} が利用できます。", result));
-            }
-
-            return result;
+            await ShowDialogOnUiThreadAsync(manager, manualCheck).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
@@ -153,23 +151,77 @@ public class UpdateService : IUpdateService
         catch (Exception ex) when (ex.GetType().Name == "AcquireLockFailedException")
         {
             // Velopack の .velopack_lock 衝突: 別プロセス（同じインストール先の別バージョン起動など）が
-            // 操作中。次回 Periodic で自然に再試行されるのでログだけ残す。
+            // 操作中。 次回 Periodic で自然に再試行されるのでログだけ残す。
             LoggerService.LogInfo($"UpdateService: Velopack ロック取得失敗（次回チェック時に再試行）— {ex.Message}");
             OnStatusChanged(UpdateStatus.Idle, "別の更新処理が実行中です。後で再試行します。");
-            return manually
-                ? new SelfUpdateFailed("別の更新処理が実行中です。後で再試行してください。")
-                : null;
         }
         catch (Exception ex)
         {
-            // スタックトレース / InnerException を永続ログに残す（UI イベントだけでは事後解析できない）。
-            LoggerService.LogError($"UpdateService.Check4UpdateAsync 失敗 (manually={manually}): {ex}");
+            LoggerService.LogError($"UpdateService.ShowUpdateDialogAsync 失敗 (manualCheck={manualCheck}): {ex}");
             OnStatusChanged(UpdateStatus.Failed, $"更新チェックに失敗しました: {ex.Message}");
-            return manually ? new SelfUpdateFailed(ex) : null;
         }
         finally
         {
             _velopackOpLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// UI スレッドで UpdateDialogWindow を表示し、 結果に応じてステータスを更新する。
+    /// ダイアログ自体が DL / Apply / Restart まで全部やるので、 こちらは結果ハンドリングだけ。
+    /// </summary>
+    private async Task ShowDialogOnUiThreadAsync(UpdateManager manager, bool manualCheck)
+    {
+        var options = new UpdateDialogOptions
+        {
+            ChromeMode = WindowChromeMode.Custom,
+            ResizeMode = WindowResizeMode.Fixed,
+            AccentBrush = Brushes.DodgerBlue,
+            // Komorebi 流: 「このバージョンを無視」ボタンは出さない。
+            AllowIgnoreVersion = false,
+            AllowCloseDuringDownload = true,
+            // 自動チェックでは「最新版です」ダイアログを出さない (UI を邪魔しない)。
+            SuppressUpToDateOnAutoCheck = true,
+        };
+
+        options.ErrorOccurred += ex => LoggerService.LogException("UpdateDialog エラー", ex);
+
+        UpdateDialogResult? result = null;
+        await Dispatcher.UIThread.InvokeAsync(async () =>
+        {
+            var parent = (Application.Current?.ApplicationLifetime
+                as IClassicDesktopStyleApplicationLifetime)?.MainWindow;
+
+            result = await UpdateDialogWindow.ShowAsync(parent, manager, options, manualCheck).ConfigureAwait(true);
+        }).ConfigureAwait(false);
+
+        if (result == null) return;
+
+        switch (result.Outcome)
+        {
+            case UpdateOutcome.Updated:
+                // Velopack が再起動指示済み。 ここではログだけ残す。
+                LoggerService.LogInfo("UpdateDialog: 更新完了 (再起動指示済み)");
+                OnStatusChanged(UpdateStatus.UpdateAvailable, "更新を適用しました。再起動します...");
+                break;
+            case UpdateOutcome.UpToDate:
+                OnStatusChanged(UpdateStatus.Idle, "利用可能な更新はありません。");
+                break;
+            case UpdateOutcome.Ignored:
+                LoggerService.LogInfo("UpdateDialog: ユーザーが「このバージョンを無視」を選択");
+                OnStatusChanged(UpdateStatus.Idle, "このバージョンを無視しました。");
+                break;
+            case UpdateOutcome.Cancelled:
+                LoggerService.LogInfo("UpdateDialog: ダウンロードがキャンセルされました");
+                OnStatusChanged(UpdateStatus.Idle, "ダウンロードをキャンセルしました。");
+                break;
+            case UpdateOutcome.Failed:
+                LoggerService.LogError($"UpdateDialog: 失敗 — {result.Error}");
+                OnStatusChanged(UpdateStatus.Failed, $"更新に失敗しました: {result.Error?.Message}");
+                break;
+            case UpdateOutcome.Closed:
+                OnStatusChanged(UpdateStatus.Idle, "更新ダイアログを閉じました。");
+                break;
         }
     }
 

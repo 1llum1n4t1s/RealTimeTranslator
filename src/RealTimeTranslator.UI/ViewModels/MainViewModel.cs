@@ -199,7 +199,8 @@ public partial class MainViewModel : ObservableObject, IDisposable
         _settingsViewModel.SettingsSaved += OnSettingsSaved;
 
         _updateService.StatusChanged += OnUpdateStatusChanged;
-        _updateService.UpdateAvailable += OnUpdateAvailable;
+        // UpdateAvailable イベントは廃止 (v1.0.12 から VelopackUpdateDialog.Avalonia に置換)。
+        // 検出 → DL → Apply → Restart まで UpdateService 内のダイアログで完結する。
         _updateService.UpdateSettings(_settings.Update);
 
         // RefreshProcesses は Process.GetProcesses + 全 audio session 列挙で 100-500ms かかるため、
@@ -318,21 +319,10 @@ public partial class MainViewModel : ObservableObject, IDisposable
         });
     }
 
-    private void OnUpdateAvailable(object? sender, UpdateAvailableEventArgs e)
-    {
-        RunOnUiThread(() =>
-        {
-            Log($"更新: {e.Message}");
-            // 自動チェックで更新が見つかった場合は SelfUpdateWindow を開く。
-            // Komorebi の ShowSelfUpdateResult と同じ挙動。
-            _ = ShowSelfUpdateDialogAsync(e.UpdateData);
-        });
-    }
-
-
     /// <summary>
-    /// バージョンタブの「更新の確認」ボタン。手動チェック結果は SelfUpdateWindow ダイアログで表示する。
-    /// Komorebi の Check4Update(manually:true) → ShowSelfUpdateResult と同じ挙動。
+    /// バージョンタブの「更新の確認」ボタン。
+    /// 手動チェック結果は UpdateService 内部で VelopackUpdateDialog.Avalonia の
+    /// UpdateDialogWindow を開いて表示する (DL/Apply/Restart 全部委譲)。
     /// </summary>
     [RelayCommand]
     private async Task CheckForUpdateAsync()
@@ -343,13 +333,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
         UpdateStatusText = "更新を確認しています...";
         try
         {
-            var data = await _updateService.Check4UpdateAsync(manually: true, CancellationToken.None)
-                .ConfigureAwait(false);
-            await RunOnUiThreadAsync(async () =>
-            {
-                if (data is not null)
-                    await ShowSelfUpdateDialogAsync(data);
-            });
+            await _updateService.CheckForUpdateAsync(CancellationToken.None).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -359,37 +343,6 @@ public partial class MainViewModel : ObservableObject, IDisposable
         finally
         {
             RunOnUiThread(() => IsCheckingUpdate = false);
-        }
-    }
-
-    /// <summary>
-    /// SelfUpdateWindow を MainWindow の上にモーダル表示する。
-    /// data は VelopackUpdate / AlreadyUpToDate / SelfUpdateFailed のいずれか。
-    /// </summary>
-    private static async Task ShowSelfUpdateDialogAsync(object data)
-    {
-        try
-        {
-            await Dispatcher.UIThread.InvokeAsync(async () =>
-            {
-                var vm = new SelfUpdateViewModel { Data = data };
-                var window = new Views.SelfUpdateWindow { DataContext = vm };
-
-                if (Avalonia.Application.Current?.ApplicationLifetime
-                    is Avalonia.Controls.ApplicationLifetimes.IClassicDesktopStyleApplicationLifetime desktop
-                    && desktop.MainWindow is not null)
-                {
-                    await window.ShowDialog(desktop.MainWindow);
-                }
-                else
-                {
-                    window.Show();
-                }
-            });
-        }
-        catch (Exception ex)
-        {
-            LoggerService.LogError($"ShowSelfUpdateDialogAsync 失敗: {ex.Message}");
         }
     }
 
@@ -1021,7 +974,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
         _audioCaptureService.CaptureStatusChanged -= OnCaptureStatusChanged;
         _settingsViewModel.SettingsSaved -= OnSettingsSaved;
         _updateService.StatusChanged -= OnUpdateStatusChanged;
-        _updateService.UpdateAvailable -= OnUpdateAvailable;
+        // UpdateAvailable イベント解除も不要 (v1.0.12 で廃止)
 
         LoggerService.LogInfo("MainViewModel.Dispose: イベントハンドラ解除完了");
 

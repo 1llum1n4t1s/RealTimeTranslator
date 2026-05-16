@@ -7,28 +7,24 @@ namespace RealTimeTranslator.Core.Interfaces;
 
 public interface IUpdateService
 {
-    event EventHandler<UpdateStatusChangedEventArgs>? StatusChanged;
-
     /// <summary>
-    /// 自動チェックで更新が検出されたときに発火する。UI 側は SelfUpdateWindow を開く。
-    /// 手動チェックは戻り値経由で結果を受け取るため、このイベントは発火しない。
+    /// 更新状態の変化を通知する (Idle / Disabled / Checking / UpdateAvailable / Failed)。
+    /// UI 側の StatusText 表示に使う。
     /// </summary>
-    event EventHandler<UpdateAvailableEventArgs>? UpdateAvailable;
+    event EventHandler<UpdateStatusChangedEventArgs>? StatusChanged;
 
     void UpdateSettings(UpdateSettings settings);
 
     /// <summary>
     /// 起動直後の 1 回目チェック + 周期チェックを開始する。
+    /// 検出時には自動でアップデートダイアログ (VelopackUpdateDialog) を開く。
     /// </summary>
     Task StartAsync(CancellationToken cancellationToken);
 
     /// <summary>
-    /// 更新有無を確認する。結果オブジェクト (UI.Models.VelopackUpdate / AlreadyUpToDate / SelfUpdateFailed)
-    /// を返す。Komorebi の Check4Update(bool manually) と同じ責務。
+    /// 手動チェック (「更新の確認」ボタン経由)。
+    /// 結果に応じてアップデートダイアログを開き、 ユーザーに DL/Apply or 閉じるを選ばせる。
+    /// 最新版 / 失敗時もダイアログでフィードバックを返す (Komorebi の手動チェック挙動)。
     /// </summary>
-    /// <param name="manually">
-    /// true: 手動チェック。最新時もエラー時も AlreadyUpToDate / SelfUpdateFailed を返してダイアログ表示させる。
-    /// false: 自動チェック。VelopackUpdate のときだけ UpdateAvailable を発火し、結果は基本 null を返す。
-    /// </param>
-    Task<object?> Check4UpdateAsync(bool manually, CancellationToken cancellationToken);
+    Task CheckForUpdateAsync(CancellationToken cancellationToken);
 }
