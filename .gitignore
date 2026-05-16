@@ -17,9 +17,12 @@
 *.userosscache
 *.sln.docstates
 
-# Models (Large files)
+# Models (Large files) — ML/AI モデル等のバイナリ。
+# `/models/` のスラッシュ先頭でルート直下のみに限定する。
+# `models/` だと `src/RealTimeTranslator.Core/Models/` 等のソースコードフォルダにもマッチして
+# 新規追加した .cs ファイルが ignore される事故が起きる（CI でビルド失敗で発覚）。
 *.bin
-models/
+/models/
 
 # Logs
 logs/
