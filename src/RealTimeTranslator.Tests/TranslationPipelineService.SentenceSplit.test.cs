@@ -17,6 +17,8 @@ public sealed class TranslationPipelineServiceSentenceSplitTests
     private sealed class TestRealtimeTranscriber : IRealtimeTranscriber
     {
         public ConnectionState State { get; private set; } = ConnectionState.Disconnected;
+        public long TotalAudioInputSamples24kHz => 0;
+        public long ServerReportedAudioInputTokens => 0;
         public event Action<string>? TranscriptDeltaReceived;
         public event Action<string>? TranscriptCompleted;
         public event Action<Exception>? ErrorReceived;
@@ -45,6 +47,109 @@ public sealed class TranslationPipelineServiceSentenceSplitTests
             State = newState;
             StateChanged?.Invoke(newState);
         }
+    }
+
+    // VAD ゲート統合後、 TranslationPipelineService が IVoiceActivityDetector を要求するため
+    // テスト用の no-op 実装を渡す。 既存テストは ProcessAudioLoopAsync を経由しない
+    // (RaiseDelta/RaiseDone 直接呼び) ので DetectSpeechProb は呼ばれない。
+    // ═══════════════════════════════════════════════════════════════
+    // IsSentenceBoundaryAt の単体テスト (数字小数点の誤分割対策)
+    // ═══════════════════════════════════════════════════════════════
+    //
+    // 経緯 (2026-05-18 ゆろさん報告):
+    // 「6.3インチ」「3.14は円周率」のような小数点入り数字が「6.」「3インチ」と
+    // 2 つの字幕に分割される問題。 SentenceTerminators に '.' が含まれているため、
+    // 半角ピリオドは何でも句点扱いされていた。 IsSentenceBoundaryAt で前後文字を見て
+    // 小数点を保護する + delta 中の末尾ピリオドは保留 (続きを待つ) ように対策。
+
+    [TestMethod]
+    [TestCategory("SentenceBoundary")]
+    public void IsSentenceBoundaryAt_FullWidthPeriod_IsBoundary()
+    {
+        Assert.IsTrue(TranslationPipelineService.IsSentenceBoundaryAt("こんにちは。", 5, isFinalContext: false));
+        Assert.IsTrue(TranslationPipelineService.IsSentenceBoundaryAt("こんにちは。", 5, isFinalContext: true));
+    }
+
+    [TestMethod]
+    [TestCategory("SentenceBoundary")]
+    public void IsSentenceBoundaryAt_AsciiQuestionMark_IsBoundary()
+    {
+        Assert.IsTrue(TranslationPipelineService.IsSentenceBoundaryAt("hello?", 5, isFinalContext: false));
+    }
+
+    [TestMethod]
+    [TestCategory("SentenceBoundary")]
+    public void IsSentenceBoundaryAt_DecimalPointBetweenDigits_NotBoundary()
+    {
+        // 「6.3インチ」: index 1 の '.' は前=6 後=3 → 小数点として保護
+        Assert.IsFalse(TranslationPipelineService.IsSentenceBoundaryAt("6.3インチ", 1, isFinalContext: false));
+        Assert.IsFalse(TranslationPipelineService.IsSentenceBoundaryAt("6.3インチ", 1, isFinalContext: true));
+    }
+
+    [TestMethod]
+    [TestCategory("SentenceBoundary")]
+    public void IsSentenceBoundaryAt_PiNumber_NotBoundary()
+    {
+        // 「3.14は円周率」: index 1 の '.' は前=3 後=1 → 小数点
+        Assert.IsFalse(TranslationPipelineService.IsSentenceBoundaryAt("3.14は円周率", 1, isFinalContext: false));
+    }
+
+    [TestMethod]
+    [TestCategory("SentenceBoundary")]
+    public void IsSentenceBoundaryAt_TrailingPeriodAfterDigit_DeltaContext_IsHeld()
+    {
+        // delta 受信中の「画面サイズは6.」: 末尾ピリオド + 直前数字 → 次 delta を待つため保留
+        Assert.IsFalse(TranslationPipelineService.IsSentenceBoundaryAt("画面サイズは6.", 7, isFinalContext: false));
+    }
+
+    [TestMethod]
+    [TestCategory("SentenceBoundary")]
+    public void IsSentenceBoundaryAt_TrailingPeriodAfterDigit_FinalContext_IsBoundary()
+    {
+        // done 受信時の「画面サイズは6.」: もう続きは来ないので区切る
+        Assert.IsTrue(TranslationPipelineService.IsSentenceBoundaryAt("画面サイズは6.", 7, isFinalContext: true));
+    }
+
+    [TestMethod]
+    [TestCategory("SentenceBoundary")]
+    public void IsSentenceBoundaryAt_PeriodAfterDigitBeforeNonDigit_IsBoundary()
+    {
+        // 「価格は500.です」: index 6 の '.' は前=0 後='で' (非数字) → 通常の句点扱い (区切る)
+        Assert.IsTrue(TranslationPipelineService.IsSentenceBoundaryAt("価格は500.です", 6, isFinalContext: false));
+    }
+
+    [TestMethod]
+    [TestCategory("SentenceBoundary")]
+    public void IsSentenceBoundaryAt_EnglishSentenceEnd_IsBoundary()
+    {
+        // 「This is a test. Next.」: index 14 の '.' は前='t' (非数字) → 通常の句点扱い
+        Assert.IsTrue(TranslationPipelineService.IsSentenceBoundaryAt("This is a test. Next.", 14, isFinalContext: false));
+    }
+
+    [TestMethod]
+    [TestCategory("SentenceBoundary")]
+    public void IsSentenceBoundaryAt_OutOfRange_ReturnsFalse()
+    {
+        Assert.IsFalse(TranslationPipelineService.IsSentenceBoundaryAt("abc", -1, isFinalContext: false));
+        Assert.IsFalse(TranslationPipelineService.IsSentenceBoundaryAt("abc", 3, isFinalContext: false));
+        Assert.IsFalse(TranslationPipelineService.IsSentenceBoundaryAt("abc", 100, isFinalContext: false));
+    }
+
+    [TestMethod]
+    [TestCategory("SentenceBoundary")]
+    public void IsSentenceBoundaryAt_DecimalAtEndOfFinalContext_IsBoundaryOnLastDigit()
+    {
+        // 「価格は5.」 done 文脈: index 4 の '.' 前=5 末尾 → done なので区切る
+        Assert.IsTrue(TranslationPipelineService.IsSentenceBoundaryAt("価格は5.", 4, isFinalContext: true));
+    }
+
+    private sealed class TestVoiceActivityDetector : IVoiceActivityDetector
+    {
+        public int RequiredFrameSize => 512;
+        public int SampleRate => 16000;
+        public float DetectSpeechProb(ReadOnlySpan<float> frame16kHz) => 0f;
+        public void Reset() { }
+        public void Dispose() { }
     }
 
     private sealed class TestAudioCaptureService : IAudioCaptureService
@@ -90,7 +195,8 @@ public sealed class TranslationPipelineServiceSentenceSplitTests
         };
         var monitor = new StubOptionsMonitor(settings);
         var settingsService = new TestSettingsService();
-        var pipeline = new TranslationPipelineService(audio, transcriber, monitor, settingsService);
+        var vad = new TestVoiceActivityDetector();
+        var pipeline = new TranslationPipelineService(audio, transcriber, monitor, settingsService, vad);
         var emitted = new List<SubtitleItem>();
         pipeline.SubtitleGenerated += (_, item) => emitted.Add(item);
         return (pipeline, transcriber, emitted);

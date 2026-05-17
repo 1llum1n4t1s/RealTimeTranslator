@@ -68,6 +68,12 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
     private long _totalDeltaCount;
     private long _totalDoneCount;
 
+    // ───────── token / cost 統計 (見える化保険) ─────────
+    // インスタンス寿命 = Start から Dispose まで。 ConnectAsync 単位ではリセットしない
+    // (再接続で累積が消えると UI の cost 表示が巻き戻って混乱するため、 累積継続)。
+    private long _totalAudioInputSamples24kHz;
+    private long _serverReportedAudioInputTokens;
+
     public ConnectionState State => _state;
 
     /// <summary>
@@ -75,6 +81,12 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
     /// 字幕が抜けた原因が NW 詰まりか API 遅延か判別する診断メトリクス。
     /// </summary>
     public long DroppedAudioChunkCount => Interlocked.Read(ref _totalDroppedAudioChunks);
+
+    /// <inheritdoc />
+    public long TotalAudioInputSamples24kHz => Interlocked.Read(ref _totalAudioInputSamples24kHz);
+
+    /// <inheritdoc />
+    public long ServerReportedAudioInputTokens => Interlocked.Read(ref _serverReportedAudioInputTokens);
 
     public OpenAIRealtimeClient()
     {
@@ -456,6 +468,9 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
                 await jsonWriter.FlushAsync(ct).ConfigureAwait(false);
 
                 await _ws.SendAsync(bufferWriter.WrittenMemory, WebSocketMessageType.Text, true, ct).ConfigureAwait(false);
+                // 統計用: 送信した PCM16 (= 2 bytes/sample, 24kHz mono) のサンプル数を累積。
+                // server usage が拾えないモデル/イベントの fallback 推定に使う。
+                Interlocked.Add(ref _totalAudioInputSamples24kHz, audioData.Length / 2);
             }
         }
         catch (OperationCanceledException) { }
@@ -535,6 +550,29 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
     // OpenAI Realtime API のレスポンスは通常 5-10 階層なので 32 で余裕、
     // 深ネスト時は JsonException で早期失敗してログに残す。
     private static readonly JsonDocumentOptions s_jsonDocumentOptions = new() { MaxDepth = 32 };
+
+    // response.done.usage.input_token_details.audio_tokens を best-effort で拾って累積する。
+    // 取得できないモデル/イベントでは何もしない (送信秒数からの fallback 推定で代替)。
+    private void TryAccumulateServerReportedAudioTokens(JsonElement root)
+    {
+        try
+        {
+            if (root.TryGetProperty("response", out var response) &&
+                response.TryGetProperty("usage", out var usage) &&
+                usage.TryGetProperty("input_token_details", out var details) &&
+                details.TryGetProperty("audio_tokens", out var audioTokens) &&
+                audioTokens.TryGetInt64(out var tokens) && tokens > 0)
+            {
+                var newTotal = Interlocked.Add(ref _serverReportedAudioInputTokens, tokens);
+                Logger.Debug($"server usage 取得: +{tokens} audio_tokens (累計: {newTotal})");
+            }
+        }
+        catch (Exception ex)
+        {
+            // usage 取得は best-effort。 失敗しても本流の翻訳には影響させない。
+            Logger.Debug($"server usage 取得失敗 (継続): {ex.Message}");
+        }
+    }
 
     private void ProcessMessage(ReadOnlyMemory<byte> json)
     {
@@ -639,6 +677,8 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
                     var deltaCount = Interlocked.Read(ref _totalDeltaCount);
                     var doneCount = Interlocked.Read(ref _totalDoneCount);
                     Logger.Info($"response.done 受信: type='{type}' 累計delta={deltaCount} 累計transcript.done={doneCount}");
+                    // サーバー側の usage を拾って累積 (取れれば推定値より正確)。
+                    TryAccumulateServerReportedAudioTokens(root);
                     // transcript.done が一度も来ないまま response.done が来ているなら、
                     // それを区切りとして使う（空 transcript で発火 → Pipeline 側の fallbackText で確定）
                     TranscriptCompleted?.Invoke("");

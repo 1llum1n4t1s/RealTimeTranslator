@@ -327,6 +327,81 @@ public partial class SettingsViewModel : ObservableObject
         }
     }
 
+    // ───── VAD (Voice Activity Detection) 設定 ─────
+    // 既存 Overlay 系プロパティと同じく `_settings.AudioCapture` を直接 get/set し、
+    // 変更があれば ScheduleAutoSave で 1.5 秒後に settings.json へ atomic write。
+
+    public bool EnableVad
+    {
+        get => _settings.AudioCapture.EnableVad;
+        set
+        {
+            if (_settings.AudioCapture.EnableVad != value)
+            {
+                _settings.AudioCapture.EnableVad = value;
+                OnPropertyChanged();
+                ScheduleAutoSave();
+            }
+        }
+    }
+
+    public float VadThreshold
+    {
+        get => _settings.AudioCapture.VadThreshold;
+        set
+        {
+            // Slider の連続値で発火するため微小差は無視 (settings.json 書き込み頻度抑制)
+            if (Math.Abs(_settings.AudioCapture.VadThreshold - value) > 0.005f)
+            {
+                _settings.AudioCapture.VadThreshold = value;
+                OnPropertyChanged();
+                ScheduleAutoSave();
+            }
+        }
+    }
+
+    public int VadPreRollMs
+    {
+        get => _settings.AudioCapture.VadPreRollMs;
+        set
+        {
+            if (_settings.AudioCapture.VadPreRollMs != value)
+            {
+                _settings.AudioCapture.VadPreRollMs = value;
+                OnPropertyChanged();
+                ScheduleAutoSave();
+            }
+        }
+    }
+
+    public int VadHangoverMs
+    {
+        get => _settings.AudioCapture.VadHangoverMs;
+        set
+        {
+            if (_settings.AudioCapture.VadHangoverMs != value)
+            {
+                _settings.AudioCapture.VadHangoverMs = value;
+                OnPropertyChanged();
+                ScheduleAutoSave();
+            }
+        }
+    }
+
+    public int AutoPauseOnSilenceSec
+    {
+        get => _settings.AudioCapture.AutoPauseOnSilenceSec;
+        set
+        {
+            if (_settings.AudioCapture.AutoPauseOnSilenceSec != value)
+            {
+                _settings.AudioCapture.AutoPauseOnSilenceSec = value;
+                OnPropertyChanged();
+                ScheduleAutoSave();
+            }
+        }
+    }
+
     // ───── 自動保存 ─────
 
     private void ScheduleAutoSave()

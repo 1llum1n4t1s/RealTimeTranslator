@@ -249,6 +249,10 @@ public partial class App : Application
         services.AddSingleton<ISettingsService, SettingsService>();
         services.AddSingleton<IAudioCaptureService, AudioCaptureService>();
         services.AddSingleton<IRealtimeTranscriber, OpenAIRealtimeClient>();
+        // Silero VAD (ONNX 推論セッション)。 onnx ファイルは Assets/silero_vad.onnx に同梱。
+        // Singleton にすることで onnx ロード (~10ms) は起動時 1 回のみ。 LSTM state は
+        // TranslationPipelineService が Start のたびに Reset を呼んでクリアする。
+        services.AddSingleton<IVoiceActivityDetector, SileroVadDetector>();
         services.AddSingleton<IUpdateService, UpdateService>();
         services.AddSingleton<ITranslationPipelineService, TranslationPipelineService>();
         services.AddSingleton<OverlayViewModel>();

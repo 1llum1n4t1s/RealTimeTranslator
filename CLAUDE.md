@@ -56,6 +56,8 @@ Audio Capture (WASAPI) → Resample 16kHz→24kHz → PCM16 → OpenAI Realtime 
 | `OpenAIRealtimeClient` | WebSocket client for OpenAI Realtime Translate API. Handles connection, reconnection (exponential backoff), audio send/receive loops |
 | `AudioFormatConverter` | Static utility: 16kHz float32 → 24kHz PCM16 conversion for API input |
 | `AudioCaptureService` | WASAPI process loopback capture with custom COM interop + NAudio |
+| `SileroVadDetector` | Silero VAD (ONNX) で「人の声らしさ」を判定する VAD ゲート。 16kHz / 512 サンプル / 32ms フレーム固定 |
+| `CostEstimator` | OpenAI Realtime API の audio input tokens 数 / 推定コスト (USD) を計算 |
 
 ### Pipeline Flow (TranslationPipelineService in Core/Services/)
 
@@ -64,6 +66,19 @@ Audio Capture (WASAPI) → Resample 16kHz→24kHz → PCM16 → OpenAI Realtime 
 3. API returns translation text as `response.output_audio_transcript.delta` / `response.output_text.delta` (streaming) and `.done` (final). Legacy event names (`output_transcript.*`, `response.audio_transcript.*`) are still recognized for compatibility.
 4. Delta events fire `SubtitleGenerated` with `IsFinal=false` (throttled per `TranslationPipelineService.DeltaThrottle`, 現在 30ms), done fires with `IsFinal=true`
 5. `OverlayViewModel` displays subtitles, tracking updates by `SegmentId`
+
+### VAD ゲート + コスト見える化 (案 D + 案 G) 🎯
+
+OpenAI Realtime API は **送信した音声を全部 audio input token として課金** する (server VAD は「いつ response を出すか」の判定だけで課金には影響しない)。 ゲーム音 BGM の垂れ流しを放置すると `gpt-4o-realtime-preview` で **$36/時間** という事故になる。
+
+- **VAD ゲート (`SileroVadDetector`)**: snakers4/silero-vad v5 (MIT、 ~2MB) を `src/RealTimeTranslator.Core/Assets/silero_vad.onnx` に同梱。 16kHz / 512 サンプル / 32ms フレーム固定。 LSTM hidden state は `SileroVadDetector` が内部保持、 `TranslationPipelineService.StartAsync` で `Reset()` を呼ぶ。
+- **状態機 (`TranslationPipelineService.ProcessVadFrame`)**: Silence/InSpeech/Hangover の 3 状態。 PreRoll Queue で発話冒頭の取りこぼし防止、 Hangover カウンタで末尾切れ防止。 EnableVad=false の旧素通しパスは緊急時 fallback + 後方互換のため残す。
+- **設定**: `AppSettings.AudioCapture` に `EnableVad=true` / `VadThreshold=0.5` / `VadPreRollMs=400` / `VadHangoverMs=200` / `AutoPauseOnSilenceSec=0`。 UI は「音声処理」タブ (`MainWindow.axaml` Tab 3)。
+- **自動 Pause (`AutoPauseLoopAsync`)**: 5 秒間隔ポーリングで `Now - _lastSpeechUtc >= AutoPauseOnSilenceSec` なら `StopCapture()`。 1 回発火で `break` (ユーザーが Start 押し直すと新タスク起動)。 VAD 有効時のみ機能。
+- **コスト計算 (`CostEstimator`)**: モデル名から rate 解決 ("mini" 含 → $10/1M, 他 → $100/1M, 不明はフル料金で安全側)。 サンプル数 / レートから秒数 → tokens (公表値 100 tokens/sec)。 サーバー usage 値 (`response.done.usage.input_token_details.audio_tokens`) が取れる場合は優先採用、 取れない場合は推定 fallback。
+- **歌モノ BGM (ボーカル入り音楽) も翻訳対象として送信する (仕様)**: Silero VAD は formant 特性で判定するためボーカル入り音楽は speech 扱いになる。 これはゆろさん指定の **意図された挙動** (歌詞も字幕として翻訳したいため、 ゲーム OP/ED や BGM 歌詞も訳す)。 将来「歌は翻訳したくない」要望が来たら GameProfile 単位の VAD on/off 切替を検討。
+- **DI**: `App.axaml.cs` で `AddSingleton<IVoiceActivityDetector, SileroVadDetector>()`。 Singleton にすることで onnx ロード (~10ms) は起動時 1 回のみ。
+- **VAD フレームサイズ (512) を変更しない**: Silero VAD v5 16kHz 専用仕様で固定。
 
 ### OpenAI Realtime Translation API の癖 ⚠️
 

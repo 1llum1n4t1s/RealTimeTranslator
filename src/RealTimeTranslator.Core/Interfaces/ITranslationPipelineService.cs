@@ -62,4 +62,23 @@ public class PipelineStatsEventArgs : EventArgs
     /// ステータステキスト
     /// </summary>
     public string StatusText { get; set; } = string.Empty;
+
+    // ───────── token / cost / session 統計 (見える化保険) ─────────
+
+    /// <summary>
+    /// セッション開始からの累積 audio input tokens 推定値。
+    /// サーバー usage が取得できた場合はその値、 取れない場合は送信秒数からの fallback。
+    /// </summary>
+    public long InputAudioTokensEstimate { get; set; }
+
+    /// <summary>
+    /// セッション開始からの累積推定コスト (USD)。 モデル不明時はフル料金 ($100/1M) で過大評価寄り。
+    /// </summary>
+    public decimal EstimatedCostUsd { get; set; }
+
+    /// <summary>セッション継続時間 (Start からの経過)。</summary>
+    public TimeSpan SessionDuration { get; set; }
+
+    /// <summary>VAD ゲートで OpenAI 送信をスキップした (= token 節約した) 音声秒数の累積。</summary>
+    public double SkippedSecondsByVad { get; set; }
 }

@@ -106,6 +106,51 @@ public partial class MainViewModel : ObservableObject, IDisposable
     [ObservableProperty]
     private string _updateStatusText = string.Empty;
 
+    // ───────── 送信統計 / コスト見える化 (案 G) ─────────
+    // OpenAI Realtime API の input audio token を「いま使ってる量 / 推定コスト」として
+    // メイン画面に表示する。 ダラダラ垂れ流しによる課金事故防止が目的。
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(CumulativeStatsText))]
+    private long _inputAudioTokens;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(CumulativeStatsText))]
+    private decimal _estimatedCostUsd;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(CumulativeStatsText))]
+    private TimeSpan _sessionDuration;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(CumulativeStatsText))]
+    private double _skippedSecondsByVad;
+
+    /// <summary>
+    /// メイン画面に出す統計サマリ。 IsRunning にかかわらず Pipeline の StatsUpdated を反映する
+    /// (Stop 後も「今回のセッションで何 tokens 使ったか」が見える)。
+    /// </summary>
+    public string CumulativeStatsText
+    {
+        get
+        {
+            if (SessionDuration == TimeSpan.Zero && InputAudioTokens == 0)
+            {
+                return string.Empty;
+            }
+            var savedText = SkippedSecondsByVad > 0
+                ? $" / 🚫 VAD 節約 {FormatDuration(TimeSpan.FromSeconds(SkippedSecondsByVad))}"
+                : string.Empty;
+            return $"⏱ {FormatDuration(SessionDuration)} / 🪙 {InputAudioTokens:N0} tokens / 💰 ${EstimatedCostUsd:F4}{savedText}";
+        }
+    }
+
+    private static string FormatDuration(TimeSpan ts)
+    {
+        if (ts.TotalHours >= 1) return $"{(int)ts.TotalHours}:{ts.Minutes:D2}:{ts.Seconds:D2}";
+        return $"{ts.Minutes:D2}:{ts.Seconds:D2}";
+    }
+
     /// <summary>
     /// バージョンタブのコピーライト表示。AssemblyCopyrightAttribute から取得。
     /// </summary>
@@ -254,6 +299,13 @@ public partial class MainViewModel : ObservableObject, IDisposable
             {
                 StatusText = e.StatusText;
             }
+            // 統計は IsRunning に関係なく反映 (Stop 後も最終値を残してユーザーが確認できるように)。
+            // 0 で上書きされるケース (途中で Pipeline が誤って 0 を送る) は今のところ無いはずだが、
+            // 念のため StartAsync の最初は明示的に 0 を送るので問題ない。
+            InputAudioTokens = e.InputAudioTokensEstimate;
+            EstimatedCostUsd = e.EstimatedCostUsd;
+            SessionDuration = e.SessionDuration;
+            SkippedSecondsByVad = e.SkippedSecondsByVad;
         });
     }
 

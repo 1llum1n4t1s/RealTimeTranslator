@@ -112,6 +112,12 @@
                                     <TextBlock Text="{Binding TranslationLatency, StringFormat=\{0:F0\}ms}"
                                                FontSize="12"/>
                                 </StackPanel>
+                                <!-- セッションの推定 token / コスト / VAD 節約 (案 G 見える化) -->
+                                <TextBlock Text="{Binding CumulativeStatsText}"
+                                           IsVisible="{Binding CumulativeStatsText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"
+                                           FontSize="11" Margin="0,4,0,0"
+                                           Foreground="{DynamicResource Brush.FG2}"
+                                           TextWrapping="Wrap"/>
                             </StackPanel>
                         </HeaderedContentControl>
 
@@ -215,7 +221,60 @@
                 </ScrollViewer>
             </TabItem>
 
-            <!-- ═══ Tab 3: 表示設定 ═══ -->
+            <!-- ═══ Tab 3: 音声処理 (VAD + 自動Pause) ═══ -->
+            <TabItem Header="音声処理" x:DataType="vm:MainViewModel">
+                <ScrollViewer VerticalScrollBarVisibility="Auto"
+                              DataContext="{Binding SettingsVM}">
+                    <StackPanel Margin="0,0,0,16" x:DataType="vm:SettingsViewModel">
+
+                        <TextBlock Text="音声検出 (VAD) 設定" FontSize="20" FontWeight="Bold" Margin="0,0,0,8"/>
+                        <TextBlock Text="BGM や効果音だけのシーンで OpenAI への送信を抑制し、 token 浪費を防ぎます。"
+                                   FontSize="12"
+                                   Foreground="{DynamicResource Brush.FG2}"
+                                   TextWrapping="Wrap"
+                                   Margin="0,0,0,16"/>
+
+                        <HeaderedContentControl Header="VAD を有効にする">
+                            <CheckBox IsChecked="{Binding EnableVad, Mode=TwoWay}"
+                                      Content="人の声と判定された区間だけ OpenAI に送る (推奨)"/>
+                        </HeaderedContentControl>
+
+                        <HeaderedContentControl Header="検出しきい値" Margin="0,16,0,0">
+                            <StackPanel>
+                                <Slider Minimum="0.1" Maximum="0.9" Value="{Binding VadThreshold, Mode=TwoWay}"
+                                        TickFrequency="0.05" IsSnapToTickEnabled="True"/>
+                                <TextBlock Text="{Binding VadThreshold, StringFormat='現在の値: {0:F2}  (公式推奨 = 0.50、 上げるほど判定が厳しくなり送信量減)'}"
+                                           FontSize="11" Foreground="{DynamicResource Brush.FG2}"/>
+                            </StackPanel>
+                        </HeaderedContentControl>
+
+                        <HeaderedContentControl Header="プリロール時間 (ms) — 発話冒頭の取りこぼし防止" Margin="0,16,0,0">
+                            <NumericUpDown Value="{Binding VadPreRollMs, Mode=TwoWay}"
+                                           Minimum="0" Maximum="2000" Increment="50"/>
+                        </HeaderedContentControl>
+
+                        <HeaderedContentControl Header="ハングオーバー時間 (ms) — 発話末尾の切れ防止" Margin="0,16,0,0">
+                            <NumericUpDown Value="{Binding VadHangoverMs, Mode=TwoWay}"
+                                           Minimum="0" Maximum="2000" Increment="50"/>
+                        </HeaderedContentControl>
+
+                        <TextBlock Text="自動 Pause 保険" FontSize="16" FontWeight="Bold" Margin="0,24,0,8"/>
+
+                        <HeaderedContentControl Header="連続無音秒数 (0 = 無効)">
+                            <StackPanel>
+                                <NumericUpDown Value="{Binding AutoPauseOnSilenceSec, Mode=TwoWay}"
+                                               Minimum="0" Maximum="600" Increment="10"/>
+                                <TextBlock Text="設定秒数の間 speech が検出されないとキャプチャを自動停止します。 席を離れた間の token 垂れ流し事故防止用。 0 で無効。"
+                                           FontSize="11" Foreground="{DynamicResource Brush.FG2}"
+                                           TextWrapping="Wrap" Margin="0,4,0,0"/>
+                            </StackPanel>
+                        </HeaderedContentControl>
+
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- ═══ Tab 4: 表示設定 ═══ -->
             <TabItem Header="表示設定" x:DataType="vm:MainViewModel">
                 <ScrollViewer VerticalScrollBarVisibility="Auto"
                               DataContext="{Binding SettingsVM}">

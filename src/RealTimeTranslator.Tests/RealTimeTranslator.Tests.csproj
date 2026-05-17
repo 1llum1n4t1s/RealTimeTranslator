@@ -13,4 +13,11 @@
     <Using Include="Microsoft.VisualStudio.TestTools.UnitTesting" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- silero-vad 公式テスト wav (人声サンプル、 16kHz mono PCM16、 ~60秒)。
+         SileroVadDetector が実音声で speech prob を返せるかの結合テスト用 (sr scalar 修正の検証)。
+         ライセンス: MIT (snakers4/silero-vad リポジトリと同じ)。 -->
+    <Content Include="Assets/test.wav" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>

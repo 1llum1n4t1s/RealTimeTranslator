@@ -51,6 +51,8 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
 
     // 句点として扱う文字。 ASCII 終端も入れて英語訳出力にも対応する。
     // 「、」(読点) は文の区切りではないので含めない (一文の中で複数現れるため)。
+    // 注意: 半角ピリオド '.' は IsSentenceBoundaryAt で小数点保護 (例: 「6.3インチ」「3.14」)
+    //       を行うため、 直接 IndexOf するのではなく必ず IsSentenceBoundaryAt 経由で判定する。
     private static readonly char[] SentenceTerminators = ['。', '！', '？', '!', '?', '.'];
 
     // 観測用カウンタ: partial / 完結文 emit の累計回数を頻度抑制ログで間引きながら吐く。
@@ -67,6 +69,30 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     private const int FallbackSplitThreshold = 100;
     private static readonly char[] FallbackSplitTerminators = ['、', ',', '・'];
 
+    // ───────── VAD ゲート (Silence/InSpeech/Hangover 状態機) ─────────
+    // BGM や効果音だけが鳴っているシーンで OpenAI 送信を抑制し token 浪費を防ぐ。
+    // EnableVad=false の場合は素通し (旧挙動)。
+    private enum VadState { Silence, InSpeech, Hangover }
+    private readonly IVoiceActivityDetector _vad;
+    // 16kHz / 32ms = 512 samples ごとに切り出すための accumulator (audio chunk 境界とフレーム
+    // 境界がズレるため、 残ったサンプルを次 chunk と結合して使う)。
+    private float[]? _frameAccumulator;
+    private int _frameAccumulatorLen;
+    // 発話冒頭の取りこぼし防止用に直近フレームを保持するリングバッファ。
+    private readonly Queue<float[]> _preRollBuffer = new();
+    private VadState _vadState = VadState.Silence;
+    private int _hangoverFramesRemaining;
+    // 自動 Pause 判定用 (最後に speech と判定された時刻)。
+    private DateTime _lastSpeechUtc = DateTime.UtcNow;
+    private DateTime _sessionStartUtc = DateTime.UtcNow;
+    private double _skippedSecondsByVad;
+    private Task? _autoPauseTask;
+    private CancellationTokenSource? _autoPauseCts;
+    // 診断: VAD ProcessVadFrame の呼び出しカウンタ。 一定間隔で speech_prob を Info ログに吐く。
+    // 「翻訳されない」現象の切り分け (入力レベル / prob 値 / 状態機の動き) に使う。
+    private long _vadDiagFrameCount;
+    private const int VadDiagLogEvery = 32; // 32 * 32ms ≈ 1秒に 1 回
+
     public event EventHandler<SubtitleItem>? SubtitleGenerated;
     public event EventHandler<PipelineStatsEventArgs>? StatsUpdated;
     public event EventHandler<Exception>? ErrorOccurred;
@@ -80,12 +106,14 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         IAudioCaptureService audioCaptureService,
         IRealtimeTranscriber realtimeClient,
         IOptionsMonitor<AppSettings> settingsMonitor,
-        ISettingsService settingsService)
+        ISettingsService settingsService,
+        IVoiceActivityDetector vad)
     {
         _audioCaptureService = audioCaptureService;
         _realtimeClient = realtimeClient;
         _settingsMonitor = settingsMonitor;
         _settingsService = settingsService;
+        _vad = vad;
         _cachedRealtimeSettings = settingsMonitor.CurrentValue.OpenAIRealtime;
         _throttleTimer = new Timer(OnThrottleTimerElapsed, null, Timeout.Infinite, Timeout.Infinite);
 
@@ -150,13 +178,34 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         _audioProcessingCts = new CancellationTokenSource();
         _audioProcessingTask = Task.Run(() => ProcessAudioLoopAsync(_audioProcessingCts.Token));
 
+        // VAD ゲート初期化 (新セッション開始時に状態を完全リセット)。
+        // 旧セッションの hidden state / preroll が残っていると、 開始直後の判定が
+        // ブレるので必ずここで初期化する。
+        _vad.Reset();
+        _preRollBuffer.Clear();
+        _vadState = VadState.Silence;
+        _hangoverFramesRemaining = 0;
+        _frameAccumulator = null;
+        _frameAccumulatorLen = 0;
+        _skippedSecondsByVad = 0;
+        _sessionStartUtc = DateTime.UtcNow;
+        _lastSpeechUtc = DateTime.UtcNow;
+
+        // 自動 Pause 監視ループ起動 (5 秒間隔ポーリング、 設定で AutoPauseOnSilenceSec=0 なら no-op)。
+        _autoPauseCts = new CancellationTokenSource();
+        _autoPauseTask = Task.Run(() => AutoPauseLoopAsync(_autoPauseCts.Token));
+
         _audioCaptureService.AudioDataAvailable += OnAudioDataAvailable;
         _isRunning = true;
         _latencyStopwatch.Start();
 
         StatsUpdated?.Invoke(this, new PipelineStatsEventArgs
         {
-            StatusText = "API接続完了"
+            StatusText = "API接続完了",
+            SessionDuration = TimeSpan.Zero,
+            InputAudioTokensEstimate = 0,
+            EstimatedCostUsd = 0m,
+            SkippedSecondsByVad = 0,
         });
     }
 
@@ -207,6 +256,19 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         _audioProcessingCts = null;
         _audioInputChannel = null;
 
+        // 自動 Pause 監視ループの停止 (audio 処理停止と独立にキャンセル → 完了待ち)。
+        _autoPauseCts?.Cancel();
+        if (_autoPauseTask is { } apTask)
+        {
+            try { await apTask.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false); }
+            catch (TimeoutException) { Logger.Warn("自動 Pause タスク停止がタイムアウト"); }
+            catch (OperationCanceledException) { }
+            catch (Exception ex) { Logger.Warn("自動 Pause タスク停止中の例外", ex); }
+        }
+        _autoPauseTask = null;
+        _autoPauseCts?.Dispose();
+        _autoPauseCts = null;
+
         // WebSocket 切断も外部待機を入れて UI スレッドに戻る前に確実に完了させる
         try
         {
@@ -236,7 +298,11 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
 
         StatsUpdated?.Invoke(this, new PipelineStatsEventArgs
         {
-            StatusText = "停止"
+            StatusText = "停止",
+            SessionDuration = DateTime.UtcNow - _sessionStartUtc,
+            InputAudioTokensEstimate = ComputeCurrentTokens(),
+            EstimatedCostUsd = ComputeCurrentCostUsd(),
+            SkippedSecondsByVad = _skippedSecondsByVad,
         });
     }
 
@@ -264,9 +330,20 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
             {
                 try
                 {
-                    var pcm16 = AudioFormatConverter.Float32ToPcm16(
-                        AudioFormatConverter.ResampleTo24kHz(audioData));
-                    _realtimeClient.SendAudio(pcm16);
+                    var audioCaptureSettings = _settingsMonitor.CurrentValue.AudioCapture;
+                    if (!audioCaptureSettings.EnableVad)
+                    {
+                        // VAD 無効: 旧パス (素通し送信)。 後方互換 & 緊急時の VAD バイパス用。
+                        var pcm16 = AudioFormatConverter.Float32ToPcm16(
+                            AudioFormatConverter.ResampleTo24kHz(audioData));
+                        _realtimeClient.SendAudio(pcm16);
+                    }
+                    else
+                    {
+                        // VAD 有効: 16kHz raw audio を 512 サンプル単位でフレーム化 → speech 判定 →
+                        // 発話区間のみ送信。 PreRoll + Hangover で発話冒頭/末尾の取りこぼし防止。
+                        ProcessAudioWithVadGate(audioData, audioCaptureSettings);
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -312,7 +389,8 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
             int start = 0;
             for (int i = 0; i < text.Length; i++)
             {
-                if (Array.IndexOf(SentenceTerminators, text[i]) >= 0)
+                // delta 受信中は isFinalContext=false: 末尾ピリオド + 直前数字は次 delta を待つため保留する。
+                if (IsSentenceBoundaryAt(text, i, isFinalContext: false))
                 {
                     var sentence = text[start..(i + 1)];
                     if (!string.IsNullOrWhiteSpace(sentence))
@@ -510,7 +588,10 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
             int start = 0;
             for (int i = 0; i < newPortion.Length; i++)
             {
-                if (Array.IndexOf(SentenceTerminators, newPortion[i]) >= 0)
+                // done は確定文脈なので isFinalContext=true: 末尾ピリオド + 直前数字でも遠慮なく区切る
+                // (次に来る delta はないため保留する意味がない)。 ただし「6.3インチ」のような
+                // 中間の数字小数点は引き続き保護される。
+                if (IsSentenceBoundaryAt(newPortion, i, isFinalContext: true))
                 {
                     // start..i が 1 文 (句点含む) として完結
                     var sentence = newPortion[start..(i + 1)];
@@ -720,5 +801,258 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         if (sb.Length == 0) return string.Empty;
         if (sb.Length <= maxLength) return sb.ToString();
         return sb.ToString(sb.Length - maxLength, maxLength);
+    }
+
+    /// <summary>
+    /// 指定位置の文字が「文の区切り (= 句点)」か判定する。
+    /// ピリオド '.' は数字に挟まれている場合 (例: 「6.3インチ」「3.14」) は小数点として保護し、
+    /// 区切らない。 また、 delta 受信中 (<paramref name="isFinalContext"/>=false) かつ末尾ピリオド
+    /// 直前が数字の場合は「次の delta で続きの数字が来るかも」と判断して保留する
+    /// (false を返す)。 done 受信時 (isFinalContext=true) は遠慮なく区切る。
+    /// </summary>
+    /// <remarks>
+    /// テスト容易化のため internal (InternalsVisibleTo=RealTimeTranslator.Tests)。
+    /// </remarks>
+    internal static bool IsSentenceBoundaryAt(string text, int i, bool isFinalContext)
+    {
+        if (i < 0 || i >= text.Length) return false;
+        char c = text[i];
+        if (Array.IndexOf(SentenceTerminators, c) < 0) return false;
+
+        // ピリオド以外 (。 ！ ？ ! ?) は問答無用で区切り
+        if (c != '.') return true;
+
+        bool prevIsDigit = i > 0 && text[i - 1] >= '0' && text[i - 1] <= '9';
+        bool nextIsDigit = i + 1 < text.Length && text[i + 1] >= '0' && text[i + 1] <= '9';
+
+        // 小数点 (例: 6.3 / 3.14): 区切らない
+        if (prevIsDigit && nextIsDigit) return false;
+
+        // delta 受信中の「末尾ピリオド + 直前数字」: 次の delta で「3インチ」みたいな
+        // 続きが来る可能性 → 区切らず保留 (続きが来てから判定)。
+        // done 確定時 (isFinalContext=true) は遠慮なく区切る。
+        if (!isFinalContext && prevIsDigit && i == text.Length - 1) return false;
+
+        return true;
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // VAD ゲート + 自動 Pause + 統計計算 (案 D + 案 G 実装)
+    // ═══════════════════════════════════════════════════════════════
+
+    /// <summary>
+    /// VAD 有効時の音声処理: 16kHz raw audio を VAD フレームサイズ単位 (512 サンプル/32ms)
+    /// に切り出して順次 <see cref="ProcessVadFrame"/> へ流す。 audio chunk 境界とフレーム境界が
+    /// ズレるため、 _frameAccumulator に残り部分を保持して次 chunk と結合する。
+    /// テスト目的で internal (InternalsVisibleTo=RealTimeTranslator.Tests)。
+    /// </summary>
+    internal void ProcessAudioWithVadGate(float[] audio16kHz, AudioCaptureSettings settings)
+    {
+        int frameSize = _vad.RequiredFrameSize;
+        if (_frameAccumulator is null || _frameAccumulator.Length != frameSize)
+        {
+            _frameAccumulator = new float[frameSize];
+            _frameAccumulatorLen = 0;
+        }
+
+        int offset = 0;
+        while (offset < audio16kHz.Length)
+        {
+            int copy = Math.Min(frameSize - _frameAccumulatorLen, audio16kHz.Length - offset);
+            Array.Copy(audio16kHz, offset, _frameAccumulator, _frameAccumulatorLen, copy);
+            _frameAccumulatorLen += copy;
+            offset += copy;
+
+            if (_frameAccumulatorLen == frameSize)
+            {
+                ProcessVadFrame(_frameAccumulator, settings);
+                _frameAccumulatorLen = 0;
+            }
+        }
+    }
+
+    /// <summary>
+    /// 1 フレーム (512 サンプル / 32ms) を VAD で判定し、 Silence/InSpeech/Hangover 状態機を回す。
+    /// テスト目的で internal (InternalsVisibleTo=RealTimeTranslator.Tests)。
+    /// </summary>
+    internal void ProcessVadFrame(float[] frame16kHz, AudioCaptureSettings settings)
+    {
+        float prob;
+        try
+        {
+            prob = _vad.DetectSpeechProb(frame16kHz);
+        }
+        catch (Exception ex)
+        {
+            // VAD 推論失敗時は安全側 (= 送信) に倒し、 誤って発話を捨てない。
+            Logger.Warn($"VAD 推論失敗 (発話と見なして素通し): {ex.Message}");
+            SendFrameToClient(frame16kHz);
+            _lastSpeechUtc = DateTime.UtcNow;
+            return;
+        }
+
+        bool isSpeech = prob >= settings.VadThreshold;
+        double frameSeconds = (double)frame16kHz.Length / _vad.SampleRate;
+        // フレームあたり 32ms なので、 ms 値を 32 で割って frame 数換算 (最低 1 / 0 を保証)。
+        int preRollCapacity = Math.Max(1, settings.VadPreRollMs / 32);
+        int hangoverFrames = Math.Max(0, settings.VadHangoverMs / 32);
+
+        // 診断ログ: 約 1 秒に 1 回、 speech_prob / 状態 / preroll サイズ / フレーム最大振幅を出す。
+        // 「翻訳されない」報告時に、 (a) VAD 入力が無音か (frameMax≈0) (b) VAD が常に低 prob を返すか
+        // (c) PreRoll に積まれてるだけで送信に至らないか を切り分けるための診断。
+        if (Interlocked.Increment(ref _vadDiagFrameCount) % VadDiagLogEvery == 0)
+        {
+            float frameMax = 0f;
+            for (int i = 0; i < frame16kHz.Length; i++)
+            {
+                var abs = MathF.Abs(frame16kHz[i]);
+                if (abs > frameMax) frameMax = abs;
+            }
+            Logger.Info(
+                $"[VAD診断] prob={prob:F3} threshold={settings.VadThreshold:F2} isSpeech={isSpeech} " +
+                $"state={_vadState} hangoverRemaining={_hangoverFramesRemaining} preRollSize={_preRollBuffer.Count} " +
+                $"frameMax={frameMax:F4} skippedSec={_skippedSecondsByVad:F1}");
+        }
+
+        switch (_vadState)
+        {
+            case VadState.Silence:
+                if (isSpeech)
+                {
+                    // PreRoll バッファを丸ごと送信して発話冒頭の取りこぼしを補う。
+                    while (_preRollBuffer.Count > 0)
+                    {
+                        var preRollFrame = _preRollBuffer.Dequeue();
+                        SendFrameToClient(preRollFrame);
+                    }
+                    SendFrameToClient(frame16kHz);
+                    _vadState = VadState.InSpeech;
+                    _lastSpeechUtc = DateTime.UtcNow;
+                }
+                else
+                {
+                    // PreRoll に積む (古いものは押し出す = OpenAI 送信スキップとして秒数加算)。
+                    while (_preRollBuffer.Count >= preRollCapacity)
+                    {
+                        _preRollBuffer.Dequeue();
+                        _skippedSecondsByVad += frameSeconds;
+                    }
+                    var copy = new float[frame16kHz.Length];
+                    Array.Copy(frame16kHz, copy, frame16kHz.Length);
+                    _preRollBuffer.Enqueue(copy);
+                }
+                break;
+
+            case VadState.InSpeech:
+                SendFrameToClient(frame16kHz);
+                if (isSpeech)
+                {
+                    _lastSpeechUtc = DateTime.UtcNow;
+                }
+                else
+                {
+                    _vadState = VadState.Hangover;
+                    _hangoverFramesRemaining = hangoverFrames;
+                }
+                break;
+
+            case VadState.Hangover:
+                SendFrameToClient(frame16kHz);
+                if (isSpeech)
+                {
+                    _vadState = VadState.InSpeech;
+                    _lastSpeechUtc = DateTime.UtcNow;
+                    _hangoverFramesRemaining = 0;
+                }
+                else
+                {
+                    _hangoverFramesRemaining--;
+                    if (_hangoverFramesRemaining <= 0)
+                    {
+                        _vadState = VadState.Silence;
+                        _preRollBuffer.Clear();
+                        // LSTM state は連続性が高い方が誤検出が減るためここでは Reset しない
+                        // (Start 時にだけ Reset を呼ぶ)。
+                    }
+                }
+                break;
+        }
+    }
+
+    /// <summary>VAD ゲート通過分のフレームを 24kHz PCM16 に変換して OpenAI へ送信。</summary>
+    private void SendFrameToClient(float[] frame16kHz)
+    {
+        var pcm16 = AudioFormatConverter.Float32ToPcm16(
+            AudioFormatConverter.ResampleTo24kHz(frame16kHz));
+        _realtimeClient.SendAudio(pcm16);
+    }
+
+    /// <summary>
+    /// 5 秒間隔で「最後に speech 検出してから AutoPauseOnSilenceSec 経過したか」を監視し、
+    /// 超過していたらキャプチャを自動停止して UI に通知する。
+    /// 設定で AutoPauseOnSilenceSec=0 (default) なら何もしない。
+    /// 1 回発火したら自身を終了 (ユーザーが Start 押し直したら新タスクが起動される)。
+    /// </summary>
+    private async Task AutoPauseLoopAsync(CancellationToken ct)
+    {
+        try
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                await Task.Delay(TimeSpan.FromSeconds(5), ct).ConfigureAwait(false);
+                if (!_isRunning) continue;
+
+                var settings = _settingsMonitor.CurrentValue.AudioCapture;
+                if (!settings.EnableVad || settings.AutoPauseOnSilenceSec <= 0) continue;
+
+                var elapsed = (DateTime.UtcNow - _lastSpeechUtc).TotalSeconds;
+                if (elapsed < settings.AutoPauseOnSilenceSec) continue;
+
+                Logger.Info($"自動 Pause 発火: {elapsed:F0}秒間 speech 未検出のためキャプチャを停止します");
+                try
+                {
+                    _audioCaptureService.StopCapture();
+                }
+                catch (Exception ex)
+                {
+                    Logger.Warn($"自動 Pause で StopCapture 失敗: {ex.Message}");
+                }
+
+                StatsUpdated?.Invoke(this, new PipelineStatsEventArgs
+                {
+                    StatusText = $"⏸️ 約{(int)elapsed}秒間 speech 未検出のため自動停止しました",
+                    SessionDuration = DateTime.UtcNow - _sessionStartUtc,
+                    InputAudioTokensEstimate = ComputeCurrentTokens(),
+                    EstimatedCostUsd = ComputeCurrentCostUsd(),
+                    SkippedSecondsByVad = _skippedSecondsByVad,
+                });
+
+                // 1 回発火で抜ける (ユーザーが Start 押し直すと新タスクが起動)。
+                break;
+            }
+        }
+        catch (OperationCanceledException) { /* StopAsync 経由の停止 */ }
+        catch (Exception ex)
+        {
+            Logger.Warn($"自動 Pause ループで予期しないエラー: {ex.Message}", ex);
+        }
+    }
+
+    /// <summary>
+    /// 現時点の audio input tokens 累計を返す (サーバー報告値優先、 取れない場合は送信秒数推定)。
+    /// </summary>
+    private long ComputeCurrentTokens()
+    {
+        var serverTokens = _realtimeClient.ServerReportedAudioInputTokens;
+        if (serverTokens > 0) return serverTokens;
+        return CostEstimator.EstimateTokensFromSamples(
+            _realtimeClient.TotalAudioInputSamples24kHz, 24000);
+    }
+
+    /// <summary>現時点の推定コスト (USD)。 モデル名は OpenAIRealtime.Model から解決。</summary>
+    private decimal ComputeCurrentCostUsd()
+    {
+        var model = _settingsMonitor.CurrentValue.OpenAIRealtime.Model;
+        return CostEstimator.EstimateUsd(model, ComputeCurrentTokens());
     }
 }

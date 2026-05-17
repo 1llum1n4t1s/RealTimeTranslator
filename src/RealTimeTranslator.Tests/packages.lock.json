@@ -95,6 +95,22 @@
         "resolved": "10.0.8",
         "contentHash": "OBPo4nYhMyIbtueoC10CBm6AGAbo/A9IV8QQ/6ryZS7VvmqpGT7hunazeHLxFawRzn3oLOq4jhqhpBX4tfswWQ=="
       },
+      "Microsoft.ML.OnnxRuntime": {
+        "type": "Transitive",
+        "resolved": "1.26.0",
+        "contentHash": "wiylawSnyspmJdZxilJUuUq3Tp/nT9BsngHHKvrCGWsADo15Z7y0G6kYAU0Pqb5af+f/EzwIi2aHaNUlzp/eww==",
+        "dependencies": {
+          "Microsoft.ML.OnnxRuntime.Managed": "1.26.0"
+        }
+      },
+      "Microsoft.ML.OnnxRuntime.Managed": {
+        "type": "Transitive",
+        "resolved": "1.26.0",
+        "contentHash": "hEmwYh5WL8n1xjNvmfdSUOqGGXAKCLtxfgUfGZRRAen9IWuSk7ieoBFH08+wlrYp1Vma80HtAirL3QLDbTeEzQ==",
+        "dependencies": {
+          "System.Numerics.Tensors": "9.0.0"
+        }
+      },
       "Microsoft.Testing.Extensions.CodeCoverage": {
         "type": "Transitive",
         "resolved": "18.5.2",
@@ -207,6 +223,11 @@
           "Microsoft.Extensions.Logging.Abstractions": "10.0.8"
         }
       },
+      "System.Numerics.Tensors": {
+        "type": "Transitive",
+        "resolved": "9.0.0",
+        "contentHash": "hyJB4UlpAi19Xr9AXzu2NuagKC4lPfHObNMEAA0HmqFz2rX7wKgzeYzO/jM/eBHDhnUGFFEjk5cOoJaxqg5J4A=="
+      },
       "System.Security.Cryptography.ProtectedData": {
         "type": "Transitive",
         "resolved": "10.0.8",
@@ -216,6 +237,7 @@
         "type": "Project",
         "dependencies": {
           "1llum1n4t1s.NAudio": "[1.0.43, )",
+          "Microsoft.ML.OnnxRuntime": "[1.26.0, )",
           "SuperLightLogger": "[1.0.7, )",
           "System.Security.Cryptography.ProtectedData": "[10.0.8, )"
         }

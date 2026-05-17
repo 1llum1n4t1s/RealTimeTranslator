@@ -47,6 +47,30 @@ public class OverlaySettings
 public class AudioCaptureSettings
 {
     public int SampleRate { get; set; } = 16000;
+
+    // ───────── VAD (Voice Activity Detection) ─────────
+    // BGM / 効果音だけが鳴っているシーンでの OpenAI 送信を抑制するためのゲート。
+    // EnableVad=false の場合は素通し (旧挙動)。
+
+    /// <summary>VAD ゲートを有効にする (default: true)。 BGM/SE 中の token 浪費を防ぐ。</summary>
+    public bool EnableVad { get; set; } = true;
+
+    /// <summary>speech probability のしきい値 (0.0-1.0, default: 0.5 = Silero VAD 公式推奨)。</summary>
+    public float VadThreshold { get; set; } = 0.5f;
+
+    /// <summary>発話冒頭の取りこぼし防止用にリングバッファに保持する直近音声の長さ (ms)。</summary>
+    public int VadPreRollMs { get; set; } = 400;
+
+    /// <summary>発話末尾の切れ防止用に speech 終了判定後も送信を継続する長さ (ms)。</summary>
+    public int VadHangoverMs { get; set; } = 200;
+
+    // ───────── 自動 Pause 保険 ─────────
+
+    /// <summary>
+    /// 連続 N 秒間 speech 未検出ならキャプチャを自動停止する (0 = 無効, default: 0)。
+    /// 「席を離れた間に token 垂れ流し」事故防止用。 VAD 有効時のみ機能する。
+    /// </summary>
+    public int AutoPauseOnSilenceSec { get; set; } = 0;
 }
 
 public class OpenAIRealtimeSettings
