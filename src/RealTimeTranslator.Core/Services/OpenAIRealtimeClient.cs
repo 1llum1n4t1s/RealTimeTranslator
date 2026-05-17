@@ -51,6 +51,9 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
     // 「文が区切られず長文化する」原因を切り分けるためのフィールド。
     private readonly HashSet<string> _seenEventTypes = new(StringComparer.Ordinal);
     private readonly object _seenEventTypesLock = new();
+    // rere A1-003 / M-3: 上限 256 件で打ち切り、 異常な type 注入で OOM になる経路を遮断。
+    // OpenAI Realtime API の実 event 種別は数十なので 256 で余裕、 実用上の影響なし。
+    private const int MaxSeenEventTypes = 256;
 
     // ⚠️ 二重字幕対策 (2026-05-17 観測):
     // OpenAI Realtime API は同じ翻訳結果を `response.output_audio_transcript.*` と
@@ -446,7 +449,9 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
                 // `session.input_audio_buffer.append` 形式（session. プレフィックス必須）。
                 // 通常の /v1/realtime エンドポイントの `input_audio_buffer.append` ではないので注意。
                 jsonWriter.WriteString("type", "session.input_audio_buffer.append");
-                jsonWriter.WriteString("audio", Convert.ToBase64String(audioData));
+                // rere C1-P2-004 / I-4: Convert.ToBase64String の中間 string allocate を回避し、
+                // Utf8JsonWriter.WriteBase64String で UTF-8 byte に直接書き込む (zero-alloc)。
+                jsonWriter.WriteBase64String("audio"u8, audioData);
                 jsonWriter.WriteEndObject();
                 await jsonWriter.FlushAsync(ct).ConfigureAwait(false);
 
@@ -465,10 +470,15 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
         }
     }
 
+    // rere M-4: 一度大きいメッセージ (transcript.done のセッション累積全文等) を受信すると
+    // MemoryStream 内部 buffer が肥大化したまま保持される。 256KB を超えたら新インスタンスに
+    // 切替えて常時メモリ滞在を抑える。 通常のメッセージ (数 KB) では発火しないので影響なし。
+    private const int MessageStreamCapacityThreshold = 256 * 1024;
+
     private async Task ReceiveLoopAsync(CancellationToken ct)
     {
         var buffer = new byte[65536];
-        using var messageStream = new MemoryStream();
+        var messageStream = new MemoryStream();
 
         try
         {
@@ -492,6 +502,13 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
                 var jsonMemory = messageStream.GetBuffer().AsMemory(0, length);
                 ProcessMessage(jsonMemory);
                 messageStream.SetLength(0);
+
+                // rere M-4: 大メッセージ後の内部 buffer 拡張が常時保持されないようリセット
+                if (messageStream.Capacity > MessageStreamCapacityThreshold)
+                {
+                    messageStream.Dispose();
+                    messageStream = new MemoryStream();
+                }
             }
         }
         catch (OperationCanceledException) { }
@@ -503,6 +520,11 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
         {
             Logger.Error("WebSocket 受信ループ予期しないエラー", ex);
             ErrorReceived?.Invoke(ex);
+        }
+        finally
+        {
+            // rere M-4: messageStream は using var → var に変更したので明示 Dispose
+            messageStream.Dispose();
         }
 
         if (!ct.IsCancellationRequested)
@@ -527,10 +549,11 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
 
             // 診断ログ: 初見のevent typeはInfoで1回だけ吐く（文が区切られない問題のため）。
             // 既知typeも含めて全部最初の1回はログに出すことで、API実装が変わって新event名が来ても気付ける。
+            // rere A1-003: 上限 MaxSeenEventTypes (256) 到達後は無視 (異常 type 注入での OOM 防止)。
             bool isFirstSighting;
             lock (_seenEventTypesLock)
             {
-                isFirstSighting = _seenEventTypes.Add(type);
+                isFirstSighting = _seenEventTypes.Count < MaxSeenEventTypes && _seenEventTypes.Add(type);
             }
             if (isFirstSighting)
             {

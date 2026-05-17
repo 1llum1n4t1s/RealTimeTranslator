@@ -327,6 +327,7 @@ public class UpdateService : IUpdateService
     /// <summary>
     /// FeedUrl の HTTPS + ホスト許可リスト検証。
     /// 攻撃者が settings.json を書換えて任意の URL に誘導することを防ぐ最低限のガード。
+    /// rere A2-003: userinfo (user:pass@host) と Punycode 経由の host spoofing を追加で拒否。
     /// </summary>
     private static bool TryGetValidFeedUri(string feedUrl, out Uri uri, out string reason)
     {
@@ -341,9 +342,16 @@ public class UpdateService : IUpdateService
             reason = $"FeedUrl の HTTPS 以外のスキーム（{parsed.Scheme}）は許可されていません。";
             return false;
         }
-        if (!AllowedFeedHosts.Contains(parsed.Host))
+        // userinfo (user:pass@host) を含む URL を拒否。 host spoofing 防止
+        if (!string.IsNullOrEmpty(parsed.UserInfo))
         {
-            reason = $"FeedUrl のホスト '{parsed.Host}' は許可リスト外です（github.com / objects.githubusercontent.com のみ）。";
+            reason = "FeedUrl に user-info (user:pass@) を含めることはできません。";
+            return false;
+        }
+        // IdnHost で比較 (Punycode 攻撃対策、 ASCII ドメインでは Host と同値)
+        if (!AllowedFeedHosts.Contains(parsed.IdnHost))
+        {
+            reason = $"FeedUrl のホスト '{parsed.IdnHost}' は許可リスト外です（github.com / objects.githubusercontent.com のみ）。";
             return false;
         }
         uri = parsed;
