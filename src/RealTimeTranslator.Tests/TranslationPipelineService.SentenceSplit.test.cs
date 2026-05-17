@@ -96,48 +96,32 @@ public sealed class TranslationPipelineServiceSentenceSplitTests
         return (pipeline, transcriber, emitted);
     }
 
-    /// <test description="SentencesPerSegment=2: 1 句点だけでは pending に蓄積されるのみで確定 emit しない" />
+    /// <test rere="B3-010" />
     [TestMethod]
     [TestCategory("SentenceSplit")]
-    public void OnTranscriptDelta_SingleSentence_AccumulatesInPendingWithoutFinalEmit()
+    public void OnTranscriptDelta_SingleSentenceWithPeriod_EmitsFinalOnce()
     {
         var (pipeline, transcriber, emitted) = CreatePipeline();
         transcriber.RaiseDelta("こんにちは。");
 
         var finals = emitted.Where(x => x.IsFinal).ToList();
-        Assert.AreEqual(0, finals.Count,
-            "SentencesPerSegment=2 のため、1 句点では確定 emit されず pending に蓄積されるはず");
+        Assert.AreEqual(1, finals.Count, "句点ありの delta で IsFinal=true が 1 件 emit されるはず");
+        Assert.AreEqual("こんにちは。", finals[0].TranslatedText);
     }
 
-    /// <test description="SentencesPerSegment=2: 2 句点で 1 セグメントとして連結 emit (細切れ抑制)" />
+    /// <test rere="B3-010" />
     [TestMethod]
     [TestCategory("SentenceSplit")]
-    public void OnTranscriptDelta_TwoSentences_EmitsCombinedAsOneSegment()
+    public void OnTranscriptDelta_MultipleSentences_EmitsSeparateSegmentIds()
     {
         var (pipeline, transcriber, emitted) = CreatePipeline();
         transcriber.RaiseDelta("こんにちは。お元気で。");
 
         var finals = emitted.Where(x => x.IsFinal).ToList();
-        Assert.AreEqual(1, finals.Count,
-            "SentencesPerSegment=2 で 2 句点ヒット → 1 セグメントとして 1 件 emit");
-        Assert.AreEqual("こんにちは。お元気で。", finals[0].TranslatedText,
-            "2 文が連結されて 1 件として emit されるはず");
-    }
-
-    /// <test description="SentencesPerSegment=2: 4 句点で 2 セグメントに分割" />
-    [TestMethod]
-    [TestCategory("SentenceSplit")]
-    public void OnTranscriptDelta_FourSentences_EmitsTwoSeparateSegments()
-    {
-        var (pipeline, transcriber, emitted) = CreatePipeline();
-        transcriber.RaiseDelta("こんにちは。お元気で。今日は晴れ。明日も晴れ。");
-
-        var finals = emitted.Where(x => x.IsFinal).ToList();
-        Assert.AreEqual(2, finals.Count, "4 句点で 2 セグメントが emit されるはず");
-        Assert.AreEqual("こんにちは。お元気で。", finals[0].TranslatedText);
-        Assert.AreEqual("今日は晴れ。明日も晴れ。", finals[1].TranslatedText);
-        Assert.AreNotEqual(finals[0].SegmentId, finals[1].SegmentId,
-            "各 2 文セグメントは別 SegmentId で emit されるはず");
+        Assert.AreEqual(2, finals.Count, "句点 2 つで完結文が 2 件 emit されるはず");
+        Assert.AreEqual("こんにちは。", finals[0].TranslatedText);
+        Assert.AreEqual("お元気で。", finals[1].TranslatedText);
+        Assert.AreNotEqual(finals[0].SegmentId, finals[1].SegmentId, "各完結文は別 SegmentId で emit されるはず");
     }
 
     /// <test rere="P0 #1 (B2-C1 / D-1)" />
@@ -145,14 +129,14 @@ public sealed class TranslationPipelineServiceSentenceSplitTests
     [TestCategory("SentenceSplit")]
     public void OnTranscriptCompleted_PrefixMismatch_SkipsWithoutEmit()
     {
-        // 1 回目の delta で 2 文 → 1 セグメント emit、 _lastFinalizedTranscript = "今日は良い天気です。本当に。"
+        // 1 回目の delta で _lastFinalizedTranscript = "今日は良い天気です。"
         var (pipeline, transcriber, emitted) = CreatePipeline();
-        transcriber.RaiseDelta("今日は良い天気です。本当に。");
-        Assert.AreEqual(1, emitted.Count(x => x.IsFinal), "1 セグメント (2 文連結) で 1 件 emit");
+        transcriber.RaiseDelta("今日は良い天気です。");
+        Assert.AreEqual(1, emitted.Count(x => x.IsFinal), "1 回目で 1 件");
 
         // 2 回目: 新セッション風の done (prefix が一致しない) を投げる
         emitted.Clear();
-        transcriber.RaiseDone("全く違う内容の文。本当に違う。");
+        transcriber.RaiseDone("全く違う内容の文。");
 
         // 旧設計だと "全く違う内容の文。" が IsFinal=true で再 emit されていた (重複)。
         // P0 #1 修正後は skip + Warn ログのみ
@@ -166,8 +150,8 @@ public sealed class TranslationPipelineServiceSentenceSplitTests
     public void OnConnectionStateChanged_ReconnectingToConnected_ResetsFinalizedTranscript()
     {
         var (pipeline, transcriber, emitted) = CreatePipeline();
-        transcriber.RaiseDelta("旧セッションの文。これは旧。");
-        Assert.AreEqual(1, emitted.Count(x => x.IsFinal), "旧セッションで 1 件 emit (2 文連結)");
+        transcriber.RaiseDelta("旧セッションの文。");
+        Assert.AreEqual(1, emitted.Count(x => x.IsFinal), "旧セッションで 1 件 emit");
 
         // 再接続シミュレート: Connected → Reconnecting → Connected
         transcriber.RaiseStateChanged(ConnectionState.Reconnecting);
@@ -175,12 +159,12 @@ public sealed class TranslationPipelineServiceSentenceSplitTests
 
         // 新セッションで新規 transcript を受領
         emitted.Clear();
-        transcriber.RaiseDelta("新セッションの文。これは新。");
+        transcriber.RaiseDelta("新セッションの文。");
 
         // リセットされていれば prefix mismatch にならず、 そのまま 1 件 emit されるはず
         Assert.AreEqual(1, emitted.Count(x => x.IsFinal),
             "再接続後は _lastFinalizedTranscript リセットで新セッションが正常に動くはず");
-        Assert.AreEqual("新セッションの文。これは新。", emitted.First(x => x.IsFinal).TranslatedText);
+        Assert.AreEqual("新セッションの文。", emitted.First(x => x.IsFinal).TranslatedText);
     }
 
     /// <test rere="D-7 句読点 fallback" />
@@ -189,18 +173,18 @@ public sealed class TranslationPipelineServiceSentenceSplitTests
     public void OnTranscriptDelta_LongMachineGunTalk_FallbackSplitOnComma()
     {
         var (pipeline, transcriber, emitted) = CreatePipeline();
-        // 句点なし 150 文字超 (FallbackSplitThreshold = 150) で「、」を含む長文
-        var longText = new string('あ', 80) + "、" + new string('い', 80);
+        // 句点なし 100 文字超で「、」を含む長文
+        var longText = new string('あ', 50) + "、" + new string('い', 60);
         transcriber.RaiseDelta(longText);
 
         var finals = emitted.Where(x => x.IsFinal).ToList();
         Assert.IsTrue(finals.Count >= 1,
-            "150 文字超で「、」 fallback 分割が走り完結文 emit されるはず (D-7 + SentencesPerSegment 未達でも強制 emit)");
+            "100 文字超で「、」 fallback 分割が走り完結文 emit されるはず (rere D-7)");
         // 1 文目に「、」が含まれることを確認
         StringAssert.EndsWith(finals[0].TranslatedText, "、");
     }
 
-    /// <test description="句点なし短文では emit ゼロ (D-7 閾値未満 + SentencesPerSegment 未達)" />
+    /// <test rere="B3-010" />
     [TestMethod]
     [TestCategory("SentenceSplit")]
     public void OnTranscriptDelta_NoTerminator_EmitsPartialOnly()

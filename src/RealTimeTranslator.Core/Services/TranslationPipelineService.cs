@@ -17,12 +17,6 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     // 越えられないので、ここで詰められるのは partial 描画間隔だけ。
     private static readonly TimeSpan DeltaThrottle = TimeSpan.FromMilliseconds(50);
 
-    // 1 つの SegmentId にまとめる文の数。 句点ヒットしてもこの数に達するまで蓄積する。
-    // ゆろさんの「未確定字幕・確定字幕の単位を +1」要望で 1 → 2 に粗くした (細切れ抑制)。
-    // settings 化していないのは、 細かすぎる調整余地より「2 で固定」のほうが UX が安定するため。
-    // 将来 1/2/3 切替が欲しくなったら OverlaySettings に出す。
-    private const int SentencesPerSegment = 2;
-
     private readonly IAudioCaptureService _audioCaptureService;
     private readonly IRealtimeTranscriber _realtimeClient;
     private OpenAIRealtimeSettings _cachedRealtimeSettings;
@@ -64,17 +58,8 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
 
     // D-7 句読点 fallback の閾値: _accumulatedText がこれを超えても句点が来ない場合、
     // 末尾の読点で強制分割する (永久未確定字幕を防止)。
-    // SentencesPerSegment を 2 に上げたのに合わせて閾値も 100 → 150 に緩めて細切れ抑制を強化。
-    private const int FallbackSplitThreshold = 150;
+    private const int FallbackSplitThreshold = 100;
     private static readonly char[] FallbackSplitTerminators = ['、', ',', '・'];
-
-    // SentencesPerSegment による「複数文を 1 セグメントにまとめる」ためのバッファ。
-    // 句点ヒット時に sentence を _pendingSegmentText に蓄積し、_pendingSentenceCount を +1。
-    // _pendingSentenceCount >= SentencesPerSegment に達したら emit + クリア + 新 SegmentId。
-    // partial 表示時は (_pendingSegmentText + _accumulatedText) を 1 つの SegmentId で表示する
-    // ことで、ユーザーには「1 セグメント = N 文がまとまった字幕」として一貫した見え方になる。
-    private readonly StringBuilder _pendingSegmentText = new();
-    private int _pendingSentenceCount;
 
     public event EventHandler<SubtitleItem>? SubtitleGenerated;
     public event EventHandler<PipelineStatsEventArgs>? StatsUpdated;
@@ -313,8 +298,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
             // ケースがある (2026-05-17 観測: delta のみで会話が進み done が来ない)。
             // done を待つ設計だと SegmentId が永久に固定され「字幕が無限成長する」UX バグ
             // になるため、 delta 受信時にも _accumulatedText 内の句点を検出して
-            // 完結文ごとに _pendingSegmentText に蓄積し、SentencesPerSegment 文に達したら
-            // emit + SegmentId 切り替えを行う (N 文を 1 セグメントにまとめて細切れ抑制)。
+            // 完結文ごとに emit + SegmentId 切り替えを行う。
             var text = _accumulatedText.ToString();
             int start = 0;
             for (int i = 0; i < text.Length; i++)
@@ -324,27 +308,18 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                     var sentence = text[start..(i + 1)];
                     if (!string.IsNullOrWhiteSpace(sentence))
                     {
-                        _pendingSegmentText.Append(sentence);
-                        _pendingSentenceCount++;
+                        completedSentences.Add((_currentSegmentId, sentence));
+                        _currentSegmentId = Guid.NewGuid().ToString();
                         _lastFinalizedTranscript += sentence;
-                        if (_pendingSentenceCount >= SentencesPerSegment)
-                        {
-                            completedSentences.Add((_currentSegmentId, _pendingSegmentText.ToString()));
-                            _currentSegmentId = Guid.NewGuid().ToString();
-                            _pendingSegmentText.Clear();
-                            _pendingSentenceCount = 0;
-                        }
                     }
                     start = i + 1;
                 }
             }
 
             // ⭐ D-7 句読点 fallback: 句点 (SentenceTerminators) が来なくても _accumulatedText が
-            // FallbackSplitThreshold (150文字) を超えた場合、 末尾の読点 (「、」「,」「・」) で
+            // FallbackSplitThreshold (100文字) を超えた場合、 末尾の読点 (「、」「,」「・」) で
             // 強制分割する。 永久未確定字幕 (partial 表示が伸び続ける UX バグ) を防止。
-            // fallback は SentencesPerSegment 未達でも強制的に segment を閉じる (永久未確定が
-            // SentencesPerSegment 蓄積待ちで生じないようにする)。
-            // すでに完結文 emit を切り出した直後 (completedSentences.Count > 0) は trailing が短いので
+            // すでに完結文を切り出した直後 (completedSentences.Count > 0) は trailing が短いので
             // fallback 不要。 完結文ゼロかつ trailing が閾値超のケースのみ発動する。
             if (completedSentences.Count == 0 && (text.Length - start) > FallbackSplitThreshold)
             {
@@ -358,13 +333,9 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                         if (!string.IsNullOrWhiteSpace(sentence))
                         {
                             Logger.Info($"OnTranscriptDelta: 句読点 fallback 分割 (trailing={trailingLength}文字 句点なし) → '{TruncateForLog(sentence)}'");
-                            _pendingSegmentText.Append(sentence);
-                            _lastFinalizedTranscript += sentence;
-                            // fallback は SentencesPerSegment 未達でも強制 emit して永久未確定を防ぐ
-                            completedSentences.Add((_currentSegmentId, _pendingSegmentText.ToString()));
+                            completedSentences.Add((_currentSegmentId, sentence));
                             _currentSegmentId = Guid.NewGuid().ToString();
-                            _pendingSegmentText.Clear();
-                            _pendingSentenceCount = 0;
+                            _lastFinalizedTranscript += sentence;
                             start = i + 1;
                         }
                         break;
@@ -438,11 +409,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         _lastEmitTime = DateTime.UtcNow;
         _hasPendingDelta = false;
 
-        // SentencesPerSegment ぶんの確定済み文 + 書き途中の delta を 1 つの partial として表示。
-        // これでユーザーには「2 文がまとまった 1 セグメント」が一貫した字幕として見える。
-        var partialText = _pendingSegmentText.Length > 0
-            ? _pendingSegmentText.ToString() + _accumulatedText.ToString()
-            : _accumulatedText.ToString();
+        var partialText = _accumulatedText.ToString();
         var segmentId = _currentSegmentId;
 
         var subtitle = new SubtitleItem
@@ -527,7 +494,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                 return;
             }
 
-            // newPortion を句点で分割し、SentencesPerSegment 文ごとにまとめて 1 セグメントとして emit する。
+            // newPortion を句点で分割して、 完結した文ごとに emit する。
             emissions = new List<(string, string, bool)>();
             int start = 0;
             for (int i = 0; i < newPortion.Length; i++)
@@ -538,33 +505,21 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                     var sentence = newPortion[start..(i + 1)];
                     if (!string.IsNullOrWhiteSpace(sentence))
                     {
-                        _pendingSegmentText.Append(sentence);
-                        _pendingSentenceCount++;
+                        emissions.Add((_currentSegmentId, sentence, true));
+                        _currentSegmentId = Guid.NewGuid().ToString();
                         // 確定累積を完結文ぶんだけ進める (trailing は次回更新時に再登場させる)
                         _lastFinalizedTranscript += sentence;
-                        if (_pendingSentenceCount >= SentencesPerSegment)
-                        {
-                            emissions.Add((_currentSegmentId, _pendingSegmentText.ToString(), true));
-                            _currentSegmentId = Guid.NewGuid().ToString();
-                            _pendingSegmentText.Clear();
-                            _pendingSentenceCount = 0;
-                        }
                     }
                     start = i + 1;
                 }
             }
-            // 残りの未完結部分 (trailing) があれば、_pendingSegmentText (まだ N 文に達してない確定済み) と
-            // 合わせて partial として表示する。 これでユーザーには「確定第 1 文 + 書き途中の第 2 文」が
-            // ひとつの partial 字幕として見える。
-            var trailingPart = start < newPortion.Length ? newPortion[start..] : string.Empty;
-            if (!string.IsNullOrWhiteSpace(trailingPart) || _pendingSegmentText.Length > 0)
+            // 残りの未完結部分 (trailing) は _currentSegmentId で emit。
+            if (start < newPortion.Length)
             {
-                var partialDisplay = _pendingSegmentText.Length > 0
-                    ? _pendingSegmentText.ToString() + trailingPart
-                    : trailingPart;
-                if (!string.IsNullOrWhiteSpace(partialDisplay))
+                var trailing = newPortion[start..];
+                if (!string.IsNullOrWhiteSpace(trailing))
                 {
-                    emissions.Add((_currentSegmentId, partialDisplay, false));
+                    emissions.Add((_currentSegmentId, trailing, false));
                 }
             }
 
@@ -628,11 +583,9 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         {
             lock (_textLock)
             {
-                Logger.Info($"OnConnectionStateChanged: 再接続成功 — 字幕状態をリセット (旧 finalized 長={_lastFinalizedTranscript.Length} pending 文数={_pendingSentenceCount})");
+                Logger.Info($"OnConnectionStateChanged: 再接続成功 — 字幕状態をリセット (旧 finalized 長={_lastFinalizedTranscript.Length})");
                 _lastFinalizedTranscript = string.Empty;
                 _accumulatedText.Clear();
-                _pendingSegmentText.Clear();
-                _pendingSentenceCount = 0;
                 _currentSegmentId = Guid.NewGuid().ToString();
                 _lastEmitTime = DateTime.MinValue;
                 _hasPendingDelta = false;
