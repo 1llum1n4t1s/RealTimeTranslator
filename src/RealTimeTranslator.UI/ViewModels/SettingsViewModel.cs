@@ -44,12 +44,14 @@ public partial class SettingsViewModel : ObservableObject
         FontSizes = new ReadOnlyCollection<double>(new[] { 12d, 14d, 16d, 18d, 20d, 24d, 28d, 32d, 36d, 40d });
         TextColorOptions = new ReadOnlyCollection<ColorOption>(new ColorOption[]
         {
-            new("白", "#FFFFFFFF"),
-            new("薄白", "#CCFFFFFF"),
-            new("黄", "#FFFFD700"),
-            new("シアン", "#FF00FFFF"),
-            new("緑", "#FF00FF7F"),
-            new("赤", "#FFFF6B6B")
+            new("白",             "#FFFFFFFF"),
+            new("薄白",           "#CCFFFFFF"),
+            // OverlaySettings.PartialTextColor のデフォルト値と一致させる (未選択防止)
+            new("白（半透明）",   "#80FFFFFF"),
+            new("黄",             "#FFFFD700"),
+            new("シアン",         "#FF00FFFF"),
+            new("緑",             "#FF00FF7F"),
+            new("赤",             "#FFFF6B6B")
         });
         BackgroundColorOptions = new ReadOnlyCollection<ColorOption>(new ColorOption[]
         {
@@ -85,9 +87,87 @@ public partial class SettingsViewModel : ObservableObject
             new("tr", "Türkçe"),
             new("hi", "हिन्दी")
         });
+
+        // 旧 settings.json から新フォント一覧 / 色一覧に存在しない値を持ち越したケース、
+        // 範囲外のサイズ / 行数 / 言語が入っているケースを、 起動時にデフォルトへ矯正する。
+        // ComboBox が未選択状態で出る UX バグ ( setter が呼ばれず実態とのズレが続く ) を防ぐ。
+        SanitizeSettings();
     }
 
     public AppSettings Settings => _settings;
+
+    /// <summary>
+    /// 設定値が UI の選択肢一覧に存在するか検証し、存在しない場合は「最も妥当なデフォルト」に矯正する。
+    /// 起動時に 1 回だけ実行し、矯正が走った場合は ScheduleAutoSave で settings.json にも反映する。
+    ///
+    /// 主なターゲット:
+    ///  - フォント: 同梱フォント整理 (Noto Sans CJK JP 削除 / Tsukimi Rounded 削除) で旧設定が孤立する
+    ///  - 字幕色 / 背景色: ラインナップ刷新で旧 16 進値が一覧から外れる
+    ///  - サイズ / 行数: 異常値 (手書き編集で 15px や 7 行など) が入っていた場合
+    ///  - 出力言語: コード規格外 (空文字 / 未対応 BCP-47) の場合
+    /// </summary>
+    private void SanitizeSettings()
+    {
+        bool changed = false;
+
+        if (string.IsNullOrWhiteSpace(_settings.Overlay.FontFamily) ||
+            !FontFamilies.Contains(_settings.Overlay.FontFamily))
+        {
+            // フォント未選択 / 一覧外 → 同梱の IBM Plex Sans JP に揃える
+            LoggerService.LogInfo($"SettingsViewModel.Sanitize: FontFamily='{_settings.Overlay.FontFamily}' が一覧外 → 'IBM Plex Sans JP' に矯正");
+            _settings.Overlay.FontFamily = "IBM Plex Sans JP";
+            changed = true;
+        }
+
+        if (!FontSizes.Contains(_settings.Overlay.FontSize))
+        {
+            LoggerService.LogInfo($"SettingsViewModel.Sanitize: FontSize={_settings.Overlay.FontSize} が一覧外 → 24 に矯正");
+            _settings.Overlay.FontSize = 24d;
+            changed = true;
+        }
+
+        if (!MaxLinesList.Contains(_settings.Overlay.MaxLines))
+        {
+            LoggerService.LogInfo($"SettingsViewModel.Sanitize: MaxLines={_settings.Overlay.MaxLines} が一覧外 → 3 に矯正");
+            _settings.Overlay.MaxLines = 3;
+            changed = true;
+        }
+
+        if (!TextColorOptions.Any(o => o.Value == _settings.Overlay.PartialTextColor))
+        {
+            LoggerService.LogInfo($"SettingsViewModel.Sanitize: PartialTextColor='{_settings.Overlay.PartialTextColor}' が一覧外 → 先頭の '{TextColorOptions[0].Name}' に矯正");
+            _settings.Overlay.PartialTextColor = TextColorOptions[0].Value;
+            changed = true;
+        }
+
+        if (!TextColorOptions.Any(o => o.Value == _settings.Overlay.FinalTextColor))
+        {
+            LoggerService.LogInfo($"SettingsViewModel.Sanitize: FinalTextColor='{_settings.Overlay.FinalTextColor}' が一覧外 → 先頭の '{TextColorOptions[0].Name}' に矯正");
+            _settings.Overlay.FinalTextColor = TextColorOptions[0].Value;
+            changed = true;
+        }
+
+        if (!BackgroundColorOptions.Any(o => o.Value == _settings.Overlay.BackgroundColor))
+        {
+            LoggerService.LogInfo($"SettingsViewModel.Sanitize: BackgroundColor='{_settings.Overlay.BackgroundColor}' が一覧外 → 先頭の '{BackgroundColorOptions[0].Name}' に矯正");
+            _settings.Overlay.BackgroundColor = BackgroundColorOptions[0].Value;
+            changed = true;
+        }
+
+        if (string.IsNullOrWhiteSpace(_settings.OpenAIRealtime.OutputLanguage) ||
+            !OutputLanguageOptions.Any(o => o.Code == _settings.OpenAIRealtime.OutputLanguage))
+        {
+            LoggerService.LogInfo($"SettingsViewModel.Sanitize: OutputLanguage='{_settings.OpenAIRealtime.OutputLanguage}' が一覧外 → 'ja' に矯正");
+            _settings.OpenAIRealtime.OutputLanguage = "ja";
+            changed = true;
+        }
+
+        if (changed)
+        {
+            // 矯正結果を settings.json に永続化 (次回起動時の再矯正を避ける)
+            ScheduleAutoSave();
+        }
+    }
 
     public ReadOnlyCollection<string> FontFamilies { get; }
     public ReadOnlyCollection<double> FontSizes { get; }

@@ -28,8 +28,13 @@ public class UpdateSettings
 
 public class OverlaySettings
 {
-    public string FontFamily { get; set; } = "Yu Gothic UI";
+    // 既定フォント: 同梱の IBM Plex Sans JP (avares 解決は OverlayViewModel.EmbeddedFontMap)。
+    // 新規 settings.json 生成時 / 旧設定にリスト外フォントが入っている場合 (SettingsViewModel.SanitizeSettings)
+    // の両方でここがフォールバック値になる。
+    public string FontFamily { get; set; } = "IBM Plex Sans JP";
     public double FontSize { get; set; } = 24;
+    // 既定 partial 字幕色は半透明白 (alpha 0x80)。 SettingsViewModel.TextColorOptions の
+    // 「白（半透明）」と整合させて ComboBox 未選択状態が起きないようにしている。
     public string PartialTextColor { get; set; } = "#80FFFFFF";
     public string FinalTextColor { get; set; } = "#FFFFFFFF";
     public string BackgroundColor { get; set; } = "#80000000";
