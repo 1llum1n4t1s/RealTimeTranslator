@@ -471,36 +471,8 @@ public partial class SettingsViewModel : ObservableObject
     }
 }
 
-public sealed class OutputLanguageOption
-{
-    public OutputLanguageOption(string code, string displayName)
-    {
-        Code = code;
-        DisplayName = displayName;
-    }
-
-    public string Code { get; }
-    public string DisplayName { get; }
-}
-
-public sealed class ColorOption
-{
-    public ColorOption(string name, string value)
-    {
-        Name = name;
-        Value = value;
-    }
-
-    public string Name { get; }
-    public string Value { get; }
-}
-
-public class SettingsSavedEventArgs : EventArgs
-{
-    public AppSettings Settings { get; }
-
-    public SettingsSavedEventArgs(AppSettings settings)
-    {
-        Settings = settings;
-    }
-}
+// 値型 DTO は record + primary constructor で表現 (Equals/GetHashCode/ToString 自動生成)。
+// 文字列比較のみで使われており参照同値性は要求されないため record 化で挙動同値。
+public sealed record OutputLanguageOption(string Code, string DisplayName);
+public sealed record ColorOption(string Name, string Value);
+public sealed record SettingsSavedEventArgs(AppSettings Settings);

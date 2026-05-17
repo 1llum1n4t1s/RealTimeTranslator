@@ -8,8 +8,7 @@ using RealTimeTranslator.Core.Services;
 
 using System.Buffers;
 using System.Diagnostics;
-using System.Linq;
-using System.Threading;
+// System.Linq / System.Threading は GlobalUsings に含まれるため明示 using 不要 (rere /opop Cleaner #4)。
 
 namespace RealTimeTranslator.Core.Services;
 
@@ -307,7 +306,7 @@ public class AudioCaptureService : IAudioCaptureService
     /// </summary>
     private void OnCapturePacketReceived(object? sender, WasapiCapturePacketEventArgs e)
     {
-        var n = System.Threading.Interlocked.Increment(ref _packetCount);
+        var n = Interlocked.Increment(ref _packetCount);
         if (n % 500 == 0 || e.IsSilent)
         {
             LoggerService.LogDebug($"[Packet] #{n} IsSilent={e.IsSilent}, Flags={e.BufferFlags}, Frames={e.FramesAvailable}");
@@ -377,7 +376,7 @@ public class AudioCaptureService : IAudioCaptureService
         Array.Copy(e.Buffer, 0, bufferCopy, 0, e.BytesRecorded);
 
         var sourceFormat = _capture!.WaveFormat;
-        var callCount = System.Threading.Interlocked.Increment(ref _dataAvailableCallCount);
+        var callCount = Interlocked.Increment(ref _dataAvailableCallCount);
         if (callCount == 1)
         {
             LoggerService.LogDebug($"[Capture] WaveFormat: Encoding={sourceFormat.Encoding}, SampleRate={sourceFormat.SampleRate}, Channels={sourceFormat.Channels}, BitsPerSample={sourceFormat.BitsPerSample}");
@@ -503,7 +502,7 @@ public class AudioCaptureService : IAudioCaptureService
         {
             var samples = new float[totalSamples];
             var read = sourceProvider.Read(samples, 0, totalSamples);
-            return read == totalSamples ? samples : samples.Take(read).ToArray();
+            return read == totalSamples ? samples : samples.AsSpan(0, read).ToArray();
         }
         if (format.Channels == 2)
         {
@@ -511,11 +510,11 @@ public class AudioCaptureService : IAudioCaptureService
             var monoCount = totalSamples / 2;
             var samples = new float[monoCount];
             var read = stereoTomono.Read(samples, 0, monoCount);
-            return read == monoCount ? samples : samples.Take(read).ToArray();
+            return read == monoCount ? samples : samples.AsSpan(0, read).ToArray();
         }
         var allSamples = new float[totalSamples];
         var totalRead = sourceProvider.Read(allSamples, 0, totalSamples);
-        return ConvertToMono(allSamples.Take(totalRead).ToArray(), format.Channels);
+        return ConvertToMono(allSamples.AsSpan(0, totalRead).ToArray(), format.Channels);
     }
 
     /// <summary>
@@ -532,7 +531,7 @@ public class AudioCaptureService : IAudioCaptureService
         var outputCount = (int)(samples.Length * (double)targetSampleRate / sourceSampleRate);
         var output = new float[outputCount];
         var read = resampler.Read(output, 0, outputCount);
-        return read == outputCount ? output : output.Take(read).ToArray();
+        return read == outputCount ? output : output.AsSpan(0, read).ToArray();
     }
 
     /// <summary>

@@ -240,8 +240,9 @@ public partial class App : Application
         services.AddSingleton<AppSettings>(sp =>
         {
             var current = sp.GetRequiredService<IOptionsMonitor<AppSettings>>().CurrentValue;
-            // settings.json に DPAPI 暗号化済みで保存されている API キーを平文化する。
-            SettingsService.DecryptApiKeyInPlace(current);
+            // settings.json に DPAPI 暗号化済みで保存されている API キーを平文化する
+            // (rere B1-003 完遂: static 直叩きを ISettingsService DI 経由に統一)。
+            sp.GetRequiredService<ISettingsService>().DecryptApiKey(current);
             return current;
         });
         services.AddSingleton<AudioCaptureSettings>(sp =>

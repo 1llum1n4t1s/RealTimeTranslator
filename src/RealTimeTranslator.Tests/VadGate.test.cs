@@ -59,34 +59,7 @@ public sealed class VadGateTests
         public void Dispose() { }
     }
 
-    private sealed class TestAudioCaptureService : IAudioCaptureService
-    {
-        public bool IsCapturing => false;
-        public bool HasReceivedNonSilentDataSinceStart => false;
-#pragma warning disable CS0067
-        public event EventHandler<AudioDataEventArgs>? AudioDataAvailable;
-        public event EventHandler<CaptureStatusEventArgs>? CaptureStatusChanged;
-#pragma warning restore CS0067
-        public void StartCapture(int processId) { }
-        public Task<bool> StartCaptureWithRetryAsync(int processId, CancellationToken cancellationToken, SynchronizationContext? captureCreationContext = null) => Task.FromResult(true);
-        public void StopCapture() { }
-        public void ApplySettings(AudioCaptureSettings settings) { }
-        public void Dispose() { }
-    }
-
-    private sealed class TestSettingsService : ISettingsService
-    {
-        public Task SaveAsync(AppSettings settings) => Task.CompletedTask;
-        public void DecryptApiKey(AppSettings settings) { }
-    }
-
-    private sealed class StubOptionsMonitor : IOptionsMonitor<AppSettings>
-    {
-        public AppSettings CurrentValue { get; }
-        public StubOptionsMonitor(AppSettings settings) { CurrentValue = settings; }
-        public AppSettings Get(string? name) => CurrentValue;
-        public IDisposable? OnChange(Action<AppSettings, string?> listener) => null;
-    }
+    // TestAudioCaptureService / TestSettingsService / StubOptionsMonitor は TestDoubles.cs に共通化。
 
     private static (TranslationPipelineService pipeline, ControllableVadDetector vad, RecordingTranscriber transcriber, AudioCaptureSettings vadSettings) Create(
         int preRollMs = 384,  // 384/32 = 12 frames

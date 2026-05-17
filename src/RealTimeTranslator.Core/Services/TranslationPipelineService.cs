@@ -123,8 +123,6 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         _realtimeClient.StateChanged += OnConnectionStateChanged;
     }
 
-    // rere レビュー P2 B1-007: ApplySettingsAsync は dead code として削除済み
-    // (StartAsync 内で _settingsMonitor.CurrentValue から再取得して即上書きされていた)。
 
     public async Task StartAsync(CancellationToken token)
     {
@@ -893,9 +891,11 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
 
         bool isSpeech = prob >= settings.VadThreshold;
         double frameSeconds = (double)frame16kHz.Length / _vad.SampleRate;
-        // フレームあたり 32ms なので、 ms 値を 32 で割って frame 数換算 (最低 1 / 0 を保証)。
-        int preRollCapacity = Math.Max(1, settings.VadPreRollMs / 32);
-        int hangoverFrames = Math.Max(0, settings.VadHangoverMs / 32);
+        // ms 値をフレーム数換算 (最低 1 / 0 を保証)。 frameMs は VAD の RequiredFrameSize と
+        // SampleRate から動的計算するため、 別 VAD (例: v4 / 8kHz モード) に差し替えても破綻しない。
+        double frameMs = frameSeconds * 1000.0;
+        int preRollCapacity = Math.Max(1, (int)(settings.VadPreRollMs / frameMs));
+        int hangoverFrames = Math.Max(0, (int)(settings.VadHangoverMs / frameMs));
 
         // 診断ログ: 約 1 秒に 1 回、 speech_prob / 状態 / preroll サイズ / フレーム最大振幅を出す。
         // 「翻訳されない」報告時に、 (a) VAD 入力が無音か (frameMax≈0) (b) VAD が常に低 prob を返すか

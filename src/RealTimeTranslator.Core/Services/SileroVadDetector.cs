@@ -30,7 +30,14 @@ public sealed class SileroVadDetector : IVoiceActivityDetector
     private readonly InferenceSession _session;
     private readonly float[] _stateBuffer; // [2, 1, 128] = 256 floats
     private readonly float[] _contextBuffer = new float[ContextSize]; // 直前フレームの末尾 64 サンプル
-    private readonly long[] _srBuffer = new[] { (long)SampleRateValue };
+    // VAD ホットパス (32ms ごと) で毎フレーム new していた buffer を field に巻き上げて再利用。
+    // OrtValue.CreateTensorValueFromMemory は参照保持なので、 using で破棄したあとは内容書換 OK。
+    private readonly float[] _inputBuffer = new float[InputWithContextSize];
+    private readonly long[] _srBuffer = [(long)SampleRateValue];
+    // shape も毎フレーム new せず static に巻き上げ (alloc 削減 + JIT が定数畳み込み可能)。
+    private static readonly long[] s_inputShape = [1, InputWithContextSize];
+    private static readonly long[] s_stateShape = [2, 1, StateDim];
+    private static readonly long[] s_srShape = []; // scalar (rank 0)
     private readonly object _lock = new();
     private bool _disposed;
 
@@ -73,7 +80,8 @@ public sealed class SileroVadDetector : IVoiceActivityDetector
     }
 
     // OrtValue API で渡す時の入出力名 (ONNX モデル定義に合わせる)。
-    private static readonly IReadOnlyCollection<string> s_outputNames = new[] { "output", "stateN" };
+    // 型は string[] (IReadOnlyList<string> 兼用) — InferenceSession.Run の引数互換 + indexer 直接アクセス可。
+    private static readonly string[] s_outputNames = ["output", "stateN"];
 
     public float DetectSpeechProb(ReadOnlySpan<float> frame16kHz)
     {
@@ -90,17 +98,17 @@ public sealed class SileroVadDetector : IVoiceActivityDetector
 
             // 公式 silero-vad utils_vad.py 準拠: input = context(64) + 現在フレーム(512) = 576 サンプル。
             // context を連結しないと推論結果が常時 ~0 になる (人声でも speech 判定されない)。
-            var inputData = new float[InputWithContextSize];
-            Array.Copy(_contextBuffer, 0, inputData, 0, ContextSize);
-            frame16kHz.CopyTo(new Span<float>(inputData, ContextSize, FrameSizeValue));
+            // _inputBuffer は field 化済み (毎フレーム new を排除)。
+            Array.Copy(_contextBuffer, 0, _inputBuffer, 0, ContextSize);
+            frame16kHz.CopyTo(new Span<float>(_inputBuffer, ContextSize, FrameSizeValue));
 
             // OrtValue API を使う: NamedOnnxValue/DenseTensor よりも shape 指定が確実。
             // 特に sr の scalar (shape=[]) は OrtValue で空配列で渡せば確実。
+            // shape 配列は static に巻き上げて毎フレーム alloc を排除。
             var memInfo = OrtMemoryInfo.DefaultInstance;
-            using var inputOrt = OrtValue.CreateTensorValueFromMemory<float>(memInfo, inputData, new long[] { 1, InputWithContextSize });
-            using var stateOrt = OrtValue.CreateTensorValueFromMemory<float>(memInfo, _stateBuffer, new long[] { 2, 1, StateDim });
-            // sr は ONNX モデル定義 shape=[] の Int64 scalar。 空配列で scalar を表現する。
-            using var srOrt = OrtValue.CreateTensorValueFromMemory<long>(memInfo, _srBuffer, Array.Empty<long>());
+            using var inputOrt = OrtValue.CreateTensorValueFromMemory<float>(memInfo, _inputBuffer, s_inputShape);
+            using var stateOrt = OrtValue.CreateTensorValueFromMemory<float>(memInfo, _stateBuffer, s_stateShape);
+            using var srOrt = OrtValue.CreateTensorValueFromMemory<long>(memInfo, _srBuffer, s_srShape);
 
             var inputs = new Dictionary<string, OrtValue>
             {
@@ -112,26 +120,19 @@ public sealed class SileroVadDetector : IVoiceActivityDetector
             using var runOptions = new RunOptions();
             using var results = _session.Run(runOptions, inputs, s_outputNames);
 
+            // 出力順序は s_outputNames の指定順 (output, stateN) を InferenceSession.Run が保証する。
+            // ElementAt を経由せず index 直アクセスで LINQ enumerator alloc を排除。
             float speechProb = 0f;
             bool stateUpdated = false;
-            for (int i = 0; i < results.Count; i++)
+
+            var probSpan = results[0].GetTensorDataAsSpan<float>();
+            if (probSpan.Length > 0) speechProb = probSpan[0];
+
+            var newStateSpan = results[1].GetTensorDataAsSpan<float>();
+            if (newStateSpan.Length == _stateBuffer.Length)
             {
-                var name = s_outputNames.ElementAt(i);
-                var value = results[i];
-                if (name == "output")
-                {
-                    var probSpan = value.GetTensorDataAsSpan<float>();
-                    if (probSpan.Length > 0) speechProb = probSpan[0];
-                }
-                else if (name == "stateN")
-                {
-                    var newStateSpan = value.GetTensorDataAsSpan<float>();
-                    if (newStateSpan.Length == _stateBuffer.Length)
-                    {
-                        newStateSpan.CopyTo(_stateBuffer);
-                        stateUpdated = true;
-                    }
-                }
+                newStateSpan.CopyTo(_stateBuffer);
+                stateUpdated = true;
             }
 
             if (!stateUpdated && !_stateUpdateMissedLogged)
@@ -139,11 +140,11 @@ public sealed class SileroVadDetector : IVoiceActivityDetector
                 // state が更新されなかった場合は LSTM 連続性が失われ VAD が永遠に「初期状態」で
                 // 推論する原因になる。 初回だけログを出して気づけるようにする。
                 _stateUpdateMissedLogged = true;
-                Logger.Warn("SileroVadDetector: state 出力テンソルが見つからない (LSTM state が更新されません)。 ONNX 出力名を確認してください。");
+                Logger.Warn("SileroVadDetector: state 出力テンソル長が不一致 (LSTM state が更新されません)。 ONNX 出力 shape を確認してください。");
             }
 
             // 次回フレーム用の context として、 今回の入力末尾 64 サンプル (= frame16kHz の末尾) を保持。
-            Array.Copy(inputData, InputWithContextSize - ContextSize, _contextBuffer, 0, ContextSize);
+            Array.Copy(_inputBuffer, InputWithContextSize - ContextSize, _contextBuffer, 0, ContextSize);
 
             return speechProb;
         }

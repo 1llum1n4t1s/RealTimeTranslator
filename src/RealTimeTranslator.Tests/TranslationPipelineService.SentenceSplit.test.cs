@@ -49,9 +49,6 @@ public sealed class TranslationPipelineServiceSentenceSplitTests
         }
     }
 
-    // VAD ゲート統合後、 TranslationPipelineService が IVoiceActivityDetector を要求するため
-    // テスト用の no-op 実装を渡す。 既存テストは ProcessAudioLoopAsync を経由しない
-    // (RaiseDelta/RaiseDone 直接呼び) ので DetectSpeechProb は呼ばれない。
     // ═══════════════════════════════════════════════════════════════
     // IsSentenceBoundaryAt の単体テスト (数字小数点の誤分割対策)
     // ═══════════════════════════════════════════════════════════════
@@ -143,6 +140,9 @@ public sealed class TranslationPipelineServiceSentenceSplitTests
         Assert.IsTrue(TranslationPipelineService.IsSentenceBoundaryAt("価格は5.", 4, isFinalContext: true));
     }
 
+    // VAD ゲート統合後、 TranslationPipelineService が IVoiceActivityDetector を要求するための
+    // no-op 実装。 既存テストは ProcessAudioLoopAsync を経由しない (RaiseDelta/RaiseDone 直接呼び)
+    // ので DetectSpeechProb は呼ばれない。
     private sealed class TestVoiceActivityDetector : IVoiceActivityDetector
     {
         public int RequiredFrameSize => 512;
@@ -152,32 +152,7 @@ public sealed class TranslationPipelineServiceSentenceSplitTests
         public void Dispose() { }
     }
 
-    private sealed class TestAudioCaptureService : IAudioCaptureService
-    {
-        public bool IsCapturing => false;
-        public bool HasReceivedNonSilentDataSinceStart => false;
-        public event EventHandler<AudioDataEventArgs>? AudioDataAvailable;
-        public event EventHandler<CaptureStatusEventArgs>? CaptureStatusChanged;
-        public void StartCapture(int processId) { }
-        public Task<bool> StartCaptureWithRetryAsync(int processId, CancellationToken cancellationToken, SynchronizationContext? captureCreationContext = null) => Task.FromResult(true);
-        public void StopCapture() { }
-        public void ApplySettings(AudioCaptureSettings settings) { }
-        public void Dispose() { }
-    }
-
-    private sealed class TestSettingsService : ISettingsService
-    {
-        public Task SaveAsync(AppSettings settings) => Task.CompletedTask;
-        public void DecryptApiKey(AppSettings settings) { /* テストでは復号不要 */ }
-    }
-
-    private sealed class StubOptionsMonitor : IOptionsMonitor<AppSettings>
-    {
-        public AppSettings CurrentValue { get; }
-        public StubOptionsMonitor(AppSettings settings) { CurrentValue = settings; }
-        public AppSettings Get(string? name) => CurrentValue;
-        public IDisposable? OnChange(Action<AppSettings, string?> listener) => null;
-    }
+    // TestAudioCaptureService / TestSettingsService / StubOptionsMonitor は TestDoubles.cs に共通化。
 
     private static (TranslationPipelineService pipeline, TestRealtimeTranscriber transcriber, List<SubtitleItem> emitted) CreatePipeline()
     {

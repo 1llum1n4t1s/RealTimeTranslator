@@ -34,6 +34,8 @@ public partial class MainViewModel : ObservableObject, IDisposable
     private AppSettings _settings;
     private readonly IUpdateService _updateService;
     private readonly SettingsViewModel _settingsViewModel;
+    // rere B1-003 完遂: DPAPI 復号は ISettingsService 経由に統一 (Service Locator アンチパターン解消)。
+    private readonly ISettingsService _settingsService;
     private string _lastApiKey;
     private string _lastOutputLanguage;
     private readonly IDisposable? _settingsChangeSubscription;
@@ -50,6 +52,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
     private ProcessInfo? _selectedProcess;
 
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(CanStart))]
     private bool _isRunning;
 
     [ObservableProperty]
@@ -68,6 +71,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
     private string _logText = string.Empty;
 
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(CanStart))]
     private bool _isLoading;
 
     [ObservableProperty]
@@ -90,6 +94,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
     /// 未設定だと CanStart が常に false になり、UI 側で警告メッセージを表示する。
     /// </summary>
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(CanStart))]
     private bool _isApiKeyConfigured;
 
     /// <summary>
@@ -208,11 +213,13 @@ public partial class MainViewModel : ObservableObject, IDisposable
         OverlayViewModel overlayViewModel,
         IOptionsMonitor<AppSettings> optionsMonitor,
         IUpdateService updateService,
-        SettingsViewModel settingsViewModel)
+        SettingsViewModel settingsViewModel,
+        ISettingsService settingsService)
     {
         _pipelineService = pipelineService;
         _audioCaptureService = audioCaptureService;
         _overlayViewModel = overlayViewModel;
+        _settingsService = settingsService;
         _settings = optionsMonitor.CurrentValue;
         _lastApiKey = _settings.OpenAIRealtime.ApiKey;
         _lastOutputLanguage = _settings.OpenAIRealtime.OutputLanguage;
@@ -223,7 +230,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
         _settingsChangeSubscription = optionsMonitor.OnChange(newSettings =>
         {
             LoggerService.LogInfo("Settings updated detected in MainViewModel.");
-            SettingsService.DecryptApiKeyInPlace(newSettings);
+            _settingsService.DecryptApiKey(newSettings);
             _settings = newSettings;
             // API キーの設定状態を UI スレッドで反映（CanStart 再評価が走る）
             Dispatcher.UIThread.Post(() =>
@@ -869,26 +876,17 @@ public partial class MainViewModel : ObservableObject, IDisposable
     }
 
 
+    // OnSelectedProcessChanged は SaveLastSelectedProcess の副作用のため partial void を残す。
+    // CanStart の通知は [NotifyPropertyChangedFor] が SelectedProcess 側で行う想定だが、
+    // SelectedProcess は元々 [ObservableProperty] 由来ではなく manual な setter 経由のため、
+    // 既存挙動維持として明示通知を残す。
     partial void OnSelectedProcessChanged(ProcessInfo? value)
     {
         OnPropertyChanged(nameof(CanStart));
         SaveLastSelectedProcess(value);
     }
-
-    partial void OnIsRunningChanged(bool value)
-    {
-        OnPropertyChanged(nameof(CanStart));
-    }
-
-    partial void OnIsLoadingChanged(bool value)
-    {
-        OnPropertyChanged(nameof(CanStart));
-    }
-
-    partial void OnIsApiKeyConfiguredChanged(bool value)
-    {
-        OnPropertyChanged(nameof(CanStart));
-    }
+    // IsRunning / IsLoading / IsApiKeyConfigured の CanStart 通知は
+    // [NotifyPropertyChangedFor(nameof(CanStart))] でフィールド側に集約済み (手動 OnPropertyChanged 排除)。
 
     private void RestoreLastSelectedProcess()
     {

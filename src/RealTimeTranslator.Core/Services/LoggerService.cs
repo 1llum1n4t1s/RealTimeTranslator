@@ -1,7 +1,4 @@
-using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Linq;
+// System / System.Collections.Generic / System.IO / System.Linq は GlobalUsings 経由 (rere /opop Cleaner #4)。
 using SuperLightLogger;
 
 namespace RealTimeTranslator.Core.Services;

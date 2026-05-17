@@ -183,13 +183,6 @@ public class SettingsService : ISettingsService
         Update = source.Update,
     };
 
-    /// <summary>
-    /// 読み込んだ AppSettings の機微フィールドを in-place で復号する。
-    /// 起動時の DI シングルトン生成および <see cref="Microsoft.Extensions.Options.IOptionsMonitor{TOptions}.OnChange"/>
-    /// ハンドラから呼んで、後段のコンシューマが平文を扱えるようにする。
-    /// </summary>
-    public static void DecryptApiKeyInPlace(AppSettings settings) => DpapiHelper.DecryptInPlace(settings);
-
     /// <inheritdoc />
     public void DecryptApiKey(AppSettings settings) => DpapiHelper.DecryptInPlace(settings);
 }

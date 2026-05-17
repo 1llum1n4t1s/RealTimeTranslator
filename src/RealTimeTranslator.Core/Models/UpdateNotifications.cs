@@ -11,15 +11,4 @@ public enum UpdateStatus
     Failed
 }
 
-public class UpdateStatusChangedEventArgs : EventArgs
-{
-    public UpdateStatusChangedEventArgs(UpdateStatus status, string message)
-    {
-        Status = status;
-        Message = message;
-    }
-
-    public UpdateStatus Status { get; }
-
-    public string Message { get; }
-}
+public sealed record UpdateStatusChangedEventArgs(UpdateStatus Status, string Message);

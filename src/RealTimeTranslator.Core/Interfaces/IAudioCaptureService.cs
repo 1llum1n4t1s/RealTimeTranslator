@@ -56,49 +56,8 @@ public interface IAudioCaptureService : IDisposable
     event EventHandler<CaptureStatusEventArgs>? CaptureStatusChanged;
 }
 
-/// <summary>
-/// キャプチャ状態変更イベント引数
-/// </summary>
-public class CaptureStatusEventArgs : EventArgs
-{
-    /// <summary>
-    /// ステータスメッセージ
-    /// </summary>
-    public string Message { get; }
+/// <summary>キャプチャ状態変更イベント引数 (Message + IsWaiting)。</summary>
+public sealed record CaptureStatusEventArgs(string Message, bool IsWaiting = false);
 
-    /// <summary>
-    /// オーディオセッション待機中かどうか
-    /// </summary>
-    public bool IsWaiting { get; }
-
-    /// <summary>
-    /// コンストラクタ
-    /// </summary>
-    public CaptureStatusEventArgs(string message, bool isWaiting = false)
-    {
-        Message = message;
-        IsWaiting = isWaiting;
-    }
-}
-
-/// <summary>
-/// 音声データイベント引数
-/// </summary>
-public class AudioDataEventArgs : EventArgs
-{
-    /// <summary>
-    /// 音声データ（16kHz, mono, float32）
-    /// </summary>
-    public float[] AudioData { get; }
-
-    /// <summary>
-    /// タイムスタンプ
-    /// </summary>
-    public DateTime Timestamp { get; }
-
-    public AudioDataEventArgs(float[] audioData, DateTime timestamp)
-    {
-        AudioData = audioData;
-        Timestamp = timestamp;
-    }
-}
+/// <summary>音声データイベント引数 (16kHz mono float32 + タイムスタンプ)。</summary>
+public sealed record AudioDataEventArgs(float[] AudioData, DateTime Timestamp);
