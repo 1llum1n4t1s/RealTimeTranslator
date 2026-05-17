@@ -12,10 +12,10 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
 {
     private static readonly ILog Logger = LogManager.GetLogger<TranslationPipelineService>();
     // partial 表示の更新頻度。 短いほど字幕が機敏になるが UI スレッド負荷が増える。
-    // ゆろさんの「翻訳が遅れているときに加速」要望で 100ms → 50ms に短縮 (体感応答性優先)。
+    // ゆろさんの「翻訳が遅れているときに加速」要望で 100ms → 50ms → 30ms と段階的に短縮。
     // OpenAI Realtime API のサーバー側 VAD 律速 (silence_duration_ms はクライアント設定不可) は
     // 越えられないので、ここで詰められるのは partial 描画間隔だけ。
-    private static readonly TimeSpan DeltaThrottle = TimeSpan.FromMilliseconds(50);
+    private static readonly TimeSpan DeltaThrottle = TimeSpan.FromMilliseconds(30);
 
     private readonly IAudioCaptureService _audioCaptureService;
     private readonly IRealtimeTranscriber _realtimeClient;
@@ -132,7 +132,10 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
 
         // WASAPI コールバックスレッドで重い変換を行うと audio glitch の原因になるため、
         // Channel に raw float[] を投入だけして変換は専用タスクで行う。
-        _audioInputChannel = Channel.CreateBounded<float[]>(new BoundedChannelOptions(50)
+        // 容量 25: ゆろさんの「遅れてる時の加速」要望で 50 → 25 に半減。
+        // 詰まり時の最大遅延が約 4 秒 → 約 2 秒に短縮され、DropOldest が早く走って追いつきが速くなる。
+        // 下げすぎると正常時にも音声欠落が起きるので 25 が穏当 (1 chunk ≒ 80ms 想定で 2 秒分のバッファ)。
+        _audioInputChannel = Channel.CreateBounded<float[]>(new BoundedChannelOptions(25)
         {
             FullMode = BoundedChannelFullMode.DropOldest,
             SingleReader = true,
@@ -215,7 +218,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         }
 
         // ⭐ rere P2 F-7: セッション統計を確実にログに残し、 NW 詰まり指標を可視化。
-        // DroppedAudioChunkCount はキャプチャ → API 送信の Channel<byte[]>(200) で
+        // DroppedAudioChunkCount はキャプチャ → API 送信の Channel<byte[]>(100) で
         // BoundedChannelFullMode.DropOldest によって捨てられた音声チャンク累計。
         // 「字幕が抜ける」報告時に「ローカル NW 詰まりか OpenAI 側遅延か」を切り分ける。
         if (_realtimeClient is OpenAIRealtimeClient openAiClient)
@@ -237,7 +240,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
 
         // WASAPI コールバックスレッド（MMCSS）で重い処理を行うと音声バッファが overflow して
         // audio glitch / Silent パケット化を起こすため、Channel に投入するだけで即座に戻る。
-        // BoundedChannel(50, DropOldest) で詰まり時は古いものを捨てる（再接続復帰後は新しい音声を優先）。
+        // BoundedChannel(25, DropOldest) で詰まり時は古いものを捨てる（再接続復帰後は新しい音声を優先）。
         _audioInputChannel?.Writer.TryWrite(e.AudioData);
     }
 

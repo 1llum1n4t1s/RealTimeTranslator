@@ -110,7 +110,7 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
             _settings = settings;
             _shouldReconnect = true;
             _cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            _sendChannel = Channel.CreateBounded<byte[]>(new BoundedChannelOptions(200)
+            _sendChannel = Channel.CreateBounded<byte[]>(new BoundedChannelOptions(100)
             {
                 FullMode = BoundedChannelFullMode.DropOldest,
                 SingleReader = true
@@ -135,7 +135,7 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
 
         if (!writer.TryWrite(pcm16Audio))
         {
-            // BoundedChannel(200, DropOldest) で最古チャンクが捨てられた場合に到達する経路。
+            // BoundedChannel(100, DropOldest) で最古チャンクが捨てられた場合に到達する経路。
             // TryWrite 自体は DropOldest でも true を返すのが通常だが、Channel が Complete されていると false。
             // どちらにせよ書けなかった事実をメトリクス化する。
             Interlocked.Increment(ref _totalDroppedAudioChunks);
@@ -687,7 +687,7 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
                     await CleanupAsync().ConfigureAwait(false);
 
                     _cts = new CancellationTokenSource();
-                    _sendChannel = Channel.CreateBounded<byte[]>(new BoundedChannelOptions(200)
+                    _sendChannel = Channel.CreateBounded<byte[]>(new BoundedChannelOptions(100)
                     {
                         FullMode = BoundedChannelFullMode.DropOldest,
                         SingleReader = true
