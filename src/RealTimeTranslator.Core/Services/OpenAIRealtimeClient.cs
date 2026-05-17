@@ -778,22 +778,13 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
         }
     }
 
-    // 観測ログ用ヘルパー: 長文を 40 文字までに切り詰めて、 余ったぶんは "..." で省略する。
-    // delta は単語単位で来ることが多く全文ログだと爆発するため、 先頭プレフィックスで観測する方針。
-    private static string TruncateForLog(string? text, int maxLength = 40)
-    {
-        if (string.IsNullOrEmpty(text)) return string.Empty;
-        return text.Length <= maxLength ? text : text[..maxLength] + "...";
-    }
+    // ログ整形ヘルパーは Core/Services/LogFormatting.cs に集約 (rere D1 修正)。
+    // TruncateForLog / ShouldLogAtCount は static usings で簡潔化できるが、
+    // 全 caller の Logger 呼び出しを 1 箇所ずつ修正する必要があるため、
+    // ここでは local using で受けて短縮名のままにする。
+    private static string TruncateForLog(string? text, int maxLength = LogFormatting.DefaultTruncateLength)
+        => LogFormatting.TruncateForLog(text, maxLength);
 
-    // 観測ログ用ヘルパー: 高頻度ログのうちログに残すカウントを判定する。
-    // 1, 10, 50, 100, 200, ..., 1000, 1500, ..., 10000, 11000, ... と
-    // 序盤は密に、 後半は粗にログを出して全体傾向と異常を両方追えるようにする。
     private static bool ShouldLogAtCount(long count)
-    {
-        if (count == 1 || count == 10 || count == 50) return true;
-        if (count < 1000) return count % 100 == 0;
-        if (count < 10000) return count % 500 == 0;
-        return count % 1000 == 0;
-    }
+        => LogFormatting.ShouldLogAtCount(count);
 }

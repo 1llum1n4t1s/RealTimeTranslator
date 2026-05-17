@@ -41,7 +41,13 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     // _lastFinalizedTranscript で「既に確定字幕として出した累積テキスト」を保持し、
     // done のたびに差分だけを抽出 → 句点で分割 → 文ごとに新 SegmentId で emit することで
     // 「会話が途切れず長文化する」問題を回避する。
-    private string _lastFinalizedTranscript = string.Empty;
+    //
+    // ⚠️ rere C1-P0-001 / A2-001: `+= sentence` の immutable string 再アロケート (O(n²)) を
+    // 回避するため StringBuilder で保持。 累積長は数 KB〜数十 KB に達するため、 + 連結ごとに
+    // 全文を allocate する旧設計だと 30 分以上の連続セッションで GC pressure が顕著になる。
+    // 比較・末尾取得は ToString() でなく専用ヘルパー (StringBuilderStartsWith / 末尾切出し)
+    // で済ませて ToString 経由のコピーを避ける。
+    private readonly StringBuilder _lastFinalizedTranscript = new();
 
     // 句点として扱う文字。 ASCII 終端も入れて英語訳出力にも対応する。
     // 「、」(読点) は文の区切りではないので含めない (一文の中で複数現れるため)。
@@ -121,7 +127,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         // 新セッションの最初の done で全文が emit されない (or 重複検知される) 不具合になる。
         lock (_textLock)
         {
-            _lastFinalizedTranscript = string.Empty;
+            _lastFinalizedTranscript.Clear();
             _accumulatedText.Clear();
             _currentSegmentId = Guid.NewGuid().ToString();
             _lastEmitTime = DateTime.MinValue;
@@ -313,7 +319,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                     {
                         completedSentences.Add((_currentSegmentId, sentence));
                         _currentSegmentId = Guid.NewGuid().ToString();
-                        _lastFinalizedTranscript += sentence;
+                        _lastFinalizedTranscript.Append(sentence);
                     }
                     start = i + 1;
                 }
@@ -338,7 +344,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                             Logger.Info($"OnTranscriptDelta: 句読点 fallback 分割 (trailing={trailingLength}文字 句点なし) → '{TruncateForLog(sentence)}'");
                             completedSentences.Add((_currentSegmentId, sentence));
                             _currentSegmentId = Guid.NewGuid().ToString();
-                            _lastFinalizedTranscript += sentence;
+                            _lastFinalizedTranscript.Append(sentence);
                             start = i + 1;
                         }
                         break;
@@ -452,7 +458,9 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
             string effective;
             if (string.IsNullOrEmpty(transcript))
             {
-                effective = _lastFinalizedTranscript + _accumulatedText.ToString();
+                // fallback 経路 (response.done で transcript が空): 既存の確定累積 + 直前の delta 蓄積。
+                // この経路は稀なので ToString() の O(N) コストは許容。
+                effective = _lastFinalizedTranscript.ToString() + _accumulatedText.ToString();
             }
             else
             {
@@ -470,9 +478,9 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
             // 再接続経由の不一致は OnConnectionStateChanged のリセットで吸収するので、
             // ここに来るのは「API 側で transcript 正規化が入った」「順序入れ替わり」等の
             // 稀ケースのみで実質ゼロ件のはず。
-            if (!effective.StartsWith(_lastFinalizedTranscript, StringComparison.Ordinal))
+            if (!StringBuilderIsPrefixOf(_lastFinalizedTranscript, effective))
             {
-                Logger.Warn($"OnTranscriptCompleted: prefix 不整合検出 — done 経路スキップ (finalized 長={_lastFinalizedTranscript.Length} effective 長={effective.Length} finalized 末尾='{TruncateForLog(_lastFinalizedTranscript.Length > 20 ? _lastFinalizedTranscript[^20..] : _lastFinalizedTranscript, 20)}' effective 先頭='{TruncateForLog(effective, 30)}')");
+                Logger.Warn($"OnTranscriptCompleted: prefix 不整合検出 — done 経路スキップ (finalized 長={_lastFinalizedTranscript.Length} effective 長={effective.Length} finalized 末尾='{TruncateForLog(TailOf(_lastFinalizedTranscript, 20), 20)}' effective 先頭='{TruncateForLog(effective, 30)}')");
                 _accumulatedText.Clear();
                 _lastEmitTime = DateTime.MinValue;
                 _hasPendingDelta = false;
@@ -511,7 +519,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                         emissions.Add((_currentSegmentId, sentence, true));
                         _currentSegmentId = Guid.NewGuid().ToString();
                         // 確定累積を完結文ぶんだけ進める (trailing は次回更新時に再登場させる)
-                        _lastFinalizedTranscript += sentence;
+                        _lastFinalizedTranscript.Append(sentence);
                     }
                     start = i + 1;
                 }
@@ -587,7 +595,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
             lock (_textLock)
             {
                 Logger.Info($"OnConnectionStateChanged: 再接続成功 — 字幕状態をリセット (旧 finalized 長={_lastFinalizedTranscript.Length})");
-                _lastFinalizedTranscript = string.Empty;
+                _lastFinalizedTranscript.Clear();
                 _accumulatedText.Clear();
                 _currentSegmentId = Guid.NewGuid().ToString();
                 _lastEmitTime = DateTime.MinValue;
@@ -654,30 +662,40 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         _audioCaptureService.AudioDataAvailable -= OnAudioDataAvailable;
     }
 
-    // 観測ログ用ヘルパー: 長文を 40 文字までに切り詰めて、 余ったぶんは "..." で省略する。
-    // 高頻度ログで全文を出すとログが膨張するため、 観測には先頭プレフィックスで十分という方針。
-    private static string TruncateForLog(string? text, int maxLength = 40)
-    {
-        if (string.IsNullOrEmpty(text)) return string.Empty;
-        return text.Length <= maxLength ? text : text[..maxLength] + "...";
-    }
+    // TruncateForLog / ShouldLogAtCount は Core/Services/LogFormatting.cs に集約 (rere D1 修正)。
+    // 呼び出し名はそのまま維持し、 中身を委譲する形で 1 箇所管理に統一。
+    private static string TruncateForLog(string? text, int maxLength = LogFormatting.DefaultTruncateLength)
+        => LogFormatting.TruncateForLog(text, maxLength);
 
-    // 観測ログ用ヘルパー: GUID 形式の SegmentId を先頭 8 文字だけに省略する。
-    // GUID 全体は 36 文字あって読みづらいが、 先頭 8 文字でも識別には十分なため。
+    private static bool ShouldLogAtCount(long count)
+        => LogFormatting.ShouldLogAtCount(count);
+
+    // SegmentId 専用の短縮ヘルパー (GUID 先頭 8 文字)。 LogFormatting に置く程の汎用性なし。
     private static string ShortSegmentId(string? segmentId, int prefixLength = 8)
     {
         if (string.IsNullOrEmpty(segmentId)) return string.Empty;
         return segmentId.Length <= prefixLength ? segmentId : segmentId[..prefixLength];
     }
 
-    // 観測ログ用ヘルパー: 高頻度ログのうちログに残すカウントを判定する。
-    // 1, 10, 50, 100, 200, 300, ..., 1000, 1500, 2000, ..., 10000, 11000, ... と
-    // 序盤は密に、 後半は粗にログを出して全体傾向と異常を両方追えるようにする。
-    private static bool ShouldLogAtCount(long count)
+    // StringBuilder が string の prefix と一致するかを ToString() 経由せず char ごとに比較する。
+    // rere C1-P0-001 / A2-001: _lastFinalizedTranscript の StartsWith 比較を ToString() 抜きで実現。
+    // O(min(sb.Length, text.Length)) で、 不一致が早期発見できれば更に短縮される。
+    private static bool StringBuilderIsPrefixOf(StringBuilder sb, string text)
     {
-        if (count == 1 || count == 10 || count == 50) return true;
-        if (count < 1000) return count % 100 == 0;
-        if (count < 10000) return count % 500 == 0;
-        return count % 1000 == 0;
+        if (sb.Length > text.Length) return false;
+        for (int i = 0; i < sb.Length; i++)
+        {
+            if (sb[i] != text[i]) return false;
+        }
+        return true;
+    }
+
+    // StringBuilder の末尾 maxLength 文字を string として取り出す (ログ用)。
+    // sb.Length <= maxLength なら全部、 それ以上なら末尾 maxLength のみ。
+    private static string TailOf(StringBuilder sb, int maxLength)
+    {
+        if (sb.Length == 0) return string.Empty;
+        if (sb.Length <= maxLength) return sb.ToString();
+        return sb.ToString(sb.Length - maxLength, maxLength);
     }
 }
