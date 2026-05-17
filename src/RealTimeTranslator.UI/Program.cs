@@ -94,9 +94,10 @@ internal static class Program
     /// </summary>
     public static AppBuilder BuildAvaloniaApp()
     {
+        // rere B-1: Avalonia.Fonts.Inter は App.axaml の FontFamily チェーンに含まれず実利用ゼロのため削除。
+        // 同梱日本語フォント 5 種 (avares://.../Assets/Fonts/) + システム既定 (Yu Gothic UI 等) で代替可能。
         return AppBuilder.Configure<App>()
             .UsePlatformDetect()
-            .WithInterFont()
             .LogToTrace();
     }
 }
