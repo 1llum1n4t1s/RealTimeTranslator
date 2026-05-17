@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Linq;
 using Avalonia.Media;
@@ -35,6 +36,10 @@ public partial class OverlayViewModel : ObservableObject, IDisposable
     [ObservableProperty]
     private IBrush _backgroundBrush = new SolidColorBrush(Color.FromArgb(128, 0, 0, 0));
 
+    // 背景色の輝度から自動派生する枠色（明るい背景には暗枠、暗い背景には明枠）。
+    [ObservableProperty]
+    private IBrush _borderBrush = new SolidColorBrush(Color.FromArgb(128, 255, 255, 255));
+
     [ObservableProperty]
     private double _bottomMarginPercent = 10;
 
@@ -54,9 +59,10 @@ public partial class OverlayViewModel : ObservableObject, IDisposable
         {
             _settings = new OverlaySettings();
         }
-        FontFamily = _settings.FontFamily;
+        FontFamily = ResolveFontFamily(_settings.FontFamily);
         FontSize = _settings.FontSize;
         BackgroundBrush = ParseBrush(_settings.BackgroundColor);
+        BorderBrush = DeriveBorderBrush(_settings.BackgroundColor);
         BottomMarginPercent = _settings.BottomMarginPercent;
         _cleanupTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(CleanupIntervalMs) };
         _cleanupTimer.Tick += CleanupOldSubtitles;
@@ -128,16 +134,53 @@ public partial class OverlayViewModel : ObservableObject, IDisposable
     {
         Dispatcher.UIThread.Post(() =>
         {
-            FontFamily = _settings.FontFamily;
+            FontFamily = ResolveFontFamily(_settings.FontFamily);
             FontSize = _settings.FontSize;
             BackgroundBrush = ParseBrush(_settings.BackgroundColor);
+            BorderBrush = DeriveBorderBrush(_settings.BackgroundColor);
             BottomMarginPercent = _settings.BottomMarginPercent;
         });
+    }
+
+    // settings.json には "IBM Plex Sans JP" のような表示名 (= フォント本体の family name) を保存し、
+    // ここで avares:// URI に変換してレンダラに渡す。 これで「ユーザーが目にする選択肢名」と
+    // 「Avalonia の FontFamily 文字列」を切り離せる。 システムフォント (Yu Gothic UI 等) は
+    // 辞書ヒットせずそのまま渡してプラットフォームに解決させる。
+    public static readonly IReadOnlyDictionary<string, string> EmbeddedFontMap =
+        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["IBM Plex Sans JP"]  = "avares://RealTimeTranslator.UI/Assets/Fonts/IBMPlexSansJP-Regular.ttf#IBM Plex Sans JP",
+            ["Noto Sans JP"]      = "avares://RealTimeTranslator.UI/Assets/Fonts/NotoSansJP-Variable.ttf#Noto Sans JP",
+            ["LINE Seed JP"]      = "avares://RealTimeTranslator.UI/Assets/Fonts/LINESeedJP-Regular.ttf#LINE Seed JP",
+            ["Zen Maru Gothic"]   = "avares://RealTimeTranslator.UI/Assets/Fonts/ZenMaruGothic-Regular.ttf#Zen Maru Gothic",
+            ["M PLUS Rounded 1c"] = "avares://RealTimeTranslator.UI/Assets/Fonts/MPLUSRounded1c-Regular.ttf#M PLUS Rounded 1c",
+        };
+
+    private static string ResolveFontFamily(string familyName)
+    {
+        if (string.IsNullOrWhiteSpace(familyName))
+            return "Yu Gothic UI";
+        return EmbeddedFontMap.TryGetValue(familyName, out var uri) ? uri : familyName;
     }
 
     private static IBrush ParseBrush(string colorString)
     {
         return BrushHelper.ParseBrush(colorString, Colors.Black);
+    }
+
+    // 背景色の RGB 輝度 (BT.601 近似) から枠色を派生する。
+    // 明るい背景 (輝度 > 0.5) には暗い枠、暗い背景には明るい枠を当てて視認性を保つ。
+    private static IBrush DeriveBorderBrush(string backgroundColorString)
+    {
+        var parsed = BrushHelper.ParseBrush(backgroundColorString, Colors.Black);
+        if (parsed is not SolidColorBrush solid)
+            return new SolidColorBrush(Color.FromArgb(128, 255, 255, 255));
+
+        var c = solid.Color;
+        var luminance = (0.299 * c.R + 0.587 * c.G + 0.114 * c.B) / 255.0;
+        return luminance > 0.5
+            ? new SolidColorBrush(Color.FromArgb(160, 32, 32, 32))
+            : new SolidColorBrush(Color.FromArgb(128, 255, 255, 255));
     }
 }
 

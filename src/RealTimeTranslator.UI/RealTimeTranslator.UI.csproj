@@ -23,7 +23,7 @@
     <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="10.0.8" />
     <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.8" />
     <PackageReference Include="Velopack" Version="0.0.1298" />
-    <PackageReference Include="VelopackUpdateDialog.Avalonia" Version="1.0.1" />
+    <PackageReference Include="VelopackUpdateDialog.Avalonia" Version="1.0.3" />
   </ItemGroup>
 
   <ItemGroup>
@@ -37,6 +37,15 @@
       Window タイトルバー / タスクバー / Alt+Tab に表示される。
     -->
     <AvaloniaResource Include="..\..\icon\app.ico" Link="Assets\app.ico" />
+
+    <!--
+      字幕オーバーレイで使う日本語フォントを埋め込みリソースとして同梱する。
+      ライセンス: 全フォントとも SIL Open Font License 1.1 (詳細は Assets/Fonts/LICENSES/OFL.txt)。
+      ViewModel 側で "avares://RealTimeTranslator.UI/Assets/Fonts/<file>.ttf#<Family>" で参照する。
+      合計サイズ約 38MB のため、配布 self-contained zip がそのぶん大きくなる点に注意。
+    -->
+    <AvaloniaResource Include="Assets\Fonts\*.ttf" />
+    <AvaloniaResource Include="Assets\Fonts\LICENSES\*.txt" />
   </ItemGroup>
 
   <!--

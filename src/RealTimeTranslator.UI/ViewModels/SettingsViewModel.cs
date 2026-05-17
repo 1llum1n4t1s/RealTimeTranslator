@@ -29,11 +29,17 @@ public partial class SettingsViewModel : ObservableObject
         _overlayViewModel = overlayViewModel;
         FontFamilies = new ReadOnlyCollection<string>(new[]
         {
+            // システムフォント (Windows 既定)
             "Yu Gothic UI",
             "Meiryo UI",
             "Segoe UI",
             "MS Gothic",
-            "Noto Sans CJK JP"
+            // 同梱フォント (Assets/Fonts/ から avares:// で解決、OverlayViewModel.EmbeddedFontMap 参照)
+            "IBM Plex Sans JP",
+            "Noto Sans JP",
+            "LINE Seed JP",
+            "Zen Maru Gothic",
+            "M PLUS Rounded 1c"
         });
         FontSizes = new ReadOnlyCollection<double>(new[] { 12d, 14d, 16d, 18d, 20d, 24d, 28d, 32d, 36d, 40d });
         TextColorOptions = new ReadOnlyCollection<ColorOption>(new ColorOption[]
@@ -47,10 +53,18 @@ public partial class SettingsViewModel : ObservableObject
         });
         BackgroundColorOptions = new ReadOnlyCollection<ColorOption>(new ColorOption[]
         {
-            new("黒（標準）", "#80000000"),
-            new("黒（濃い）", "#CC000000"),
-            new("黒（薄い）", "#40000000"),
-            new("透明", "#00000000")
+            new("黒（標準）",   "#80000000"),
+            new("黒（濃い）",   "#CC000000"),
+            new("黒（薄い）",   "#40000000"),
+            new("白（薄い）",   "#80FFFFFF"),
+            new("白（濃い）",   "#CCEFEFEF"),
+            new("灰（中）",     "#CC404040"),
+            new("濃紺",         "#CC0F1A4C"),
+            new("濃緑",         "#CC0F4C1F"),
+            new("濃赤",         "#CC4C0F1F"),
+            new("茶（暖色）",   "#CC3A2218"),
+            new("紫（深）",     "#CC2A0F4C"),
+            new("透明",         "#00000000")
         });
         MaxLinesList = new ReadOnlyCollection<int>(new[] { 1, 2, 3, 4, 5 });
         OutputLanguageOptions = new ReadOnlyCollection<OutputLanguageOption>(new OutputLanguageOption[]

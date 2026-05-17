@@ -33,13 +33,13 @@
             </ItemsControl.Margin>
             <ItemsControl.ItemTemplate>
                 <DataTemplate>
-                    <Border Classes="Card" 
-                            Background="#CC000000"
-                            BorderBrush="#80FFFFFF"
+                    <Border Classes="Card"
+                            Background="{Binding $parent[ItemsControl].DataContext.BackgroundBrush}"
+                            BorderBrush="{Binding $parent[ItemsControl].DataContext.BorderBrush}"
                             BorderThickness="1"
-                            CornerRadius="8" 
-                            Padding="20,10" 
-                            MaxWidth="1200" 
+                            CornerRadius="8"
+                            Padding="20,10"
+                            MaxWidth="1200"
                             Margin="0,5">
                         <TextBlock Text="{Binding DisplayText}"
                                    FontFamily="{Binding $parent[ItemsControl].DataContext.FontFamily}"

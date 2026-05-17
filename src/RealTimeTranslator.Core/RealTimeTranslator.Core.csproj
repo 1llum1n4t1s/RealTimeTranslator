@@ -5,12 +5,12 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="1llum1n4t1s.NAudio" Version="1.0.42" />
+    <PackageReference Include="1llum1n4t1s.NAudio" Version="1.0.43" />
     <PackageReference Include="Microsoft.Windows.CsWin32" Version="0.3.275">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
-    <PackageReference Include="SuperLightLogger" Version="1.0.6" />
+    <PackageReference Include="SuperLightLogger" Version="1.0.7" />
     <!-- DPAPI で settings.json 内 API キーを暗号化（CurrentUser スコープ）。Windows 専用、AOT 互換。 -->
     <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.8" />
   </ItemGroup>
