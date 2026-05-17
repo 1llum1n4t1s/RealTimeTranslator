@@ -270,19 +270,36 @@
                             </Grid>
                         </HeaderedContentControl>
 
-                        <!-- Max Lines -->
+                        <!-- Max Lines + Display Duration -->
                         <HeaderedContentControl Header="表示">
-                            <Grid ColumnDefinitions="100,*">
-                                <TextBlock Grid.Column="0" Text="最大行数"
+                            <Grid ColumnDefinitions="100,*" RowDefinitions="Auto,Auto">
+                                <TextBlock Grid.Row="0" Grid.Column="0" Text="最大行数"
                                            VerticalAlignment="Center"
                                            Foreground="{DynamicResource Brush.FG2}" FontSize="13"/>
-                                <ComboBox Grid.Column="1"
+                                <ComboBox Grid.Row="0" Grid.Column="1"
                                           ItemsSource="{Binding MaxLinesList}"
                                           SelectedItem="{Binding SelectedMaxLines, Mode=TwoWay}"
-                                          Width="100">
+                                          Width="100"
+                                          HorizontalAlignment="Left"
+                                          Margin="0,0,0,6">
                                     <ComboBox.ItemTemplate>
                                         <DataTemplate>
                                             <TextBlock Text="{Binding}"/>
+                                        </DataTemplate>
+                                    </ComboBox.ItemTemplate>
+                                </ComboBox>
+
+                                <TextBlock Grid.Row="1" Grid.Column="0" Text="表示時間"
+                                           VerticalAlignment="Center"
+                                           Foreground="{DynamicResource Brush.FG2}" FontSize="13"/>
+                                <ComboBox Grid.Row="1" Grid.Column="1"
+                                          ItemsSource="{Binding DisplayDurations}"
+                                          SelectedItem="{Binding SelectedDisplayDuration, Mode=TwoWay}"
+                                          Width="100"
+                                          HorizontalAlignment="Left">
+                                    <ComboBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <TextBlock Text="{Binding StringFormat=\{0\} 秒}"/>
                                         </DataTemplate>
                                     </ComboBox.ItemTemplate>
                                 </ComboBox>

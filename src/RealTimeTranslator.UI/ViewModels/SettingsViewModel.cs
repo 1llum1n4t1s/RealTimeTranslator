@@ -69,6 +69,9 @@ public partial class SettingsViewModel : ObservableObject
             new("透明",         "#00000000")
         });
         MaxLinesList = new ReadOnlyCollection<int>(new[] { 1, 2, 3, 4, 5 });
+        // 確定字幕がフェード開始するまでの時間 (秒)。 SubtitleDisplayItem の _displayEndTime に渡される。
+        // 短文・会話多めなら短く、 長文・じっくり読みたいなら長く。
+        DisplayDurations = new ReadOnlyCollection<double>(new[] { 2d, 3d, 5d, 7d, 10d, 15d });
         OutputLanguageOptions = new ReadOnlyCollection<OutputLanguageOption>(new OutputLanguageOption[]
         {
             new("ja", "日本語"),
@@ -133,6 +136,13 @@ public partial class SettingsViewModel : ObservableObject
             changed = true;
         }
 
+        if (!DisplayDurations.Any(d => Math.Abs(d - _settings.Overlay.DisplayDuration) <= 0.01))
+        {
+            LoggerService.LogInfo($"SettingsViewModel.Sanitize: DisplayDuration={_settings.Overlay.DisplayDuration} が一覧外 → 5 秒に矯正");
+            _settings.Overlay.DisplayDuration = 5d;
+            changed = true;
+        }
+
         if (!TextColorOptions.Any(o => o.Value == _settings.Overlay.PartialTextColor))
         {
             LoggerService.LogInfo($"SettingsViewModel.Sanitize: PartialTextColor='{_settings.Overlay.PartialTextColor}' が一覧外 → 先頭の '{TextColorOptions[0].Name}' に矯正");
@@ -174,6 +184,7 @@ public partial class SettingsViewModel : ObservableObject
     public ReadOnlyCollection<ColorOption> TextColorOptions { get; }
     public ReadOnlyCollection<ColorOption> BackgroundColorOptions { get; }
     public ReadOnlyCollection<int> MaxLinesList { get; }
+    public ReadOnlyCollection<double> DisplayDurations { get; }
     public ReadOnlyCollection<OutputLanguageOption> OutputLanguageOptions { get; }
 
     [ObservableProperty]
@@ -251,6 +262,20 @@ public partial class SettingsViewModel : ObservableObject
             if (_settings.Overlay.MaxLines != value)
             {
                 _settings.Overlay.MaxLines = value;
+                OnPropertyChanged();
+                ScheduleAutoSave();
+            }
+        }
+    }
+
+    public double SelectedDisplayDuration
+    {
+        get => _settings.Overlay.DisplayDuration;
+        set
+        {
+            if (Math.Abs(_settings.Overlay.DisplayDuration - value) > 0.01)
+            {
+                _settings.Overlay.DisplayDuration = value;
                 OnPropertyChanged();
                 ScheduleAutoSave();
             }
