@@ -58,7 +58,7 @@ public partial class App : Application
 
         VelopackApp.Build().Run();
 
-        // クラッシュ・未捕捉例外を %LocalAppData% のログに残す。
+        // クラッシュ・未捕捉例外を %APPDATA%/Roaming のログに残す。
         // Task.Run(...) 経由の例外や Dispatcher の予期しない例外を取りこぼさないための最後の砦。
         AppDomain.CurrentDomain.UnhandledException += (s, ea) =>
         {
@@ -113,9 +113,9 @@ public partial class App : Application
             updateService.UpdateSettings(updateSettings);
             _updateCancellation = new CancellationTokenSource();
 
-            // Komorebi 流: 起動時の自動チェック + 周期チェックを 1 本の StartAsync に集約。
-            // 更新検出時は UpdateAvailable イベント → MainViewModel.OnUpdateAvailable で
-            // SelfUpdateWindow を開き、ユーザーが「ダウンロード＆インストール」を押してから DL → Apply する。
+            // Komorebi 互換: 起動時に 1 回だけ自動チェック (周期チェックなし、 30 秒タイムアウト)。
+            // 検出 → DL → Apply → Restart まで VelopackUpdateDialog.Avalonia の UpdateDialogWindow で完結する
+            // (v1.0.12 で自前 SelfUpdateWindow を完全置換済み)。
             _ = updateService.StartAsync(_updateCancellation.Token).ContinueWith(t =>
             {
                 if (t.IsFaulted)

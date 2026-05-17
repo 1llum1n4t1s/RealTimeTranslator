@@ -62,7 +62,7 @@ Audio Capture (WASAPI) → Resample 16kHz→24kHz → PCM16 → OpenAI Realtime 
 1. `AudioCaptureService` feeds 16kHz mono float32 audio chunks via `AudioDataAvailable` event
 2. `TranslationPipelineService` resamples to 24kHz, converts to PCM16, sends via `OpenAIRealtimeClient`
 3. API returns translation text as `response.output_audio_transcript.delta` / `response.output_text.delta` (streaming) and `.done` (final). Legacy event names (`output_transcript.*`, `response.audio_transcript.*`) are still recognized for compatibility.
-4. Delta events fire `SubtitleGenerated` with `IsFinal=false` (100ms throttled), done fires with `IsFinal=true`
+4. Delta events fire `SubtitleGenerated` with `IsFinal=false` (throttled per `TranslationPipelineService.DeltaThrottle`, 現在 30ms), done fires with `IsFinal=true`
 5. `OverlayViewModel` displays subtitles, tracking updates by `SegmentId`
 
 ### OpenAI Realtime Translation API の癖 ⚠️
@@ -98,12 +98,12 @@ Audio Capture (WASAPI) → Resample 16kHz→24kHz → PCM16 → OpenAI Realtime 
 - **Auto-update**: Velopack with `GithubSource` (NOT `SimpleWebSource` — the latter can't resolve GitHub repo top URLs and 404s). Release via `release/**` branch push → GitHub Actions → GitHub Releases. CI uploads **all** `velopack-packages/*` assets (full pack + deltas + RELEASES manifest), not just `*-Setup.exe`.
 - **Velopack 操作の直列化**: `UpdateService._velopackOpLock` (static SemaphoreSlim) で Check / Download / Apply を直列化する。 これがないと起動時自動チェック + Periodic タイマー + 手動更新が並走して `.velopack_lock` 衝突 (`AcquireLockFailedException`) になる。 例外は `ex.GetType().Name == "AcquireLockFailedException"` で文字列マッチして握る (Velopack 内部型に依存しない)。
 - **API Key & 設定の保存先**: **Roaming** AppData (`%APPDATA%/RealTimeTranslator/settings.json`)。 Velopack 更新で `%LocalAppData%/RealTimeTranslator/packages` 配下が再構築されても消えないようにするため。 旧 LocalAppData 配置からは `SettingsService.MigrateLegacySettingsIfNeeded` で自動移行する。 API キーは DPAPI (CurrentUser scope) で暗号化し `dpapi:` プレフィックス付き base64 で保存。
-- **Logging**: SuperLightLogger (NLog-compatible API)。 ログは `%LocalAppData%/RealTimeTranslator/logs/` (こちらは LocalAppData のまま、 Velopack 更新で再配置されてもログ自体は残す)。 「log4net → NLog 移行」コミットの実体は SuperLightLogger の `LogManager.Configure(... AddSuperLightFile ...)`。
+- **Logging**: SuperLightLogger (NLog-compatible API)。 ログは `%APPDATA%/RealTimeTranslator/logs/` (Roaming AppData。 Velopack インストールルート `%LocalAppData%` と衝突しないため Roaming 配置。 Velopack 更新で再配置されてもログ自体は残す)。 「log4net → NLog 移行」コミットの実体は SuperLightLogger の `LogManager.Configure(... AddSuperLightFile ...)`。
 - **プロセス確実終了**: `App.axaml.cs` の `OnShutdownRequested` で多重防御を組んでいる: (1) AudioCapture を明示停止 → (2) ITranslationPipelineService.DisposeAsync を 2秒タイムアウト → (3) `Environment.Exit(0)` → (4) 5秒後の `Process.Kill()` 保険タイマー。 NAudio / WASAPI のネイティブハンドルが残ってプロセスゾンビ化する経路を全部塞ぐ目的。
 
 ## Operations / トラブルシュート
 
-- **ログの場所**: `%LocalAppData%/RealTimeTranslator/logs/RealTimeTranslator_yyyyMMdd.log`（ローテーションあり、デフォルト 7 日間保持）。
+- **ログの場所**: `%APPDATA%/RealTimeTranslator/logs/RealTimeTranslator_yyyyMMdd.log` (Roaming AppData、 ローテーションあり、 デフォルト 7 日間保持)。
 - **設定ファイルの場所**: `%APPDATA%/RealTimeTranslator/settings.json` (Roaming)。 旧 `%LocalAppData%/RealTimeTranslator/settings.json` からは起動時に自動移行される。 API キーは DPAPI (CurrentUser scope) で暗号化されており、別ユーザー / 別 PC では復号できない。
 - **API キー漏洩疑惑時の対応**: `settings.json` の `OpenAIRealtime.ApiKey` は `dpapi:` プレフィックス付き base64 で保存されている必要がある。生の `sk-...` 形式が見えたら旧形式のまま（次回保存で自動暗号化）。
 - **Velopack 更新失敗時**: `LoggerService.LogError` で `UpdateService.CheckAndDownloadCoreAsync 失敗` の例外詳細が記録される。FeedUrl が `github.com` または `objects.githubusercontent.com` 以外を指している場合、`TryGetValidFeedUri` で拒否される。 `.velopack_lock` 衝突は `_velopackOpLock` セマフォで通常起きない設計だが、 別プロセス (旧 version) が同時起動している場合は `AcquireLockFailedException` を握ってスキップする。

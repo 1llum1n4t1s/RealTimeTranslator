@@ -30,7 +30,7 @@ public class SubtitleItem
     /// <summary>
     /// API の done イベントで確定したかどうか。
     /// true: 確定字幕（response.output_audio_transcript.done 等で受信）
-    /// false: ストリーミング途中の partial 字幕（delta イベント由来、100ms throttle）
+    /// false: ストリーミング途中の partial 字幕（delta イベント由来、TranslationPipelineService.DeltaThrottle で間引き）
     /// </summary>
     public bool IsFinal { get; set; }
 

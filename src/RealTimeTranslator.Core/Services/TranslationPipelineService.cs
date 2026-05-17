@@ -425,7 +425,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
 
         SubtitleGenerated?.Invoke(this, subtitle);
 
-        // 頻度抑制: partial は throttle で 100ms ごとに発火するので全件 Info にすると爆発する。
+        // 頻度抑制: partial は throttle (DeltaThrottle、 現在 30ms) ごとに発火するので全件 Info にすると爆発する。
         // 1, 10, 50, 100, ... と間引いて累積長と SegmentId 推移を観測できるようにする。
         var count = Interlocked.Increment(ref _partialEmitCount);
         if (ShouldLogAtCount(count))
