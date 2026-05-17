@@ -133,6 +133,30 @@
                             </StackPanel>
                         </Border>
 
+                        <!-- 重大 API エラーバナー (Quota / InvalidApiKey / Forbidden) -->
+                        <Border IsVisible="{Binding IsErrorBannerVisible}"
+                                Background="#33FF4444"
+                                BorderBrush="#FFFF4444"
+                                BorderThickness="1"
+                                CornerRadius="4"
+                                Padding="12,8"
+                                Margin="0,8,0,0">
+                            <Grid ColumnDefinitions="Auto,*,Auto">
+                                <TextBlock Grid.Column="0" Text="❌" FontSize="16"
+                                           VerticalAlignment="Top" Margin="0,2,8,0"/>
+                                <StackPanel Grid.Column="1" Spacing="4">
+                                    <TextBlock Text="OpenAI API エラー" FontWeight="Bold" FontSize="13"/>
+                                    <TextBlock Text="{Binding ErrorBannerMessage}"
+                                               TextWrapping="Wrap" FontSize="12"/>
+                                </StackPanel>
+                                <Button Grid.Column="2" Content="✕"
+                                        Command="{Binding DismissErrorBannerCommand}"
+                                        VerticalAlignment="Top" Padding="6,2"
+                                        FontSize="11" Background="Transparent"
+                                        ToolTip.Tip="バナーを閉じる"/>
+                            </Grid>
+                        </Border>
+
                         <!-- Control Buttons -->
                         <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,4,0,0">
                             <Button Content="開始" Command="{Binding StartCommand}"

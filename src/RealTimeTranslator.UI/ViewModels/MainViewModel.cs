@@ -266,7 +266,32 @@ public partial class MainViewModel : ObservableObject, IDisposable
         {
             Log($"パイプラインエラー: {ex.Message}");
             LoggerService.LogException($"TranslationPipelineService Error: {ex.Message}", ex);
+
+            // 2026-05-17 ゆろさんクォータ超過ログ対応:
+            // OpenAI API の致命エラー (Quota / InvalidApiKey / Forbidden) は UI に警告バナーで表示する。
+            // 一過性エラー (RateLimit / BadRequest / Unknown) はログのみで、 バナーは出さない (自動再接続で復旧する想定)。
+            if (ex is OpenAIApiException apiEx && apiEx.IsFatal)
+            {
+                ErrorBannerMessage = apiEx.FriendlyMessage;
+                IsErrorBannerVisible = true;
+            }
         });
+    }
+
+    /// <summary>UI 上部に表示する重大エラー警告バナーの表示状態。</summary>
+    [ObservableProperty]
+    private bool _isErrorBannerVisible;
+
+    /// <summary>警告バナーに表示するユーザー向けメッセージ (日本語、 OpenAIApiException.FriendlyMessage 由来)。</summary>
+    [ObservableProperty]
+    private string _errorBannerMessage = string.Empty;
+
+    /// <summary>バナーを閉じる (ユーザーが内容を確認した後)。</summary>
+    [RelayCommand]
+    private void DismissErrorBanner()
+    {
+        IsErrorBannerVisible = false;
+        ErrorBannerMessage = string.Empty;
     }
 
     private async void OnSettingsSaved(object? sender, SettingsSavedEventArgs e)

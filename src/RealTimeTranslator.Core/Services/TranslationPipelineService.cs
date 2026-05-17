@@ -578,6 +578,29 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     {
         Logger.Error("OpenAI Realtime クライアントエラー", ex);
         ErrorOccurred?.Invoke(this, ex);
+
+        // 2026-05-17 ゆろさんログ起点の修正:
+        // OpenAI API の致命的エラー (Quota / InvalidApiKey / Forbidden) は再接続しても回復しないため、
+        // パイプラインを止めて音声キャプチャも即停止する。 OS から音声を取りっぱなしになる経路や、
+        // 無駄な Channel 蓄積を避ける。 UI 側は ErrorOccurred イベント経由で警告バナーを出す。
+        if (ex is OpenAIApiException { IsFatal: true } apiEx)
+        {
+            try
+            {
+                Logger.Info($"OnClientError: 致命的 API エラー ({apiEx.Kind}) を検知、 AudioCapture を即停止");
+                _audioCaptureService.StopCapture();
+            }
+            catch (Exception stopEx)
+            {
+                Logger.Warn($"OnClientError: AudioCapture 停止に失敗 — {stopEx.Message}");
+            }
+
+            // UI のステータス文字列も警告に切替え (StatsUpdated 経由)
+            StatsUpdated?.Invoke(this, new PipelineStatsEventArgs
+            {
+                StatusText = apiEx.FriendlyMessage
+            });
+        }
     }
 
     private void OnConnectionStateChanged(ConnectionState state)

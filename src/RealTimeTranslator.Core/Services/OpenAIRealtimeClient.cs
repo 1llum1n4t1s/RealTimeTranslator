@@ -647,23 +647,34 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
 
                 case "error":
                 {
-                    var errorMsg = "Unknown error";
+                    // 2026-05-17 ゆろさんのクォータ超過ログを契機に強化:
+                    // error.message と error.code から OpenAIApiErrorKind を判定し、 日本語の補助メッセージを
+                    // 付けた OpenAIApiException を投げる。 致命的 (IsFatal=true: Quota / InvalidApiKey /
+                    // Forbidden) なら _shouldReconnect=false + Failed 状態に倒して、 再接続を無駄に走らせない。
+                    var originalMessage = "Unknown error";
+                    var errorCode = "";
                     if (root.TryGetProperty("error", out var err))
                     {
                         if (err.TryGetProperty("message", out var msg))
-                            errorMsg = msg.GetString() ?? errorMsg;
-
+                            originalMessage = msg.GetString() ?? originalMessage;
                         if (err.TryGetProperty("code", out var code))
-                        {
-                            var codeStr = code.GetString() ?? "";
-                            if (codeStr == "rate_limit_exceeded")
-                                errorMsg = "レート制限に達しました。しばらく待ってから再試行してください。";
-                            else if (codeStr == "invalid_api_key")
-                                errorMsg = "APIキーが無効です。設定画面で確認してください。";
-                        }
+                            errorCode = code.GetString() ?? "";
                     }
-                    Logger.Error($"OpenAI API エラー: {errorMsg}");
-                    ErrorReceived?.Invoke(new InvalidOperationException(errorMsg));
+
+                    var kind = OpenAIApiException.Classify(originalMessage, errorCode);
+                    var friendly = OpenAIApiException.FriendlyMessageFor(kind, originalMessage);
+                    var ex = new OpenAIApiException(kind, friendly, originalMessage);
+
+                    Logger.Error($"OpenAI API エラー (kind={kind} code='{errorCode}'): {originalMessage}");
+
+                    if (ex.IsFatal)
+                    {
+                        Logger.Warn($"OpenAI API 致命的エラー検知 ({kind}) — 自動再接続を停止して Failed 状態に倒します");
+                        _shouldReconnect = false;
+                        SetState(ConnectionState.Failed);
+                    }
+
+                    ErrorReceived?.Invoke(ex);
                     break;
                 }
             }
