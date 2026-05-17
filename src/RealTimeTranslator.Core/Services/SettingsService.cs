@@ -119,8 +119,14 @@ public class SettingsService : ISettingsService
     /// プロセス中断・電源断時に settings.json が部分書込のまま壊れることを防ぐ。
     /// 機微フィールド（OpenAIRealtime.ApiKey）は DPAPI で暗号化してから JSON 化する。
     /// </remarks>
+    // rere I-5: SettingsViewModel の autosave (500ms debounce) と UpdateService の VersionIgnored
+    // ハンドラ (fire-and-forget SaveAsync) が並走するシナリオで、 同じ tempPath への File.Replace race を
+    // 防ぐためインスタンス内で直列化。 同プロセス内の複数 SaveAsync は順次実行される。
+    private readonly SemaphoreSlim _saveLock = new(1, 1);
+
     public async Task SaveAsync(AppSettings settings)
     {
+        await _saveLock.WaitAsync().ConfigureAwait(false);
         var tempPath = _settingsPath + ".tmp";
         try
         {
@@ -148,6 +154,10 @@ public class SettingsService : ISettingsService
             // 失敗時は temp が残らないように掃除
             try { if (File.Exists(tempPath)) File.Delete(tempPath); } catch { /* best effort */ }
             throw;
+        }
+        finally
+        {
+            _saveLock.Release();
         }
     }
 

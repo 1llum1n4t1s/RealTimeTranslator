@@ -35,7 +35,10 @@ public static class AudioFormatConverter
         var bytes = new byte[samples.Length * 2];
         for (var i = 0; i < samples.Length; i++)
         {
-            var clamped = Math.Clamp(samples[i], -1.0f, 1.0f);
+            // rere A2-005: Math.Clamp は NaN 入力で NaN を返し、(short)NaN は C# 仕様で 0 になるが
+            // 実装依存挙動への依存を避けるため明示的に 0 に倒す。 ±Inf は Clamp で -1.0/1.0 に丸まる。
+            var raw = samples[i];
+            var clamped = float.IsNaN(raw) ? 0f : Math.Clamp(raw, -1.0f, 1.0f);
             var value = (short)(clamped * 32767);
             bytes[i * 2] = (byte)(value & 0xFF);
             bytes[i * 2 + 1] = (byte)((value >> 8) & 0xFF);

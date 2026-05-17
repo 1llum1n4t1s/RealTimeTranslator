@@ -159,10 +159,13 @@ public class UpdateService : IUpdateService
         {
             throw;
         }
-        catch (Exception ex) when (ex.GetType().Name == "AcquireLockFailedException")
+        catch (Exception ex) when (ex.GetType().Name == "AcquireLockFailedException"
+                                   && ex.GetType().Namespace?.StartsWith("Velopack", StringComparison.Ordinal) == true)
         {
             // Velopack の .velopack_lock 衝突: 別プロセス（同じインストール先の別バージョン起動など）が
             // 操作中。 次回起動時に自然に再試行されるのでログだけ残す。
+            // rere A1-002: 型名文字列マッチに加えて namespace ガードを追加。 別 assembly の同名例外
+            // (DLL Hijacking 等) を誤判定しないため。
             LoggerService.LogInfo($"UpdateService: Velopack ロック取得失敗（次回起動時に再試行）— {ex.Message}");
             OnStatusChanged(UpdateStatus.Idle, "別の更新処理が実行中です。後で再試行します。");
         }

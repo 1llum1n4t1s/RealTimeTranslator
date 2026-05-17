@@ -333,7 +333,9 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
         // NAT 越え / プロキシ / モバイル NW で半切断（TCP は生きているように見えるがサーバ応答なし）を
         // 検知できるよう、ping/pong + pong タイムアウトを明示設定する。.NET 8+ で利用可能。
         _ws.Options.KeepAliveInterval = TimeSpan.FromSeconds(15);
-        _ws.Options.KeepAliveTimeout = TimeSpan.FromSeconds(20);
+        // rere I-1: 15s/20s だと RTT 揺れ (LTE 切替 / Wi-Fi ローミング / OpenAI 側 GC stall) で
+        // false-positive 切断が起きやすい。 30s に伸ばして接続安定性を改善する。
+        _ws.Options.KeepAliveTimeout = TimeSpan.FromSeconds(30);
         _ws.Options.SetRequestHeader("Authorization", $"Bearer {_settings.ApiKey}");
 
         var uri = new Uri($"{_settings.Endpoint}?model={Uri.EscapeDataString(_settings.Model)}");
@@ -507,11 +509,16 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
             _ = Task.Run(() => TryReconnectAsync(), CancellationToken.None);
     }
 
+    // rere A2-006: 深ネスト JSON 攻撃を防ぐ MaxDepth 制限。
+    // OpenAI Realtime API のレスポンスは通常 5-10 階層なので 32 で余裕、
+    // 深ネスト時は JsonException で早期失敗してログに残す。
+    private static readonly JsonDocumentOptions s_jsonDocumentOptions = new() { MaxDepth = 32 };
+
     private void ProcessMessage(ReadOnlyMemory<byte> json)
     {
         try
         {
-            using var doc = JsonDocument.Parse(json);
+            using var doc = JsonDocument.Parse(json, s_jsonDocumentOptions);
             var root = doc.RootElement;
 
             if (!root.TryGetProperty("type", out var typeElement)) return;
