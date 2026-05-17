@@ -51,6 +51,16 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
     // 「文が区切られず長文化する」原因を切り分けるためのフィールド。
     private readonly HashSet<string> _seenEventTypes = new(StringComparer.Ordinal);
     private readonly object _seenEventTypesLock = new();
+
+    // ⚠️ 二重字幕対策 (2026-05-17 観測):
+    // OpenAI Realtime API は同じ翻訳結果を `response.output_audio_transcript.*` と
+    // `response.output_text.*` の 2 系統で並行発火するケースがあり、両方を素通しすると
+    // 同じ文が別 SegmentId で 2 つ表示される (Discord 等で「今日はこれから行くよ。今日はこれから行くよ。」)。
+    // 対策: 同じ response_id 内では「先に来た系統 (audio_transcript or text)」だけ採用し、
+    //       後発の別系統は skip する。 単発フィールドで保持して辞書増殖を避ける。
+    private string? _lastTranscriptResponseId;
+    private string? _lastTranscriptEventGroup;
+    private readonly object _transcriptDedupeLock = new();
     // 受信したdelta件数（done発火時の診断のため）
     private long _totalDeltaCount;
     private long _totalDoneCount;
@@ -535,6 +545,9 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
                     if (root.TryGetProperty("delta", out var delta))
                     {
                         var deltaStr = delta.GetString() ?? "";
+                        // 二重字幕対策: 同じ response_id 内の別系統 (audio_transcript vs text) なら skip
+                        if (!ShouldProcessTranscriptEvent(root, type))
+                            break;
                         var count = Interlocked.Increment(ref _totalDeltaCount);
                         // 頻度抑制: delta は 1 文字〜数文字単位で高頻度に来るため、 全件 Info にすると
                         // ログが爆発する。 1, 10, 50, 100, ... と間引いて累計と直近 delta を観測する。
@@ -558,6 +571,10 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
                         transcript = t.GetString() ?? "";
                     else if (root.TryGetProperty("text", out var txt))
                         transcript = txt.GetString() ?? "";
+
+                    // 二重字幕対策: 同じ response_id 内の別系統なら skip (delta と同じガード)
+                    if (!ShouldProcessTranscriptEvent(root, type))
+                        break;
 
                     var doneCount = Interlocked.Increment(ref _totalDoneCount);
                     var deltaCount = Interlocked.Read(ref _totalDeltaCount);
@@ -717,6 +734,48 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
     {
         _state = state;
         StateChanged?.Invoke(state);
+    }
+
+    /// <summary>
+    /// 二重字幕対策: 同じ response_id 内で「最初に来た系統 (audio_transcript or text)」だけ採用し、
+    /// 後発の別系統 (output_text vs output_audio_transcript) は skip する。
+    ///
+    /// OpenAI Realtime API は同じ翻訳結果を以下の 2 系統で並行発火することがある:
+    ///   - `response.output_audio_transcript.delta/done`: 音声出力に紐付く transcript
+    ///   - `response.output_text.delta/done`: テキスト出力
+    /// この両方を素通しすると、 1 つの response に対して同じ翻訳結果が 2 回 emit され、
+    /// overlay に同じ文が別 SegmentId で並ぶ (2026-05-17 ゆろさん観測、 Discord で発生)。
+    ///
+    /// response_id を取得して保存し、 同 id 内の別系統 event は無視する。 新しい response_id が
+    /// 来たら採用系統を切り替える。 単発フィールドで保持して辞書増殖を回避。
+    /// </summary>
+    private bool ShouldProcessTranscriptEvent(JsonElement root, string eventType)
+    {
+        if (!root.TryGetProperty("response_id", out var ridElement))
+            return true; // response_id 取れない API バリアントは従来通り通す
+        var responseId = ridElement.GetString();
+        if (string.IsNullOrEmpty(responseId))
+            return true;
+
+        // event 系統を判定: text 系か、 audio_transcript / transcript 系か。
+        // session.output_transcript / output_transcript / audio_transcript 系は全部「transcript」枠扱い。
+        var group = eventType.Contains("output_text") ? "text" : "transcript";
+
+        lock (_transcriptDedupeLock)
+        {
+            if (_lastTranscriptResponseId == responseId)
+            {
+                if (_lastTranscriptEventGroup == group)
+                    return true; // 同 response_id 同系統の続き (delta が連続して来る正常経路)
+                // 同 response_id 異系統 = 二重発火 → skip
+                Logger.Info($"二重 transcript event を抑止: response_id={responseId} 採用='{_lastTranscriptEventGroup}' 抑止='{group}' eventType='{eventType}'");
+                return false;
+            }
+            // 新しい response_id → 採用系統を更新
+            _lastTranscriptResponseId = responseId;
+            _lastTranscriptEventGroup = group;
+            return true;
+        }
     }
 
     // 観測ログ用ヘルパー: 長文を 40 文字までに切り詰めて、 余ったぶんは "..." で省略する。
