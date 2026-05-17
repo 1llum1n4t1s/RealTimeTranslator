@@ -16,6 +16,13 @@ public class UpdateSettings
     // objects.githubusercontent.com ホスト allowlist で安全性確保済み。
     public bool Enabled { get; set; } = true;
     public string FeedUrl { get; set; } = string.Empty;
+
+    // ユーザーが「このバージョンを無視」を選択したタグ名 (例: "v1.0.13")。
+    // 起動時の自動チェックで取得した最新タグがこれと一致したら、ダイアログを開かずスキップする。
+    // 手動チェック (バージョンタブの「更新の確認」ボタン) では無視タグは適用しない
+    // (ユーザーが明示的にチェックしたから、結果は必ず見せる)。
+    // Komorebi 互換挙動: VelopackUpdateDialog の VersionIgnored event でここに永続化。
+    public string IgnoredTagName { get; set; } = string.Empty;
 }
 
 
