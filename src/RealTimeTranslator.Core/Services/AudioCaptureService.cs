@@ -371,91 +371,102 @@ public class AudioCaptureService : IAudioCaptureService
         if (e.BytesRecorded == 0)
             return;
 
-        // NAudio の内部バッファは再利用されるため、イベント内で即コピーしてから扱う
-        var bufferCopy = new byte[e.BytesRecorded];
-        Array.Copy(e.Buffer, 0, bufferCopy, 0, e.BytesRecorded);
+        // NAudio の内部バッファは再利用されるため即コピーしてから扱う。
+        // ArrayPool 借用で Gen0 ヒープ通過量を削減 (このメソッドは ~100ms ごとに発火、
+        // 48kHz/2ch/float32 = 38.4 KB/call * 10 calls/sec = 385 KB/s = 約 685 MB/30min)。
+        // Rent は要求以上のサイズを返すため、 サイズ参照箇所は必ず e.BytesRecorded を使う。
+        var bufferCopy = ArrayPool<byte>.Shared.Rent(e.BytesRecorded);
+        try
+        {
+            Array.Copy(e.Buffer, 0, bufferCopy, 0, e.BytesRecorded);
 
-        var sourceFormat = _capture!.WaveFormat;
-        var callCount = Interlocked.Increment(ref _dataAvailableCallCount);
-        if (callCount == 1)
-        {
-            LoggerService.LogDebug($"[Capture] WaveFormat: Encoding={sourceFormat.Encoding}, SampleRate={sourceFormat.SampleRate}, Channels={sourceFormat.Channels}, BitsPerSample={sourceFormat.BitsPerSample}");
-        }
-        var logHex = callCount <= 3 || callCount % 100 == 0;
-        if (logHex)
-        {
-            var len = Math.Min(16, bufferCopy.Length);
-            var hex = BitConverter.ToString(bufferCopy, 0, len).Replace("-", " ");
-            LoggerService.LogDebug($"[Capture] #{callCount} bufferCopy (first {len} bytes): {hex}");
-        }
-        // 16bit PCM のときは生値の範囲をログ用に取得（無音判定の切り分け用）
-        var (raw16Min, raw16Max) = GetRaw16BitRange(bufferCopy, e.BytesRecorded, sourceFormat);
+            var sourceFormat = _capture!.WaveFormat;
+            var callCount = Interlocked.Increment(ref _dataAvailableCallCount);
+            if (callCount == 1)
+            {
+                LoggerService.LogDebug($"[Capture] WaveFormat: Encoding={sourceFormat.Encoding}, SampleRate={sourceFormat.SampleRate}, Channels={sourceFormat.Channels}, BitsPerSample={sourceFormat.BitsPerSample}");
+            }
+            var logHex = callCount <= 3 || callCount % 100 == 0;
+            if (logHex)
+            {
+                var len = Math.Min(16, e.BytesRecorded);
+                var hex = BitConverter.ToString(bufferCopy, 0, len).Replace("-", " ");
+                LoggerService.LogDebug($"[Capture] #{callCount} bufferCopy (first {len} bytes): {hex}");
+            }
+            // 16bit PCM のときは生値の範囲をログ用に取得（無音判定の切り分け用）
+            var (raw16Min, raw16Max) = GetRaw16BitRange(bufferCopy, e.BytesRecorded, sourceFormat);
 
-        // NAudio の RawSourceWaveStream ＋ ToSampleProvider で float 変換（2ch の場合は StereoToMono 含む）
-        var samples = ConvertToFloat(bufferCopy, e.BytesRecorded, sourceFormat);
-        var max = 0f;
-        for (var i = 0; i < samples.Length; i++)
-        {
-            var abs = Math.Abs(samples[i]);
-            if (abs > max) max = abs;
-        }
-        if (max > NonSilentAmplitudeThreshold)
-            _hasReceivedNonSilentDataSinceStart = true;
-        if (callCount <= 5 || callCount % 50 == 0)
-        {
-            var sum = 0f;
+            // NAudio の RawSourceWaveStream ＋ ToSampleProvider で float 変換（2ch の場合は StereoToMono 含む）
+            var samples = ConvertToFloat(bufferCopy, e.BytesRecorded, sourceFormat);
+            var max = 0f;
             for (var i = 0; i < samples.Length; i++)
-                sum += Math.Abs(samples[i]);
-            var avg = samples.Length > 0 ? sum / samples.Length : 0f;
-            var raw16Str = raw16Min.HasValue ? $", raw16=[{raw16Min.Value},{raw16Max!.Value}]" : "";
-            LoggerService.LogDebug($"[Capture] OnDataAvailable #{callCount}: bytes={e.BytesRecorded}, samples={samples.Length}, max={max:F6}, avg={avg:F6}{raw16Str}");
-            // raw16 が -1～1 のみで再生の有無で変わらない場合は、実音ではなくドライバのプレースホルダーと判断
-            if (!_loggedPlaceholderWarning && raw16Min.HasValue && raw16Max.HasValue
-                && raw16Min.Value >= -1 && raw16Max.Value <= 1 && (raw16Min.Value < 0 || raw16Max.Value > 0))
             {
-                _loggedPlaceholderWarning = true;
-                LoggerService.LogWarning("[Capture] raw16 が [-1,1] のみです。再生停止時も同じ値なら Process Loopback が実音を返していません（ドライバ／WASAPI の挙動の可能性）。");
+                var abs = Math.Abs(samples[i]);
+                if (abs > max) max = abs;
+            }
+            if (max > NonSilentAmplitudeThreshold)
+                _hasReceivedNonSilentDataSinceStart = true;
+            if (callCount <= 5 || callCount % 50 == 0)
+            {
+                var sum = 0f;
+                for (var i = 0; i < samples.Length; i++)
+                    sum += Math.Abs(samples[i]);
+                var avg = samples.Length > 0 ? sum / samples.Length : 0f;
+                var raw16Str = raw16Min.HasValue ? $", raw16=[{raw16Min.Value},{raw16Max!.Value}]" : "";
+                LoggerService.LogDebug($"[Capture] OnDataAvailable #{callCount}: bytes={e.BytesRecorded}, samples={samples.Length}, max={max:F6}, avg={avg:F6}{raw16Str}");
+                // raw16 が -1～1 のみで再生の有無で変わらない場合は、実音ではなくドライバのプレースホルダーと判断
+                if (!_loggedPlaceholderWarning && raw16Min.HasValue && raw16Max.HasValue
+                    && raw16Min.Value >= -1 && raw16Max.Value <= 1 && (raw16Min.Value < 0 || raw16Max.Value > 0))
+                {
+                    _loggedPlaceholderWarning = true;
+                    LoggerService.LogWarning("[Capture] raw16 が [-1,1] のみです。再生停止時も同じ値なら Process Loopback が実音を返していません（ドライバ／WASAPI の挙動の可能性）。");
+                }
+            }
+
+            // バッファに追加（VAD用）
+            lock (_bufferLock)
+            {
+                var targetSampleRate = _settings.SampleRate;
+
+                // VAD用のリサンプリング済みサンプルを準備
+                var resampledForVad = sourceFormat.SampleRate != targetSampleRate
+                    ? Resample(samples, sourceFormat.SampleRate, targetSampleRate)
+                    : samples;
+
+                foreach (var s in resampledForVad)
+                {
+                    _audioBuffer.Enqueue(s);
+                }
+
+                // バッファサイズが上限を超えた場合は先頭から O(1) で破棄
+                if (_audioBuffer.Count > MaxBufferSize)
+                {
+                    var excessSamples = _audioBuffer.Count - MaxBufferSize;
+                    for (var i = 0; i < excessSamples; i++)
+                    {
+                        _audioBuffer.Dequeue();
+                    }
+                    LoggerService.LogDebug($"Audio buffer overflow prevented: removed {excessSamples} samples");
+                }
+
+                // 一定量のデータが溜まったらイベントを発火（Queue.Dequeue は O(1)）
+                var samplesPerChunk = targetSampleRate * AudioChunkDurationMs / 1000;
+                while (_audioBuffer.Count >= samplesPerChunk)
+                {
+                    var chunk = new float[samplesPerChunk];
+                    for (var i = 0; i < samplesPerChunk; i++)
+                    {
+                        chunk[i] = _audioBuffer.Dequeue();
+                    }
+
+                    AudioDataAvailable?.Invoke(this, new AudioDataEventArgs(chunk, DateTime.Now));
+                }
             }
         }
-
-        // バッファに追加（VAD用）
-        lock (_bufferLock)
+        finally
         {
-            var targetSampleRate = _settings.SampleRate;
-
-            // VAD用のリサンプリング済みサンプルを準備
-            var resampledForVad = sourceFormat.SampleRate != targetSampleRate
-                ? Resample(samples, sourceFormat.SampleRate, targetSampleRate)
-                : samples;
-
-            foreach (var s in resampledForVad)
-            {
-                _audioBuffer.Enqueue(s);
-            }
-
-            // バッファサイズが上限を超えた場合は先頭から O(1) で破棄
-            if (_audioBuffer.Count > MaxBufferSize)
-            {
-                var excessSamples = _audioBuffer.Count - MaxBufferSize;
-                for (var i = 0; i < excessSamples; i++)
-                {
-                    _audioBuffer.Dequeue();
-                }
-                LoggerService.LogDebug($"Audio buffer overflow prevented: removed {excessSamples} samples");
-            }
-
-            // 一定量のデータが溜まったらイベントを発火（Queue.Dequeue は O(1)）
-            var samplesPerChunk = targetSampleRate * AudioChunkDurationMs / 1000;
-            while (_audioBuffer.Count >= samplesPerChunk)
-            {
-                var chunk = new float[samplesPerChunk];
-                for (var i = 0; i < samplesPerChunk; i++)
-                {
-                    chunk[i] = _audioBuffer.Dequeue();
-                }
-
-                AudioDataAvailable?.Invoke(this, new AudioDataEventArgs(chunk, DateTime.Now));
-            }
+            // ArrayPool 借用は確実に返却 (例外経路含む)。 clearArray=false でゼロ化省略 (audio data は機微性低)。
+            ArrayPool<byte>.Shared.Return(bufferCopy);
         }
     }
 
