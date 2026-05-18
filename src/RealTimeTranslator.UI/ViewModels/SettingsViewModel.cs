@@ -188,10 +188,10 @@ public partial class SettingsViewModel : ObservableObject
     public ReadOnlyCollection<OutputLanguageOption> OutputLanguageOptions { get; }
 
     [ObservableProperty]
-    private bool _isTestingApi;
+    public partial bool IsTestingApi { get; set; }
 
     [ObservableProperty]
-    private string _apiTestResult = string.Empty;
+    public partial string ApiTestResult { get; set; } = string.Empty;
 
     // ───── API設定プロパティ（自動保存付き） ─────
 

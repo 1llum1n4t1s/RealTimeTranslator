@@ -25,23 +25,23 @@ public partial class OverlayViewModel : ObservableObject, IDisposable
     private readonly IDisposable? _settingsChangeSubscription;
 
     [ObservableProperty]
-    private ObservableCollection<SubtitleDisplayItem> _subtitles = new();
+    public partial ObservableCollection<SubtitleDisplayItem> Subtitles { get; set; } = new();
 
     [ObservableProperty]
-    private string _fontFamily = "Yu Gothic UI";
+    public partial string FontFamily { get; set; } = "Yu Gothic UI";
 
     [ObservableProperty]
-    private double _fontSize = 24;
+    public partial double FontSize { get; set; } = 24;
 
     [ObservableProperty]
-    private IBrush _backgroundBrush = new SolidColorBrush(Color.FromArgb(128, 0, 0, 0));
+    public partial IBrush BackgroundBrush { get; set; } = new SolidColorBrush(Color.FromArgb(128, 0, 0, 0));
 
     // 背景色の輝度から自動派生する枠色（明るい背景には暗枠、暗い背景には明枠）。
     [ObservableProperty]
-    private IBrush _borderBrush = new SolidColorBrush(Color.FromArgb(128, 255, 255, 255));
+    public partial IBrush BorderBrush { get; set; } = new SolidColorBrush(Color.FromArgb(128, 255, 255, 255));
 
     [ObservableProperty]
-    private double _bottomMarginPercent = 10;
+    public partial double BottomMarginPercent { get; set; } = 10;
 
     public OverlayViewModel(IOptionsMonitor<AppSettings>? optionsMonitor = null)
     {
@@ -216,13 +216,13 @@ public partial class SubtitleDisplayItem : ObservableObject
     public string SegmentId { get; }
 
     [ObservableProperty]
-    private string _displayText = string.Empty;
+    public partial string DisplayText { get; set; } = string.Empty;
 
     [ObservableProperty]
-    private IBrush _textBrush = Brushes.White;
+    public partial IBrush TextBrush { get; set; } = Brushes.White;
 
     [ObservableProperty]
-    private double _opacity = 1.0;
+    public partial double Opacity { get; set; } = 1.0;
 
     private DateTime _displayEndTime;
     private readonly double _fadeOutDuration;

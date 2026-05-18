@@ -46,48 +46,48 @@ public partial class MainViewModel : ObservableObject, IDisposable
     private CancellationTokenSource? _processingCancellation;
 
     [ObservableProperty]
-    private ObservableCollection<ProcessInfo> _processes = new();
+    public partial ObservableCollection<ProcessInfo> Processes { get; set; } = new();
 
     [ObservableProperty]
-    private ProcessInfo? _selectedProcess;
-
-    [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(CanStart))]
-    private bool _isRunning;
-
-    [ObservableProperty]
-    private string _statusText = "停止中";
-
-    [ObservableProperty]
-    private IBrush _statusColor = Brushes.Gray;
-
-    [ObservableProperty]
-    private double _processingLatency;
-
-    [ObservableProperty]
-    private double _translationLatency;
-
-    [ObservableProperty]
-    private string _logText = string.Empty;
+    public partial ProcessInfo? SelectedProcess { get; set; }
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(CanStart))]
-    private bool _isLoading;
+    public partial bool IsRunning { get; set; }
 
     [ObservableProperty]
-    private string _loadingMessage = "初期化中...";
+    public partial string StatusText { get; set; } = "停止中";
 
     [ObservableProperty]
-    private double _downloadProgress;
+    public partial IBrush StatusColor { get; set; } = Brushes.Gray;
 
     [ObservableProperty]
-    private string _downloadStatus = string.Empty;
+    public partial double ProcessingLatency { get; set; }
 
     [ObservableProperty]
-    private string _downloadReason = string.Empty;
+    public partial double TranslationLatency { get; set; }
 
     [ObservableProperty]
-    private bool _isDownloading;
+    public partial string LogText { get; set; } = string.Empty;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(CanStart))]
+    public partial bool IsLoading { get; set; }
+
+    [ObservableProperty]
+    public partial string LoadingMessage { get; set; } = "初期化中...";
+
+    [ObservableProperty]
+    public partial double DownloadProgress { get; set; }
+
+    [ObservableProperty]
+    public partial string DownloadStatus { get; set; } = string.Empty;
+
+    [ObservableProperty]
+    public partial string DownloadReason { get; set; } = string.Empty;
+
+    [ObservableProperty]
+    public partial bool IsDownloading { get; set; }
 
     /// <summary>
     /// OpenAI API キーが設定済みかどうか（空白のみは未設定扱い）。
@@ -95,21 +95,21 @@ public partial class MainViewModel : ObservableObject, IDisposable
     /// </summary>
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(CanStart))]
-    private bool _isApiKeyConfigured;
+    public partial bool IsApiKeyConfigured { get; set; }
 
     /// <summary>
     /// バージョンタブの「更新の確認」ボタン押下中フラグ。
     /// ボタンの IsEnabled / 連打防止に使う。
     /// </summary>
     [ObservableProperty]
-    private bool _isCheckingUpdate;
+    public partial bool IsCheckingUpdate { get; set; }
 
     /// <summary>
     /// バージョンタブに表示する更新チェックのステータスメッセージ。
     /// 既存の OnUpdateStatusChanged 経由で更新する。
     /// </summary>
     [ObservableProperty]
-    private string _updateStatusText = string.Empty;
+    public partial string UpdateStatusText { get; set; } = string.Empty;
 
     // ───────── 送信統計 / コスト見える化 (案 G) ─────────
     // OpenAI Realtime API の input audio token を「いま使ってる量 / 推定コスト」として
@@ -117,19 +117,19 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(CumulativeStatsText))]
-    private long _inputAudioTokens;
+    public partial long InputAudioTokens { get; set; }
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(CumulativeStatsText))]
-    private decimal _estimatedCostUsd;
+    public partial decimal EstimatedCostUsd { get; set; }
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(CumulativeStatsText))]
-    private TimeSpan _sessionDuration;
+    public partial TimeSpan SessionDuration { get; set; }
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(CumulativeStatsText))]
-    private double _skippedSecondsByVad;
+    public partial double SkippedSecondsByVad { get; set; }
 
     /// <summary>
     /// メイン画面に出す統計サマリ。 IsRunning にかかわらず Pipeline の StatsUpdated を反映する
@@ -339,11 +339,11 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
     /// <summary>UI 上部に表示する重大エラー警告バナーの表示状態。</summary>
     [ObservableProperty]
-    private bool _isErrorBannerVisible;
+    public partial bool IsErrorBannerVisible { get; set; }
 
     /// <summary>警告バナーに表示するユーザー向けメッセージ (日本語、 OpenAIApiException.FriendlyMessage 由来)。</summary>
     [ObservableProperty]
-    private string _errorBannerMessage = string.Empty;
+    public partial string ErrorBannerMessage { get; set; } = string.Empty;
 
     /// <summary>バナーを閉じる (ユーザーが内容を確認した後)。</summary>
     [RelayCommand]
