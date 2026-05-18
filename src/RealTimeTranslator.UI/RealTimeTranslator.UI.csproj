@@ -2,7 +2,9 @@
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <AvaloniaUseCompiledBindingsByDefault>false</AvaloniaUseCompiledBindingsByDefault>
+    <!-- 全 axaml で x:DataType を設定済みのため compiled bindings に切替 (/opop P4 Phase A)。
+         binding 性能向上 + typo/型不一致がビルド時エラー化 + AOT 互換性向上。 -->
+    <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
     <ErrorOnDuplicatePublishOutputFiles>false</ErrorOnDuplicatePublishOutputFiles>
     <ApplicationIcon>..\..\icon\app.ico</ApplicationIcon>
     <InvariantGlobalization>false</InvariantGlobalization>
