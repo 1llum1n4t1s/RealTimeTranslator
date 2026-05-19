@@ -8,6 +8,20 @@ public class AppSettings
     public string LastSelectedProcessName { get; set; } = string.Empty;
     public int LastSelectedProcessId { get; set; }
     public UpdateSettings Update { get; set; } = new();
+    public TranslationLogSettings TranslationLog { get; set; } = new();
+}
+
+/// <summary>
+/// 翻訳ログ機能の設定。 確定字幕を `%APPDATA%/Roaming/RealTimeTranslator/logs/translations/` に
+/// TSV 形式で永続化する機能の挙動を制御する。
+/// </summary>
+public class TranslationLogSettings
+{
+    /// <summary>
+    /// 翻訳ログの保持日数。 0 = 無制限 (自動削除しない、 Windows ごみ箱と同等の挙動)。
+    /// UI は ComboBox 6 段階 (0/7/30/90/180/365 日)。 デフォルトは 0 (無制限) でユーザーが手動で消すまで残す。
+    /// </summary>
+    public int RetentionDays { get; set; } = 0;
 }
 
 public class UpdateSettings

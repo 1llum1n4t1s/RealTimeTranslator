@@ -97,6 +97,17 @@ public partial class SettingsViewModel : ObservableObject
             // ここの 3 値は実際には参照されない (rere B2-007 対応: 死コード相当だったので 0/0/0 に)。
             new("Custom",            "カスタム (詳細設定)",               0f,   0,   0)
         });
+        // 翻訳ログの保持期間 ComboBox (Windows ごみ箱風: 無制限がデフォルト)。
+        // 0 = 無制限、 削除しない (ユーザーが手動で消すまで残す)。
+        TranslationLogRetentionOptions = new ReadOnlyCollection<TranslationLogRetentionOption>(new TranslationLogRetentionOption[]
+        {
+            new(0,   "無制限 (手動削除のみ、 推奨)"),
+            new(7,   "7 日"),
+            new(30,  "30 日"),
+            new(90,  "90 日"),
+            new(180, "180 日"),
+            new(365, "1 年")
+        });
         AutoPauseOptions = new ReadOnlyCollection<AutoPauseOption>(new AutoPauseOption[]
         {
             new(0,    "無効 (停止しない)"),
@@ -291,6 +302,20 @@ public partial class SettingsViewModel : ObservableObject
             changed = true;
         }
 
+        // 翻訳ログ保持期間: 一覧外の値は最も近い既定値に丸める (負数は 0 = 無制限へ)。
+        if (_settings.TranslationLog.RetentionDays < 0 ||
+            !TranslationLogRetentionOptions.Any(o => o.Days == _settings.TranslationLog.RetentionDays))
+        {
+            int snappedDays = _settings.TranslationLog.RetentionDays < 0
+                ? 0
+                : TranslationLogRetentionOptions
+                    .OrderBy(o => Math.Abs(o.Days - _settings.TranslationLog.RetentionDays))
+                    .First().Days;
+            LoggerService.LogInfo($"SettingsViewModel.Sanitize: TranslationLog.RetentionDays={_settings.TranslationLog.RetentionDays} が一覧外 → {snappedDays} 日に丸め");
+            _settings.TranslationLog.RetentionDays = snappedDays;
+            changed = true;
+        }
+
         if (string.IsNullOrWhiteSpace(_settings.OpenAIRealtime.OutputLanguage) ||
             !OutputLanguageOptions.Any(o => o.Code == _settings.OpenAIRealtime.OutputLanguage))
         {
@@ -317,6 +342,7 @@ public partial class SettingsViewModel : ObservableObject
     public ReadOnlyCollection<OutputLanguageOption> OutputLanguageOptions { get; }
     public ReadOnlyCollection<VadPresetOption> VadPresetOptions { get; }
     public ReadOnlyCollection<AutoPauseOption> AutoPauseOptions { get; }
+    public ReadOnlyCollection<TranslationLogRetentionOption> TranslationLogRetentionOptions { get; }
 
     [ObservableProperty]
     public partial bool IsTestingApi { get; set; }
@@ -604,6 +630,25 @@ public partial class SettingsViewModel : ObservableObject
         }
     }
 
+    /// <summary>
+    /// 翻訳ログの保持期間 ComboBox。 0 = 無制限、 7/30/90/180/365 日。
+    /// 設定変更は次回起動時の <see cref="ITranslationLogger.PerformRetentionCleanupAsync"/> で反映される。
+    /// </summary>
+    public TranslationLogRetentionOption? SelectedTranslationLogRetention
+    {
+        get => TranslationLogRetentionOptions.FirstOrDefault(o => o.Days == _settings.TranslationLog.RetentionDays)
+               ?? TranslationLogRetentionOptions[0];
+        set
+        {
+            if (value != null && _settings.TranslationLog.RetentionDays != value.Days)
+            {
+                _settings.TranslationLog.RetentionDays = value.Days;
+                OnPropertyChanged();
+                ScheduleAutoSave();
+            }
+        }
+    }
+
     // ───── 自動保存 ─────
 
     private void ScheduleAutoSave()
@@ -725,3 +770,6 @@ public sealed record FontWeightOption(string Key, string Name);
 
 /// <summary>背景の不透明度。 Percent は OverlaySettings.BackgroundOpacityPercent に保存される。</summary>
 public sealed record OpacityOption(int Percent, string Name);
+
+/// <summary>翻訳ログの保持期間 (日)。 Days=0 は「無制限」を意味する。</summary>
+public sealed record TranslationLogRetentionOption(int Days, string Name);

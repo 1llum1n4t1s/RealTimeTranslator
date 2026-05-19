@@ -204,6 +204,8 @@ public class UpdateService : IUpdateService
             ChromeMode = WindowChromeMode.Custom,
             ResizeMode = WindowResizeMode.Fixed,
             AccentBrush = Brushes.DodgerBlue,
+            // アプリ全体が日本語 UI なので、 ダイアログ文言も日本語化する (タイトル/ボタン/メッセージ全 8 種)。
+            Strings = JapaneseUpdateDialogStrings.Instance,
             // Komorebi 互換: 「このバージョンを無視」ボタンを出して、 押されたらタグを保存。
             AllowIgnoreVersion = true,
             AllowCloseDuringDownload = true,

@@ -272,6 +272,10 @@ public partial class App : Application
         });
         services.AddSingleton<IUpdateService, UpdateService>();
         services.AddSingleton<ITranslationPipelineService, TranslationPipelineService>();
+        // 翻訳ログ機能。 Roaming AppData 配下に TSV 形式で永続化 (Velopack 更新で消えない)。
+        // IOptionsMonitor で RetentionDays を hot-reload するため Singleton 登録。
+        services.AddSingleton<ITranslationLogger, TranslationLogService>();
+        services.AddSingleton<TranslationLogViewModel>();
         services.AddSingleton<OverlayViewModel>();
         services.AddSingleton<MainViewModel>();
         services.AddSingleton(sp => new SettingsViewModel(

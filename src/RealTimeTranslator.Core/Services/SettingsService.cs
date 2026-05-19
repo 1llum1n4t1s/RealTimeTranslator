@@ -181,6 +181,7 @@ public class SettingsService : ISettingsService
         LastSelectedProcessName = source.LastSelectedProcessName,
         LastSelectedProcessId = source.LastSelectedProcessId,
         Update = source.Update,
+        TranslationLog = source.TranslationLog,
     };
 
     /// <inheritdoc />

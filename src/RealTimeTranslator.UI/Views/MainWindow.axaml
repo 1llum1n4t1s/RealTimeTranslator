@@ -1,6 +1,7 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:vm="using:RealTimeTranslator.UI.ViewModels"
+        xmlns:models="using:RealTimeTranslator.Core.Models"
         xmlns:converters="using:RealTimeTranslator.UI.Converters"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
@@ -64,7 +65,16 @@
                     IsVisible="{Binding IsLoading, Converter={StaticResource InverseBoolConverter}}">
 
             <!-- ═══ Tab 1: メイン ═══ -->
-            <TabItem Header="メイン">
+            <!-- アイコンは Material Design Icons (Apache 2.0)。 PathIcon は親 TabItem.Foreground を継承して
+                 hover / selected 状態に自動追従。 サイズ 16x16 + Spacing 10 で控えめにテキスト主導のレイアウト。 -->
+            <TabItem>
+                <TabItem.Header>
+                    <StackPanel Orientation="Horizontal" Spacing="10">
+                        <PathIcon Width="16" Height="16" VerticalAlignment="Center"
+                                  Data="M10,20V14H14V20H19V12H22L12,3L2,12H5V20H10Z"/>
+                        <TextBlock Text="メイン" VerticalAlignment="Center"/>
+                    </StackPanel>
+                </TabItem.Header>
                 <ScrollViewer VerticalScrollBarVisibility="Auto">
                     <StackPanel Margin="0,0,0,16">
 
@@ -92,6 +102,19 @@
                                         Command="{Binding RefreshProcessesCommand}"
                                         Margin="8,0,0,0"/>
                             </Grid>
+                        </HeaderedContentControl>
+
+                        <!-- Output Language (メインに移動 — ユーザーが翻訳開始前に頻繁に切替える設定なのでメインに置く) -->
+                        <HeaderedContentControl Header="出力言語 (翻訳先)">
+                            <ComboBox ItemsSource="{Binding SettingsVM.OutputLanguageOptions}"
+                                      SelectedItem="{Binding SettingsVM.SelectedOutputLanguage, Mode=TwoWay}"
+                                      HorizontalAlignment="Stretch">
+                                <ComboBox.ItemTemplate>
+                                    <DataTemplate x:DataType="vm:OutputLanguageOption">
+                                        <TextBlock Text="{Binding DisplayName}"/>
+                                    </DataTemplate>
+                                </ComboBox.ItemTemplate>
+                            </ComboBox>
                         </HeaderedContentControl>
 
                         <!-- Status -->
@@ -176,7 +199,14 @@
             </TabItem>
 
             <!-- ═══ Tab 2: API設定 ═══ -->
-            <TabItem Header="API設定" x:DataType="vm:MainViewModel">
+            <TabItem x:DataType="vm:MainViewModel">
+                <TabItem.Header>
+                    <StackPanel Orientation="Horizontal" Spacing="10">
+                        <PathIcon Width="16" Height="16" VerticalAlignment="Center"
+                                  Data="M22,18V22H18V19H15V16H12L9.74,13.74C9.19,13.91 8.61,14 8,14A6,6 0 0,1 2,8A6,6 0 0,1 8,2A6,6 0 0,1 14,8C14,8.61 13.91,9.19 13.74,9.74L22,18M7,5A2,2 0 0,0 5,7A2,2 0 0,0 7,9A2,2 0 0,0 9,7A2,2 0 0,0 7,5Z"/>
+                        <TextBlock Text="API設定" VerticalAlignment="Center"/>
+                    </StackPanel>
+                </TabItem.Header>
                 <ScrollViewer VerticalScrollBarVisibility="Auto"
                               DataContext="{Binding SettingsVM}">
                     <StackPanel Margin="0,0,0,16" x:DataType="vm:SettingsViewModel">
@@ -204,25 +234,264 @@
                             </StackPanel>
                         </HeaderedContentControl>
 
-                        <!-- Output Language -->
-                        <HeaderedContentControl Header="出力言語（翻訳先）">
-                            <ComboBox ItemsSource="{Binding OutputLanguageOptions}"
-                                      SelectedItem="{Binding SelectedOutputLanguage, Mode=TwoWay}"
-                                      HorizontalAlignment="Stretch">
-                                <ComboBox.ItemTemplate>
-                                    <DataTemplate x:DataType="vm:OutputLanguageOption">
-                                        <TextBlock Text="{Binding DisplayName}"/>
-                                    </DataTemplate>
-                                </ComboBox.ItemTemplate>
-                            </ComboBox>
-                        </HeaderedContentControl>
+                        <!-- ╔═══════════════════════════════════════════════════════════════════════════╗ -->
+                        <!-- ║  OpenAI APIキー取得方法ガイド (初心者向け、 5 ステップ + 注意事項)          ║ -->
+                        <!-- ╚═══════════════════════════════════════════════════════════════════════════╝ -->
+                        <TextBlock Text="🔑 APIキーの取得方法 (初めての方へ)"
+                                   FontSize="18" FontWeight="Bold" Margin="0,28,0,4"/>
+                        <TextBlock Text="OpenAI のサイトでアカウントを作って、 支払い方法を登録して、 APIキーを発行する流れだよ〜 全部で 5〜10 分くらい💕"
+                                   FontSize="12" Foreground="{DynamicResource Brush.FG2}"
+                                   TextWrapping="Wrap" Margin="0,0,0,14"/>
+
+                        <!-- ステップ 1: アカウント作成 -->
+                        <Border Padding="14,12" Margin="0,0,0,8"
+                                Background="{DynamicResource Brush.Container}"
+                                BorderBrush="{DynamicResource Brush.Border}"
+                                BorderThickness="1" CornerRadius="12">
+                            <Grid ColumnDefinitions="42,*">
+                                <Border Grid.Column="0" Width="32" Height="32" CornerRadius="16"
+                                        Background="#3366CCFF" BorderBrush="#FF66CCFF" BorderThickness="1"
+                                        VerticalAlignment="Top">
+                                    <TextBlock Text="1" FontSize="16" FontWeight="Bold"
+                                               HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                </Border>
+                                <StackPanel Grid.Column="1">
+                                    <TextBlock Text="OpenAI アカウントを作る 👤"
+                                               FontSize="14" FontWeight="SemiBold" Margin="0,0,0,6"/>
+                                    <TextBlock TextWrapping="Wrap" FontSize="12" LineHeight="18">
+                                        <Run Text="①" FontWeight="Bold"/>
+                                        <Run Text=" ブラウザで OpenAI のサイトを開く"/>
+                                    </TextBlock>
+                                    <Border Padding="8,4" Margin="0,4,0,6" CornerRadius="4"
+                                            Background="{DynamicResource Brush.Border}"
+                                            HorizontalAlignment="Left">
+                                        <SelectableTextBlock Text="https://platform.openai.com/signup"
+                                                              FontFamily="Consolas,Menlo,monospace" FontSize="12"/>
+                                    </Border>
+                                    <TextBlock TextWrapping="Wrap" FontSize="12" LineHeight="18">
+                                        <Run Text="②" FontWeight="Bold"/>
+                                        <Run Text=" 「Sign up」ボタンから登録 (メールアドレス または Google / Microsoft / Apple アカウントが使えるよ)"/>
+                                    </TextBlock>
+                                    <TextBlock TextWrapping="Wrap" FontSize="12" LineHeight="18" Margin="0,4,0,0">
+                                        <Run Text="③" FontWeight="Bold"/>
+                                        <Run Text=" メール認証 + 電話番号認証 (SMS) を済ませる"/>
+                                    </TextBlock>
+                                </StackPanel>
+                            </Grid>
+                        </Border>
+
+                        <!-- ステップ 2: 支払い方法登録 -->
+                        <Border Padding="14,12" Margin="0,0,0,8"
+                                Background="{DynamicResource Brush.Container}"
+                                BorderBrush="{DynamicResource Brush.Border}"
+                                BorderThickness="1" CornerRadius="12">
+                            <Grid ColumnDefinitions="42,*">
+                                <Border Grid.Column="0" Width="32" Height="32" CornerRadius="16"
+                                        Background="#33FFAA33" BorderBrush="#FFFFAA33" BorderThickness="1"
+                                        VerticalAlignment="Top">
+                                    <TextBlock Text="2" FontSize="16" FontWeight="Bold"
+                                               HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                </Border>
+                                <StackPanel Grid.Column="1">
+                                    <TextBlock Text="支払い方法を登録 (クレジットカード) 💳"
+                                               FontSize="14" FontWeight="SemiBold" Margin="0,0,0,6"/>
+                                    <TextBlock TextWrapping="Wrap" FontSize="12" LineHeight="18">
+                                        <Run Text="①" FontWeight="Bold"/>
+                                        <Run Text=" 課金設定ページを開く"/>
+                                    </TextBlock>
+                                    <Border Padding="8,4" Margin="0,4,0,6" CornerRadius="4"
+                                            Background="{DynamicResource Brush.Border}"
+                                            HorizontalAlignment="Left">
+                                        <SelectableTextBlock Text="https://platform.openai.com/settings/organization/billing/overview"
+                                                              FontFamily="Consolas,Menlo,monospace" FontSize="12"/>
+                                    </Border>
+                                    <TextBlock TextWrapping="Wrap" FontSize="12" LineHeight="18">
+                                        <Run Text="②" FontWeight="Bold"/>
+                                        <Run Text=" 「Add payment method」でクレジットカード情報を登録"/>
+                                    </TextBlock>
+                                    <TextBlock TextWrapping="Wrap" FontSize="12" LineHeight="18" Margin="0,4,0,0">
+                                        <Run Text="③" FontWeight="Bold"/>
+                                        <Run Text=" 「Add to credit balance」から "/>
+                                        <Run Text="$5 〜 $10" FontWeight="Bold"/>
+                                        <Run Text=" くらい事前チャージ (試しに少額からで OK)"/>
+                                    </TextBlock>
+                                    <Border Padding="8,6" Margin="0,8,0,0" CornerRadius="6"
+                                            Background="#1A66CCFF">
+                                        <TextBlock TextWrapping="Wrap" FontSize="11" LineHeight="16">
+                                            <Run Text="💡 " /><Run Text="OpenAI は前払い方式なので、 残高がなくなったら自動的に翻訳が止まるよ (使いすぎ防止)。 不安なら少額から始めてね。"/>
+                                        </TextBlock>
+                                    </Border>
+                                </StackPanel>
+                            </Grid>
+                        </Border>
+
+                        <!-- ステップ 3: APIキー発行 -->
+                        <Border Padding="14,12" Margin="0,0,0,8"
+                                Background="{DynamicResource Brush.Container}"
+                                BorderBrush="{DynamicResource Brush.Border}"
+                                BorderThickness="1" CornerRadius="12">
+                            <Grid ColumnDefinitions="42,*">
+                                <Border Grid.Column="0" Width="32" Height="32" CornerRadius="16"
+                                        Background="#33CC66FF" BorderBrush="#FFCC66FF" BorderThickness="1"
+                                        VerticalAlignment="Top">
+                                    <TextBlock Text="3" FontSize="16" FontWeight="Bold"
+                                               HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                </Border>
+                                <StackPanel Grid.Column="1">
+                                    <TextBlock Text="APIキーを発行する 🔑"
+                                               FontSize="14" FontWeight="SemiBold" Margin="0,0,0,6"/>
+                                    <TextBlock TextWrapping="Wrap" FontSize="12" LineHeight="18">
+                                        <Run Text="①" FontWeight="Bold"/>
+                                        <Run Text=" APIキー管理ページを開く"/>
+                                    </TextBlock>
+                                    <Border Padding="8,4" Margin="0,4,0,6" CornerRadius="4"
+                                            Background="{DynamicResource Brush.Border}"
+                                            HorizontalAlignment="Left">
+                                        <SelectableTextBlock Text="https://platform.openai.com/api-keys"
+                                                              FontFamily="Consolas,Menlo,monospace" FontSize="12"/>
+                                    </Border>
+                                    <TextBlock TextWrapping="Wrap" FontSize="12" LineHeight="18">
+                                        <Run Text="②" FontWeight="Bold"/>
+                                        <Run Text=" 緑の「+ Create new secret key」ボタンをクリック"/>
+                                    </TextBlock>
+                                    <TextBlock TextWrapping="Wrap" FontSize="12" LineHeight="18" Margin="0,4,0,0">
+                                        <Run Text="③" FontWeight="Bold"/>
+                                        <Run Text=" Name に分かりやすい名前 (例: "/>
+                                        <Run Text="RealTimeTranslator" FontStyle="Italic"/>
+                                        <Run Text=")、 Permissions は "/>
+                                        <Run Text="All" FontWeight="Bold"/>
+                                        <Run Text=" のままで OK"/>
+                                    </TextBlock>
+                                    <TextBlock TextWrapping="Wrap" FontSize="12" LineHeight="18" Margin="0,4,0,0">
+                                        <Run Text="④" FontWeight="Bold"/>
+                                        <Run Text=" 「Create secret key」を押すと "/>
+                                        <Run Text="sk-..." FontFamily="Consolas,Menlo,monospace" FontWeight="Bold"/>
+                                        <Run Text=" で始まる長い文字列が表示される → 「Copy」ボタンでコピー"/>
+                                    </TextBlock>
+                                    <Border Padding="8,6" Margin="0,8,0,0" CornerRadius="6"
+                                            Background="#33FF6666">
+                                        <TextBlock TextWrapping="Wrap" FontSize="11" LineHeight="16">
+                                            <Run Text="⚠️ " FontWeight="Bold"/>
+                                            <Run Text="この画面を閉じるとキーは "/>
+                                            <Run Text="二度と見られない" FontWeight="Bold"/>
+                                            <Run Text=" よ！ 必ずコピーしてから閉じてね。 もし忘れちゃったらまた作り直し OK だよ💦"/>
+                                        </TextBlock>
+                                    </Border>
+                                </StackPanel>
+                            </Grid>
+                        </Border>
+
+                        <!-- ステップ 4: 貼り付け -->
+                        <Border Padding="14,12" Margin="0,0,0,8"
+                                Background="{DynamicResource Brush.Container}"
+                                BorderBrush="{DynamicResource Brush.Border}"
+                                BorderThickness="1" CornerRadius="12">
+                            <Grid ColumnDefinitions="42,*">
+                                <Border Grid.Column="0" Width="32" Height="32" CornerRadius="16"
+                                        Background="#3366FF99" BorderBrush="#FF66FF99" BorderThickness="1"
+                                        VerticalAlignment="Top">
+                                    <TextBlock Text="4" FontSize="16" FontWeight="Bold"
+                                               HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                </Border>
+                                <StackPanel Grid.Column="1">
+                                    <TextBlock Text="このアプリに貼り付ける 📋"
+                                               FontSize="14" FontWeight="SemiBold" Margin="0,0,0,6"/>
+                                    <TextBlock TextWrapping="Wrap" FontSize="12" LineHeight="18">
+                                        <Run Text=" 上の「APIキー」入力欄に "/>
+                                        <Run Text="Ctrl+V" FontFamily="Consolas,Menlo,monospace" FontWeight="Bold"/>
+                                        <Run Text=" で貼り付けるだけ✨ "/>
+                                        <Run Text="sk-..." FontFamily="Consolas,Menlo,monospace"/>
+                                        <Run Text=" で始まる長い文字列が入れば OK。 入力欄は "/>
+                                        <Run Text="*" FontFamily="Consolas,Menlo,monospace"/>
+                                        <Run Text=" でマスクされて表示されるよ。"/>
+                                    </TextBlock>
+                                    <Border Padding="8,6" Margin="0,8,0,0" CornerRadius="6"
+                                            Background="#1A66FF99">
+                                        <TextBlock TextWrapping="Wrap" FontSize="11" LineHeight="16">
+                                            <Run Text="🔒 " /><Run Text="APIキーは Windows の DPAPI で暗号化して保存されるから、 別ユーザー / 別 PC からは復号できないよ。 安心して保存してね💕"/>
+                                        </TextBlock>
+                                    </Border>
+                                </StackPanel>
+                            </Grid>
+                        </Border>
+
+                        <!-- ステップ 5: 接続テスト -->
+                        <Border Padding="14,12" Margin="0,0,0,16"
+                                Background="{DynamicResource Brush.Container}"
+                                BorderBrush="{DynamicResource Brush.Border}"
+                                BorderThickness="1" CornerRadius="12">
+                            <Grid ColumnDefinitions="42,*">
+                                <Border Grid.Column="0" Width="32" Height="32" CornerRadius="16"
+                                        Background="#33FF99CC" BorderBrush="#FFFF99CC" BorderThickness="1"
+                                        VerticalAlignment="Top">
+                                    <TextBlock Text="5" FontSize="16" FontWeight="Bold"
+                                               HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                </Border>
+                                <StackPanel Grid.Column="1">
+                                    <TextBlock Text="接続テストで確認 ✅"
+                                               FontSize="14" FontWeight="SemiBold" Margin="0,0,0,6"/>
+                                    <TextBlock TextWrapping="Wrap" FontSize="12" LineHeight="18">
+                                        <Run Text=" 上の「接続テスト」ボタンを押す → 「接続成功！APIキーは有効です。」って出れば全部 OK🎉"/>
+                                    </TextBlock>
+                                    <TextBlock TextWrapping="Wrap" FontSize="12" LineHeight="18" Margin="0,4,0,0">
+                                        <Run Text=" もしエラーが出たら、 キーをコピペし直す or もう一度キー発行からやり直してみてね。"/>
+                                    </TextBlock>
+                                </StackPanel>
+                            </Grid>
+                        </Border>
+
+                        <!-- 課金の目安 -->
+                        <Border Padding="14,12" Margin="0,4,0,0"
+                                Background="#1AFFAA33"
+                                BorderBrush="#80FFAA33"
+                                BorderThickness="1" CornerRadius="10">
+                            <StackPanel>
+                                <StackPanel Orientation="Horizontal" Spacing="6" Margin="0,0,0,6">
+                                    <TextBlock Text="💰" FontSize="16" VerticalAlignment="Center"/>
+                                    <TextBlock Text="課金の目安" FontSize="13" FontWeight="Bold"
+                                               VerticalAlignment="Center"/>
+                                </StackPanel>
+                                <TextBlock TextWrapping="Wrap" FontSize="12" LineHeight="18">
+                                    <Run Text="このアプリは話している間だけ OpenAI に音声を送るよ (VAD 機能)。 現在の翻訳モデルでの目安:"/>
+                                </TextBlock>
+                                <Grid ColumnDefinitions="*,Auto" Margin="0,6,0,0">
+                                    <TextBlock Grid.Column="0" Text="• gpt-realtime-translate" FontSize="12"/>
+                                    <TextBlock Grid.Column="1" Text="~ $2 / 時間" FontSize="13" FontWeight="Bold"
+                                               Foreground="#66CC66"/>
+                                </Grid>
+                                <TextBlock TextWrapping="Wrap" FontSize="11" LineHeight="16" Margin="0,8,0,0"
+                                           Foreground="{DynamicResource Brush.FG2}">
+                                    <Run Text="さらに節約したいときは "/>
+                                    <Run Text="「音声処理」タブの VAD プリセット" FontStyle="Italic"/>
+                                    <Run Text=" で無音時間を削るのが効果的🌸"/>
+                                </TextBlock>
+                                <TextBlock TextWrapping="Wrap" FontSize="11" LineHeight="16" Margin="0,10,0,4"
+                                           Foreground="{DynamicResource Brush.FG2}">
+                                    <Run Text="📊 "/>
+                                    <Run Text="実際の使用量・残高・請求履歴は OpenAI ダッシュボードで確認できるよ:"/>
+                                </TextBlock>
+                                <Border Padding="8,4" CornerRadius="4"
+                                        Background="{DynamicResource Brush.Border}"
+                                        HorizontalAlignment="Left">
+                                    <SelectableTextBlock Text="https://platform.openai.com/usage"
+                                                          FontFamily="Consolas,Menlo,monospace" FontSize="12"/>
+                                </Border>
+                            </StackPanel>
+                        </Border>
 
                     </StackPanel>
                 </ScrollViewer>
             </TabItem>
 
             <!-- ═══ Tab 3: 音声処理 (VAD + 自動Pause) ═══ -->
-            <TabItem Header="音声処理" x:DataType="vm:MainViewModel">
+            <TabItem x:DataType="vm:MainViewModel">
+                <TabItem.Header>
+                    <StackPanel Orientation="Horizontal" Spacing="10">
+                        <PathIcon Width="16" Height="16" VerticalAlignment="Center"
+                                  Data="M9,3V21H7V3H9M5,5V19H3V5H5M13,7V17H11V7H13M17,9V15H15V9H17M21,11V13H19V11H21Z"/>
+                        <TextBlock Text="音声処理" VerticalAlignment="Center"/>
+                    </StackPanel>
+                </TabItem.Header>
                 <ScrollViewer VerticalScrollBarVisibility="Auto"
                               DataContext="{Binding SettingsVM}">
                     <StackPanel Margin="0,0,0,16" x:DataType="vm:SettingsViewModel">
@@ -305,7 +574,14 @@
             </TabItem>
 
             <!-- ═══ Tab 4: 表示設定 ═══ -->
-            <TabItem Header="表示設定" x:DataType="vm:MainViewModel">
+            <TabItem x:DataType="vm:MainViewModel">
+                <TabItem.Header>
+                    <StackPanel Orientation="Horizontal" Spacing="10">
+                        <PathIcon Width="16" Height="16" VerticalAlignment="Center"
+                                  Data="M17.5,12A1.5,1.5 0 0,1 16,10.5A1.5,1.5 0 0,1 17.5,9A1.5,1.5 0 0,1 19,10.5A1.5,1.5 0 0,1 17.5,12M14.5,8A1.5,1.5 0 0,1 13,6.5A1.5,1.5 0 0,1 14.5,5A1.5,1.5 0 0,1 16,6.5A1.5,1.5 0 0,1 14.5,8M9.5,8A1.5,1.5 0 0,1 8,6.5A1.5,1.5 0 0,1 9.5,5A1.5,1.5 0 0,1 11,6.5A1.5,1.5 0 0,1 9.5,8M6.5,12A1.5,1.5 0 0,1 5,10.5A1.5,1.5 0 0,1 6.5,9A1.5,1.5 0 0,1 8,10.5A1.5,1.5 0 0,1 6.5,12M12,3A9,9 0 0,0 3,12A9,9 0 0,0 12,21A1.5,1.5 0 0,0 13.5,19.5C13.5,19.11 13.35,18.76 13.11,18.5C12.88,18.23 12.73,17.88 12.73,17.5A1.5,1.5 0 0,1 14.23,16H16A5,5 0 0,0 21,11C21,6.58 16.97,3 12,3Z"/>
+                        <TextBlock Text="表示設定" VerticalAlignment="Center"/>
+                    </StackPanel>
+                </TabItem.Header>
                 <ScrollViewer VerticalScrollBarVisibility="Auto"
                               DataContext="{Binding SettingsVM}">
                     <StackPanel Margin="0,0,0,16" x:DataType="vm:SettingsViewModel">
@@ -456,12 +732,118 @@
                             </Grid>
                         </HeaderedContentControl>
 
+                        <!-- 翻訳ログの保持期間 -->
+                        <HeaderedContentControl Header="翻訳ログの保持期間">
+                            <StackPanel>
+                                <ComboBox ItemsSource="{Binding TranslationLogRetentionOptions}"
+                                          SelectedItem="{Binding SelectedTranslationLogRetention, Mode=TwoWay}"
+                                          HorizontalAlignment="Stretch">
+                                    <ComboBox.ItemTemplate>
+                                        <DataTemplate x:DataType="vm:TranslationLogRetentionOption">
+                                            <TextBlock Text="{Binding Name}"/>
+                                        </DataTemplate>
+                                    </ComboBox.ItemTemplate>
+                                </ComboBox>
+                                <TextBlock Text="「翻訳ログ」タブで閲覧できる翻訳履歴を、 何日前まで残すかを指定します。 「無制限」だと自動削除されません (ゴミ箱と同じく手動削除のみ)。 設定変更は次回起動時に反映されます。"
+                                           FontSize="11" Foreground="{DynamicResource Brush.FG2}"
+                                           TextWrapping="Wrap" Margin="0,4,0,0"/>
+                            </StackPanel>
+                        </HeaderedContentControl>
+
                     </StackPanel>
                 </ScrollViewer>
             </TabItem>
 
-            <!-- ═══ Tab 4: バージョン ═══ -->
-            <TabItem Header="バージョン">
+            <!-- ═══ Tab 5: 翻訳ログ ═══ -->
+            <TabItem x:DataType="vm:MainViewModel">
+                <TabItem.Header>
+                    <StackPanel Orientation="Horizontal" Spacing="10">
+                        <PathIcon Width="16" Height="16" VerticalAlignment="Center"
+                                  Data="M13.5,8H12V13L16.28,15.54L17,14.33L13.5,12.25V8M13,3A9,9 0 0,0 4,12H1L4.89,15.89L4.96,16.03L9,12H6A7,7 0 0,1 13,5A7,7 0 0,1 20,12A7,7 0 0,1 13,19C11.07,19 9.32,18.21 8.06,16.94L6.64,18.36C8.27,20 10.5,21 13,21A9,9 0 0,0 22,12A9,9 0 0,0 13,3"/>
+                        <TextBlock Text="翻訳ログ" VerticalAlignment="Center"/>
+                    </StackPanel>
+                </TabItem.Header>
+                <Grid DataContext="{Binding TranslationLogVM}"
+                      x:DataType="vm:TranslationLogViewModel"
+                      RowDefinitions="*,Auto">
+
+                    <!-- 翻訳ログ本体: ADV ゲーム会話ログ風の縦並びカード -->
+                    <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto"
+                                  IsVisible="{Binding !IsEmpty}">
+                        <ItemsControl ItemsSource="{Binding Entries}" Margin="0,0,0,8">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate x:DataType="models:TranslationLogEntry">
+                                    <Border Margin="0,0,0,10" Padding="14,10"
+                                            Background="{DynamicResource Brush.Container}"
+                                            BorderBrush="{DynamicResource Brush.Border}"
+                                            BorderThickness="1" CornerRadius="10">
+                                        <StackPanel>
+                                            <!-- ヘッダー: 日時 / 言語 / プロセス / セッション ID -->
+                                            <StackPanel Orientation="Horizontal" Spacing="10" Margin="0,0,0,6">
+                                                <TextBlock Text="{Binding FormattedTimestamp}"
+                                                           FontSize="11" FontWeight="SemiBold"
+                                                           Foreground="{DynamicResource Brush.FG2}"/>
+                                                <TextBlock Text="{Binding Language, StringFormat='[{0}]'}"
+                                                           FontSize="11"
+                                                           Foreground="{DynamicResource Brush.FG2}"/>
+                                                <TextBlock Text="{Binding ProcessName}"
+                                                           FontSize="11"
+                                                           Foreground="{DynamicResource Brush.FG2}"
+                                                           IsVisible="{Binding ProcessName, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"/>
+                                                <TextBlock Text="{Binding SessionId, StringFormat='#{0}'}"
+                                                           FontSize="11"
+                                                           Foreground="{DynamicResource Brush.FG2}"
+                                                           IsVisible="{Binding SessionId, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"/>
+                                            </StackPanel>
+                                            <!-- 本文: 翻訳テキスト (大きめフォントで読みやすく) -->
+                                            <!-- SelectableTextBlock で範囲選択 + コピー可能にする (Avalonia 12 の TextBlock 自体には selection なし) -->
+                                            <SelectableTextBlock Text="{Binding Text}"
+                                                                  FontSize="15" TextWrapping="Wrap"
+                                                                  LineHeight="22"/>
+                                        </StackPanel>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </ScrollViewer>
+
+                    <!-- 空状態 placeholder -->
+                    <StackPanel Grid.Row="0"
+                                IsVisible="{Binding IsEmpty}"
+                                VerticalAlignment="Center" HorizontalAlignment="Center">
+                        <TextBlock Text="まだ翻訳ログがありません"
+                                   FontSize="14" HorizontalAlignment="Center"
+                                   Foreground="{DynamicResource Brush.FG2}"/>
+                        <TextBlock Text="「メイン」タブで翻訳を開始すると、 確定字幕がここに記録されます。"
+                                   FontSize="12" HorizontalAlignment="Center"
+                                   Foreground="{DynamicResource Brush.FG2}"
+                                   Margin="0,6,0,0" TextWrapping="Wrap" TextAlignment="Center"/>
+                    </StackPanel>
+
+                    <!-- 下部アクションバー: フォルダを開く + すべて削除 -->
+                    <Border Grid.Row="1" Padding="0,8,0,0"
+                            BorderBrush="{DynamicResource Brush.Border}"
+                            BorderThickness="0,1,0,0">
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <Button Command="{Binding OpenTranslationLogsFolderCommand}"
+                                    Content="保存フォルダを開く" FontSize="12"/>
+                            <Button Command="{Binding ClearAllCommand}"
+                                    Content="すべて削除" FontSize="12"
+                                    IsEnabled="{Binding !IsEmpty}"/>
+                        </StackPanel>
+                    </Border>
+                </Grid>
+            </TabItem>
+
+            <!-- ═══ Tab 6: バージョン ═══ -->
+            <TabItem>
+                <TabItem.Header>
+                    <StackPanel Orientation="Horizontal" Spacing="10">
+                        <PathIcon Width="16" Height="16" VerticalAlignment="Center"
+                                  Data="M11,9H13V7H11M12,20C7.59,20 4,16.41 4,12C4,7.59 7.59,4 12,4C16.41,4 20,7.59 20,12C20,16.41 16.41,20 12,20M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2M11,17H13V11H11V17Z"/>
+                        <TextBlock Text="バージョン" VerticalAlignment="Center"/>
+                    </StackPanel>
+                </TabItem.Header>
                 <ScrollViewer VerticalScrollBarVisibility="Auto">
                     <StackPanel Margin="8,0,8,12">
                         <TextBlock Margin="4,0,0,4" FontSize="28" FontWeight="Bold"

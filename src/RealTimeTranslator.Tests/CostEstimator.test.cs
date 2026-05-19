@@ -64,78 +64,171 @@ public sealed class CostEstimatorTests
         Assert.AreEqual(0L, CostEstimator.EstimateTokensFromSamples(16000, -1));
     }
 
-    // ───────── ResolveRatePerMillion ─────────
+    // ───────── ResolveRatePerMillion: 現行モデル (2026-05) ─────────
 
     [TestMethod]
-    public void ResolveRatePerMillion_GptRealtimeFull_Returns100()
+    public void ResolveRatePerMillion_GptRealtime2_ReturnsCurrentFullRate32()
     {
+        Assert.AreEqual(32m, CostEstimator.ResolveRatePerMillion("gpt-realtime-2"));
+    }
+
+    [TestMethod]
+    public void ResolveRatePerMillion_GptRealtime15_ReturnsCurrentFullRate32()
+    {
+        Assert.AreEqual(32m, CostEstimator.ResolveRatePerMillion("gpt-realtime-1.5"));
+    }
+
+    [TestMethod]
+    public void ResolveRatePerMillion_GptRealtimeBare_ReturnsCurrentFullRate32()
+    {
+        Assert.AreEqual(32m, CostEstimator.ResolveRatePerMillion("gpt-realtime"));
+    }
+
+    [TestMethod]
+    public void ResolveRatePerMillion_GptRealtimeTranslate_ReturnsCurrentFullRate32()
+    {
+        // gpt-realtime-translate は per-minute 課金だが、 安全側 (過大評価) で
+        // 現行フルレート相当を見積もる。 詳細は実際の OpenAI 課金で確認。
+        Assert.AreEqual(32m, CostEstimator.ResolveRatePerMillion("gpt-realtime-translate"));
+    }
+
+    [TestMethod]
+    public void ResolveRatePerMillion_GptRealtimeMini_ReturnsMiniRate10()
+    {
+        Assert.AreEqual(10m, CostEstimator.ResolveRatePerMillion("gpt-realtime-mini"));
+    }
+
+    [TestMethod]
+    public void ResolveRatePerMillion_GptRealtimeMiniDated_ReturnsMiniRate10()
+    {
+        // 日付付きバリアント (gpt-realtime-mini-2025-10-06 等) も mini レート
+        Assert.AreEqual(10m, CostEstimator.ResolveRatePerMillion("gpt-realtime-mini-2025-10-06"));
+    }
+
+    // ───────── ResolveRatePerMillion: 旧モデル (deprecated、 互換維持) ─────────
+
+    [TestMethod]
+    public void ResolveRatePerMillion_LegacyGpt4oRealtime_ReturnsLegacyFullRate100()
+    {
+        // 旧 settings.json 互換: 旧フルモデルは旧価格 $100/1M で見積もる
         Assert.AreEqual(100m, CostEstimator.ResolveRatePerMillion("gpt-4o-realtime-preview"));
     }
 
     [TestMethod]
-    public void ResolveRatePerMillion_GptMiniRealtime_Returns10()
+    public void ResolveRatePerMillion_LegacyGpt4oMiniRealtime_ReturnsLegacyMiniRate10()
     {
         Assert.AreEqual(10m, CostEstimator.ResolveRatePerMillion("gpt-4o-mini-realtime-preview"));
     }
 
+    // ───────── ResolveRatePerMillion: フォールバック ─────────
+
     [TestMethod]
-    public void ResolveRatePerMillion_Null_DefaultsToFullRate()
+    public void ResolveRatePerMillion_Null_DefaultsToCurrentFullRate32()
     {
-        Assert.AreEqual(100m, CostEstimator.ResolveRatePerMillion(null));
+        Assert.AreEqual(32m, CostEstimator.ResolveRatePerMillion(null));
     }
 
     [TestMethod]
-    public void ResolveRatePerMillion_Empty_DefaultsToFullRate()
+    public void ResolveRatePerMillion_Empty_DefaultsToCurrentFullRate32()
     {
-        Assert.AreEqual(100m, CostEstimator.ResolveRatePerMillion(""));
+        Assert.AreEqual(32m, CostEstimator.ResolveRatePerMillion(""));
     }
 
     [TestMethod]
-    public void ResolveRatePerMillion_UnknownModel_DefaultsToFullRate()
+    public void ResolveRatePerMillion_UnknownModel_DefaultsToCurrentFullRate32()
     {
-        // 不明モデルは安全側 (過小評価しない) でフル料金扱い
-        Assert.AreEqual(100m, CostEstimator.ResolveRatePerMillion("future-model-name"));
+        // 不明モデルは安全側 (過大評価) で現行フルレート扱い
+        Assert.AreEqual(32m, CostEstimator.ResolveRatePerMillion("future-model-name"));
     }
 
     [TestMethod]
-    public void ResolveRatePerMillion_CaseInsensitive_DetectsMini()
+    public void ResolveRatePerMillion_CaseInsensitive_DetectsCurrentMini()
     {
-        Assert.AreEqual(10m, CostEstimator.ResolveRatePerMillion("GPT-4O-MINI-REALTIME"));
+        Assert.AreEqual(10m, CostEstimator.ResolveRatePerMillion("GPT-REALTIME-MINI"));
     }
 
-    // ───────── EstimateUsd ─────────
+    [TestMethod]
+    public void ResolveRatePerMillion_CaseInsensitive_DetectsLegacyFull()
+    {
+        Assert.AreEqual(100m, CostEstimator.ResolveRatePerMillion("GPT-4O-REALTIME-PREVIEW"));
+    }
 
     [TestMethod]
-    public void EstimateUsd_FullRate_OneMillionTokens_Returns100Usd()
+    public void ResolveRatePerMillion_LegacyMiniTakesPrecedenceOverGenericMini()
+    {
+        // gpt-4o-mini-realtime-preview は両方 mini-rate ($10) なので結果は同じだが、
+        // 評価順序として旧 mini 判定が先に効くことを担保する
+        var rate = CostEstimator.ResolveRatePerMillion("gpt-4o-mini-realtime-preview");
+        Assert.AreEqual(10m, rate);
+    }
+
+    // ───────── EstimateUsd: 現行モデル ─────────
+
+    [TestMethod]
+    public void EstimateUsd_CurrentFullRate_OneMillionTokens_Returns32Usd()
+    {
+        Assert.AreEqual(32m, CostEstimator.EstimateUsd("gpt-realtime-2", 1_000_000));
+    }
+
+    [TestMethod]
+    public void EstimateUsd_CurrentMiniRate_OneMillionTokens_Returns10Usd()
+    {
+        Assert.AreEqual(10m, CostEstimator.EstimateUsd("gpt-realtime-mini", 1_000_000));
+    }
+
+    [TestMethod]
+    public void EstimateUsd_GptRealtimeTranslate_OneHourAudio_ApproxExpected()
+    {
+        // gpt-realtime-translate (現使用デフォルト) を audio input rate で見積もる場合:
+        // 1 時間 = 3600 秒 × 100 tokens/sec = 360,000 tokens × $32/1M = $11.52
+        // (実際は per-minute 課金で OpenAI 公式は $2/h 前後だが、 安全側で過大評価する)
+        var tokens = CostEstimator.EstimateTokensFromAudioSeconds(3600);
+        Assert.AreEqual(360_000L, tokens);
+        var usd = CostEstimator.EstimateUsd("gpt-realtime-translate", tokens);
+        Assert.AreEqual(11.52m, usd);
+    }
+
+    [TestMethod]
+    public void EstimateUsd_CurrentMini_OneHourAudio_ApproxExpected()
+    {
+        // 1 時間 = 360,000 tokens × $10/1M = $3.6
+        var tokens = CostEstimator.EstimateTokensFromAudioSeconds(3600);
+        Assert.AreEqual(3.6m, CostEstimator.EstimateUsd("gpt-realtime-mini", tokens));
+    }
+
+    // ───────── EstimateUsd: 旧モデル ─────────
+
+    [TestMethod]
+    public void EstimateUsd_LegacyFullRate_OneMillionTokens_Returns100Usd()
     {
         Assert.AreEqual(100m, CostEstimator.EstimateUsd("gpt-4o-realtime-preview", 1_000_000));
     }
 
     [TestMethod]
-    public void EstimateUsd_MiniRate_OneMillionTokens_Returns10Usd()
+    public void EstimateUsd_LegacyMiniRate_OneMillionTokens_Returns10Usd()
     {
         Assert.AreEqual(10m, CostEstimator.EstimateUsd("gpt-4o-mini-realtime-preview", 1_000_000));
     }
 
     [TestMethod]
-    public void EstimateUsd_FullRate_OneHourAudio_ApproxExpected()
+    public void EstimateUsd_LegacyFullRate_OneHourAudio_ApproxExpected36()
     {
-        // 1 時間音声 = 3600 秒 × 100 tokens/sec = 360,000 tokens
-        // フルレート: $100/1M × 360,000 = $36
+        // 旧モデル: 360,000 tokens × $100/1M = $36 (旧 README / memory bank と整合)
         var tokens = CostEstimator.EstimateTokensFromAudioSeconds(3600);
-        Assert.AreEqual(360_000L, tokens);
         Assert.AreEqual(36m, CostEstimator.EstimateUsd("gpt-4o-realtime-preview", tokens));
     }
+
+    // ───────── EstimateUsd: エッジケース ─────────
 
     [TestMethod]
     public void EstimateUsd_ZeroTokens_ReturnsZero()
     {
-        Assert.AreEqual(0m, CostEstimator.EstimateUsd("gpt-4o-realtime-preview", 0));
+        Assert.AreEqual(0m, CostEstimator.EstimateUsd("gpt-realtime-2", 0));
     }
 
     [TestMethod]
     public void EstimateUsd_NegativeTokens_ReturnsZero()
     {
-        Assert.AreEqual(0m, CostEstimator.EstimateUsd("gpt-4o-realtime-preview", -100));
+        Assert.AreEqual(0m, CostEstimator.EstimateUsd("gpt-realtime-2", -100));
     }
 }

@@ -36,6 +36,11 @@ public partial class MainViewModel : ObservableObject, IDisposable
     private readonly SettingsViewModel _settingsViewModel;
     // rere B1-003 完遂: DPAPI 復号は ISettingsService 経由に統一 (Service Locator アンチパターン解消)。
     private readonly ISettingsService _settingsService;
+    // 翻訳ログタブ用 ViewModel。 OnSubtitleGenerated で確定字幕が来るたびに AddEntry を呼んで永続化 + UI 反映する。
+    private readonly TranslationLogViewModel _translationLogViewModel;
+    // 翻訳ログ用のセッション ID (Start 押下ごとに発行される短縮 Guid)。
+    // 「どのセッションの翻訳か」を ADV ログで判別できるようにするため。
+    private string _currentSessionId = string.Empty;
     private string _lastApiKey;
     private string _lastOutputLanguage;
     private readonly IDisposable? _settingsChangeSubscription;
@@ -209,6 +214,9 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
     public SettingsViewModel SettingsVM => _settingsViewModel;
 
+    /// <summary>翻訳ログタブの ViewModel を MainWindow.axaml から binding 経由でアクセスする用。</summary>
+    public TranslationLogViewModel TranslationLogVM => _translationLogViewModel;
+
     /// <summary>
     /// MainViewModel コンストラクタ
     /// </summary>
@@ -219,12 +227,14 @@ public partial class MainViewModel : ObservableObject, IDisposable
         IOptionsMonitor<AppSettings> optionsMonitor,
         IUpdateService updateService,
         SettingsViewModel settingsViewModel,
-        ISettingsService settingsService)
+        ISettingsService settingsService,
+        TranslationLogViewModel translationLogViewModel)
     {
         _pipelineService = pipelineService;
         _audioCaptureService = audioCaptureService;
         _overlayViewModel = overlayViewModel;
         _settingsService = settingsService;
+        _translationLogViewModel = translationLogViewModel;
         _settings = optionsMonitor.CurrentValue;
         _lastApiKey = _settings.OpenAIRealtime.ApiKey;
         _lastOutputLanguage = _settings.OpenAIRealtime.OutputLanguage;
@@ -301,6 +311,18 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 var truncated = text.Length <= 40 ? text : text[..40] + "...";
                 LoggerService.LogInfo($"[確定] →{_settings.OpenAIRealtime.OutputLanguage} {truncated}");
                 Log(logMessage);
+
+                // 翻訳ログタブ用にフル文字列を永続化 (TSV にファイル追記 + ObservableCollection に追加)。
+                // 確定字幕のみ。 partial は対象外 (1 セグメントの中間状態を残しても意味がない)。
+                var processName = SelectedProcess is { ProductName: { Length: > 0 } pn } ? pn
+                                : SelectedProcess?.Name ?? string.Empty;
+                var entry = new TranslationLogEntry(
+                    Timestamp: DateTime.Now,
+                    Language: _settings.OpenAIRealtime.OutputLanguage ?? string.Empty,
+                    SessionId: _currentSessionId,
+                    ProcessName: processName,
+                    Text: text);
+                _translationLogViewModel.AddEntry(entry);
             }
         });
     }
@@ -732,6 +754,10 @@ public partial class MainViewModel : ObservableObject, IDisposable
             IsRunning = true;
             StatusText = "起動中...";
             StatusColor = Brushes.Orange;
+
+            // 翻訳ログ用のセッション ID を発行 (短縮 Guid 8 文字)。
+            // 翻訳ログタブで「どのキャプチャセッションの翻訳か」を判別できるようにするため。
+            _currentSessionId = Guid.NewGuid().ToString("N")[..8];
 
             // GameProfile（ホットワード / 辞書 / InitialPrompt）は OpenAI Realtime API 移行で削除済み。
             // 必要なら API の `instructions` フィールドにマップして復活させる。
