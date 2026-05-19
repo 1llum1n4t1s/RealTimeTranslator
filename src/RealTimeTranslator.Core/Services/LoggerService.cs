@@ -1,4 +1,6 @@
 // System / System.Collections.Generic / System.IO / System.Linq は GlobalUsings 経由 (rere /opop Cleaner #4)。
+// System.Reflection は LogStartup の AssemblyInformationalVersion 取得用 (rere F-001 対応)。
+using System.Reflection;
 using SuperLightLogger;
 
 namespace RealTimeTranslator.Core.Services;
@@ -382,20 +384,30 @@ public static class LoggerService
     }
 
     /// <summary>
-    /// アプリケーション起動時のログを出力する（Debugレベル）
+    /// アプリケーション起動時のログを出力する（Info レベル）。
+    /// Release ビルド (MinLogLevel=Info) でも確実にログに残し、 ユーザー Issue 添付ログから
+    /// OS / .NET / CPU / 起動時刻 / アプリバージョンが切り分けられるようにする (rere F-001 対応)。
     /// </summary>
     public static void LogStartup()
     {
+        var assembly = System.Reflection.Assembly.GetEntryAssembly();
+        var informationalVersion = assembly?.GetCustomAttribute<System.Reflection.AssemblyInformationalVersionAttribute>()?.InformationalVersion
+                                   ?? assembly?.GetName().Version?.ToString(3)
+                                   ?? "(unknown)";
+        // '+' 以降のビルドメタを除去 (1.0.14+abc123 → 1.0.14)
+        if (informationalVersion.Contains('+')) informationalVersion = informationalVersion.Split('+')[0];
+
         var messages = new List<string>
         {
             $"=== {_appName} 起動ログ ===",
+            $"アプリバージョン: {informationalVersion}",
             $"起動時刻: {DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}",
             $"実行ファイルパス: {Environment.ProcessPath}",
             $".NET Version: {Environment.Version}",
             $"OS Version: {Environment.OSVersion}",
             $"Processor Count: {Environment.ProcessorCount}"
         };
-        LogLines([.. messages], LogLevel.Debug);
+        LogLines([.. messages], LogLevel.Info);
     }
 
     /// <summary>

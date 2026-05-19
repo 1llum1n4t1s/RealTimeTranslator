@@ -26,6 +26,17 @@ public class UpdateService : IUpdateService
         "objects.githubusercontent.com",
     };
 
+    // FeedUrl が github.com を指す場合の owner/repo 完全一致 allowlist (rere A1-001 対応)。
+    // 旧実装はホスト一致のみで path 検証なしだったため、 settings.json の Update.FeedUrl を
+    // `https://github.com/attacker/malicious-fork` に書き換えるだけで Velopack が任意リポの
+    // release を信頼して DL → Apply → Restart する経路があった。 path 部の owner/repo を
+    // 公式リポに固定して攻撃面を消す。
+    // objects.githubusercontent.com (CDN) は owner/repo 形式ではないため別扱い (host だけ allowlist で検証)。
+    private static readonly HashSet<string> AllowedGitHubRepoPaths = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "1llum1n4t1s/RealTimeTranslator",
+    };
+
     // Komorebi 互換: 自動チェックは DNS 半切断 / TCP ハングで Velopack 内部ロックが長時間保有される
     // 事故を防ぐため 30 秒で打ち切る。 手動チェックはユーザーがダイアログ前で待てるのでタイムアウト無し。
     private static readonly TimeSpan AutoCheckTimeout = TimeSpan.FromSeconds(30);
@@ -353,6 +364,27 @@ public class UpdateService : IUpdateService
         {
             reason = $"FeedUrl のホスト '{parsed.IdnHost}' は許可リスト外です（github.com / objects.githubusercontent.com のみ）。";
             return false;
+        }
+        // rere A1-001: github.com の場合は owner/repo path も完全一致 allowlist で検証する。
+        // ホスト一致のみだと settings.json 改竄で任意の owner/repo の release が信頼されて Velopack 経由 RCE。
+        if (string.Equals(parsed.IdnHost, "github.com", StringComparison.OrdinalIgnoreCase))
+        {
+            // parsed.Segments は "/", "owner/", "repo" や "owner/", "repo/", "..." のような segment 配列。
+            // 先頭 2 segment (owner/repo) を取り出して照合する。 末尾の / を除いて結合。
+            var segments = parsed.Segments;
+            if (segments.Length < 3)
+            {
+                reason = $"FeedUrl の path '{parsed.AbsolutePath}' に owner/repo が含まれていません。";
+                return false;
+            }
+            string owner = segments[1].TrimEnd('/');
+            string repo = segments[2].TrimEnd('/');
+            string ownerRepo = $"{owner}/{repo}";
+            if (!AllowedGitHubRepoPaths.Contains(ownerRepo))
+            {
+                reason = $"FeedUrl の owner/repo '{ownerRepo}' は許可リスト外です（1llum1n4t1s/RealTimeTranslator のみ）。";
+                return false;
+            }
         }
         uri = parsed;
         reason = string.Empty;

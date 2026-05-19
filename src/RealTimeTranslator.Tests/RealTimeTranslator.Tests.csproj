@@ -7,6 +7,9 @@
 
   <ItemGroup>
     <ProjectReference Include="..\RealTimeTranslator.Core\RealTimeTranslator.Core.csproj" />
+    <!-- UI 側ヘルパー (SettingsViewModel.ComposeArgbHex / SplitArgbToRgbAndOpacity 等) のユニットテスト用
+         (rere B2-001 対応)。 Avalonia 等の UI 依存を Tests に持ち込むが、 純粋関数の round-trip 検証のため許容。 -->
+    <ProjectReference Include="..\RealTimeTranslator.UI\RealTimeTranslator.UI.csproj" />
   </ItemGroup>
 
   <ItemGroup>

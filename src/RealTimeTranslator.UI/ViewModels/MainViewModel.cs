@@ -41,6 +41,11 @@ public partial class MainViewModel : ObservableObject, IDisposable
     private readonly IDisposable? _settingsChangeSubscription;
     private readonly Queue<string> _logLines = new();
     private readonly object _logLock = new();
+    // Log() の StringBuilder を field 化して再利用 (rere C2-008 対応)。
+    // 旧実装は毎呼び出しで `new StringBuilder(_logLines.Count * 80)` を確保 → MaxLogLines=1000 で
+    // 約 80KB chunk が LOH 境界ぎりに乗り、 partial 字幕の 30Hz 連発で MB/sec の Gen0 通過が発生していた。
+    // Clear() は capacity を保持するため、 1 回確保すれば以後 alloc 0 で同じ buffer を使い回せる。
+    private readonly StringBuilder _logBuilder = new(MaxLogLines * 80);
     private readonly object _cancellationLock = new();
     private string? _lastLogMessage;
     private CancellationTokenSource? _processingCancellation;
@@ -255,6 +260,14 @@ public partial class MainViewModel : ObservableObject, IDisposable
         // 検出 → DL → Apply → Restart まで UpdateService 内のダイアログで完結する。
         _updateService.UpdateSettings(_settings.Update);
 
+        // rere F-007 対応: SettingsViewModel の SanitizeSettings で背景色等が黙って矯正された場合、
+        // ユーザーが気づけるよう起動直後にバナーで通知する (1 度のみ)。 ログだけでは UI ユーザーが見ない。
+        if (_settingsViewModel.SanitizeWarnings.Count > 0)
+        {
+            ErrorBannerMessage = string.Join(" / ", _settingsViewModel.SanitizeWarnings);
+            IsErrorBannerVisible = true;
+        }
+
         // RefreshProcesses は Process.GetProcesses + 全 audio session 列挙で 100-500ms かかるため、
         // 起動クリティカルパス（コンストラクタ同期実行）から外して MainWindow 表示後に走らせる。
         Dispatcher.UIThread.Post(() =>
@@ -273,23 +286,22 @@ public partial class MainViewModel : ObservableObject, IDisposable
         RunOnUiThread(() =>
         {
             _overlayViewModel.AddOrUpdateSubtitle(item);
-            // partial(delta) と final(done) を区別してログ表示する。
-            // partial 中に蓄積されているのは OriginalText、final 確定時は TranslatedText（SubtitleItem コメント参照）。
-            var prefix = item.IsFinal ? "[確定]" : "[途中]";
-            var text = item.IsFinal ? item.TranslatedText : item.OriginalText;
-            var logMessage = $"{prefix} →{_settings.OpenAIRealtime.OutputLanguage} {text}";
-            // ログ I/O 削減のため、途中字幕は LoggerService.LogInfo に出さず UI Log のみ。
+            // partial(delta) は OverlayWindow に既にリアルタイム反映されているので、
+            // UI Log タブには確定字幕 (done) のみ流す (rere C2-008 / C2-009 対応)。
+            // 旧実装は 30ms 周期の partial 全部を UI Log に流して 80KB chunk × 33Hz = MB/sec の Gen0 通過を発生させていた。
             if (item.IsFinal)
             {
+                var text = item.TranslatedText;
+                var logMessage = $"[確定] →{_settings.OpenAIRealtime.OutputLanguage} {text}";
                 // ⭐ rere P1 #2 / A3-001 / F-3 修正: PII 漏洩経路を抑制。
                 // 翻訳テキスト全文をログファイル化すると、 Issue 添付時に視聴コンテンツのセリフ
                 // や会議の機微発話が公開リポに残る経路がある。 Core 側 (TranslationPipelineService /
                 // OpenAIRealtimeClient) と同じ 40 文字 truncate をここでも適用する。
                 // UI Log() (Logs タブ) はフル文字列のまま (画面表示のみで永続化されない)。
                 var truncated = text.Length <= 40 ? text : text[..40] + "...";
-                LoggerService.LogInfo($"{prefix} →{_settings.OpenAIRealtime.OutputLanguage} {truncated}");
+                LoggerService.LogInfo($"[確定] →{_settings.OpenAIRealtime.OutputLanguage} {truncated}");
+                Log(logMessage);
             }
-            Log(logMessage);
         });
     }
 
@@ -355,12 +367,34 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
     private async void OnSettingsSaved(object? sender, SettingsSavedEventArgs e)
     {
+        // rere F-006: 単一 catch で全例外を StatusColor=Red に倒すと、 軽微な UpdateSettings 例外でも
+        // 「翻訳が壊れた」と誤解される。 個別 try/catch に分けてどの段階で失敗したかを区別する。
+        // 致命的な StopAsync 失敗のみ Red にし、 ApplySettings / UpdateSettings はログ + 軽い通知に留める。
+
         try
         {
-            // 表示設定（Overlay）は常に反映（パイプライン停止不要）
             _audioCaptureService.ApplySettings(e.Settings.AudioCapture);
-            _updateService.UpdateSettings(e.Settings.Update);
+        }
+        catch (Exception ex)
+        {
+            LoggerService.LogException("OnSettingsSaved: AudioCapture 設定適用エラー", ex);
+            Log($"音声キャプチャ設定の反映に失敗: {ex.GetType().Name}: {ex.Message}");
+            // 翻訳本体は止まっていない可能性が高いので StatusColor は変えない
+        }
 
+        try
+        {
+            _updateService.UpdateSettings(e.Settings.Update);
+        }
+        catch (Exception ex)
+        {
+            LoggerService.LogException("OnSettingsSaved: Update 設定適用エラー", ex);
+            Log($"更新設定の反映に失敗: {ex.GetType().Name}: {ex.Message}");
+            // 翻訳本体は止まっていない可能性が高いので StatusColor は変えない
+        }
+
+        try
+        {
             // API設定が変更されたかを、前回保存した値と比較して判定
             // （SettingsViewModel が同一 AppSettings インスタンスを編集するため、
             //   e.Settings と _settings は同一参照になる。別途保持した前回値と比較する）
@@ -387,11 +421,10 @@ public partial class MainViewModel : ObservableObject, IDisposable
         }
         catch (Exception ex)
         {
-            // {ex.Message} だけだと例外型と stack が消えて事後解析できない。
-            // LogException で full dump して、 UI には短いメッセージだけ出す (rere P1 #14)。
-            LoggerService.LogException("OnSettingsSaved: 設定適用エラー", ex);
-            Log($"設定の適用中にエラーが発生しました: {ex.GetType().Name}: {ex.Message}");
-            StatusText = "設定の適用中にエラーが発生しました";
+            // パイプライン停止失敗等の致命系のみ StatusColor=Red。
+            LoggerService.LogException("OnSettingsSaved: パイプライン停止/状態反映エラー", ex);
+            Log($"設定変更によるパイプライン停止中にエラー: {ex.GetType().Name}: {ex.Message}");
+            StatusText = "設定変更時のパイプライン操作でエラーが発生しました";
             StatusColor = Brushes.Red;
         }
     }
@@ -525,6 +558,33 @@ public partial class MainViewModel : ObservableObject, IDisposable
     }
 
     /// <summary>
+    /// プロセスの MainModule から ProductName / FileDescription を best-effort で取得する。
+    /// SYSTEM 権限プロセス・別 bitness プロセスでは MainModule 自体が読めず Win32Exception になるので静かに空文字を返す。
+    /// </summary>
+    private static string TryGetProductName(Process p)
+    {
+        try
+        {
+            // MainModule アクセスで Win32Exception (権限不足 / x86⇄x64 mismatch) が出やすい。
+            // FileVersionInfo.GetVersionInfo に直接ファイルパスを渡しても同じ例外経路。
+            var module = p.MainModule;
+            if (module == null) return string.Empty;
+            var fileName = module.FileName;
+            if (string.IsNullOrWhiteSpace(fileName)) return string.Empty;
+            var info = System.Diagnostics.FileVersionInfo.GetVersionInfo(fileName);
+            // ProductName を優先、 取れなければ FileDescription、 どちらも無ければ空文字 (Name にフォールバック)。
+            if (!string.IsNullOrWhiteSpace(info.ProductName)) return info.ProductName.Trim();
+            if (!string.IsNullOrWhiteSpace(info.FileDescription)) return info.FileDescription.Trim();
+            return string.Empty;
+        }
+        catch
+        {
+            // SYSTEM / Protected / 別 bitness → 静かに諦める。 表示は ProcessName にフォールバック。
+            return string.Empty;
+        }
+    }
+
+    /// <summary>
     /// プロセス一覧を更新する
     /// </summary>
     [RelayCommand]
@@ -560,8 +620,14 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 {
                     try
                     {
-                        var title = string.IsNullOrWhiteSpace(p.MainWindowTitle) ? p.ProcessName : p.MainWindowTitle;
+                        // 旧実装は MainWindowTitle が空のとき ProcessName を Title に詰めていたが、
+                        // 新 ProcessInfo.DisplayName は Title 空でも ProductName/Name で組み立てるので
+                        // ここでは生の MainWindowTitle (空文字許容) を保存する。
+                        var title = p.MainWindowTitle ?? string.Empty;
                         var name = p.ProcessName;
+                        // FileVersionInfo.ProductName / FileDescription を試行 (例: "Google Chrome", "Discord")。
+                        // SYSTEM 権限プロセスや x64/x86 mix で取れないケースがあるので失敗は無視。
+                        var productName = TryGetProductName(p);
 
                         if (!processNames.ContainsKey(name))
                         {
@@ -569,19 +635,17 @@ public partial class MainViewModel : ObservableObject, IDisposable
                         }
                         processNames[name]++;
 
-                        var displayTitle = processNames[name] > 1
-                            ? $"{title} (PID: {p.Id})"
-                            : title;
-
                         // セッション所有者がそのまま CaptureProcessId。子プロセスの音声も含まれる。
                         processList.Add(new ProcessInfo
                         {
                             Id = p.Id,
                             CaptureProcessId = p.Id,
                             Name = name,
-                            Title = displayTitle
+                            ProductName = productName,
+                            Title = title
                         });
-                        LoggerService.LogInfo($"RefreshProcesses: プロセス追加 - {name} (PID: {p.Id}, Title: {displayTitle})");
+                        // per-process は Debug に降格 (rere F-008 対応)。 ボタン連打時のログ爆発 / ローテで重要ログが流れる経路を抑止。
+                        LoggerService.LogDebug($"RefreshProcesses: プロセス追加 - {name} / Product='{productName}' (PID: {p.Id}, Title: '{title}')");
                     }
                     catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
                     {
@@ -617,7 +681,8 @@ public partial class MainViewModel : ObservableObject, IDisposable
                     Id = p.Id,
                     CaptureProcessId = p.Id,
                     Name = p.ProcessName,
-                    Title = p.MainWindowTitle
+                    ProductName = TryGetProductName(p),
+                    Title = p.MainWindowTitle ?? string.Empty
                 }).ToList();
             }
             finally
@@ -835,6 +900,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
         // LogText を `+=` で組み立てると、1000 行に達するまで毎回 string 全体を再構築して
         // 累計で O(N²) のヒープを通過する。常に Queue から StringBuilder で組み立てて
         // 1 呼び出しを O(N)（N = 現在の行数, 上限 MaxLogLines）に抑える。
+        // さらに rere C2-008 対応で StringBuilder は field 化 + Clear() で再利用 → 1 回確保で alloc 0。
         string newText;
         lock (_logLock)
         {
@@ -843,12 +909,12 @@ public partial class MainViewModel : ObservableObject, IDisposable
             {
                 _logLines.Dequeue();
             }
-            var sb = new StringBuilder(_logLines.Count * 80);
+            _logBuilder.Clear();
             foreach (var line in _logLines)
             {
-                sb.AppendLine(line);
+                _logBuilder.AppendLine(line);
             }
-            newText = sb.ToString();
+            newText = _logBuilder.ToString();
         }
         LogText = newText;
     }
@@ -1130,9 +1196,15 @@ public class ProcessInfo
     public int CaptureProcessId { get; set; }
 
     /// <summary>
-    /// プロセス名
+    /// プロセス名 (ProcessName。 例: "chrome", "Discord")
     /// </summary>
     public string Name { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 製品名 (FileVersionInfo.ProductName / FileDescription から取得。 例: "Google Chrome")。
+    /// 取得できなければ空文字。 DisplayName で Name より優先される。
+    /// </summary>
+    public string ProductName { get; set; } = string.Empty;
 
     /// <summary>
     /// ウィンドウタイトル
@@ -1140,7 +1212,20 @@ public class ProcessInfo
     public string Title { get; set; } = string.Empty;
 
     /// <summary>
-    /// 表示用の名前（プロセス名 (PID: xxx) - タイトル）
+    /// 表示用の名前。 製品名が取れていれば「製品名 (PID: xxx) — タイトル」、 取れなければ「プロセス名 (PID: xxx) — タイトル」。
     /// </summary>
-    public string DisplayName => $"{Name} (PID: {Id}) - {Title}";
+    public string DisplayName
+    {
+        get
+        {
+            string label = !string.IsNullOrWhiteSpace(ProductName) ? ProductName : Name;
+            // Title が ProductName と完全一致 / 空 / ProcessName と同一なら冗長表示を避ける
+            bool titleRedundant = string.IsNullOrWhiteSpace(Title) ||
+                                  string.Equals(Title, label, StringComparison.OrdinalIgnoreCase) ||
+                                  string.Equals(Title, Name, StringComparison.OrdinalIgnoreCase);
+            return titleRedundant
+                ? $"{label} (PID: {Id})"
+                : $"{label} (PID: {Id}) — {Title}";
+        }
+    }
 }

@@ -32,7 +32,11 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     private readonly Timer _throttleTimer;
     private readonly Stopwatch _latencyStopwatch = new();
     private volatile bool _isRunning;
-    private volatile bool _disposed;
+    // rere B1-006: Dispose / DisposeAsync の二重実行を防ぐ Interlocked 占有マーク。
+    // 旧 volatile bool は check + set が非原子で、 並行 Dispose 時に両方が `if (_disposed) return;` を抜け
+    // ObjectDisposedException を投げる経路があった。 OpenAIRealtimeClient も同型対策済み。
+    // 0=alive, 1=disposed。
+    private int _disposed;
     private DateTime _lastAudioErrorLogTime = DateTime.MinValue;
 
     // OpenAI Realtime Translation API は transcript.done を「セッション累積の全文」で
@@ -88,10 +92,16 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     private double _skippedSecondsByVad;
     private Task? _autoPauseTask;
     private CancellationTokenSource? _autoPauseCts;
-    // 診断: VAD ProcessVadFrame の呼び出しカウンタ。 一定間隔で speech_prob を Info ログに吐く。
-    // 「翻訳されない」現象の切り分け (入力レベル / prob 値 / 状態機の動き) に使う。
-    private long _vadDiagFrameCount;
-    private const int VadDiagLogEvery = 32; // 32 * 32ms ≈ 1秒に 1 回
+    // リアルタイム stats tick: silence で API response が来ない間も UI の経過時間 / VAD 節約秒数を 1 秒毎に更新する。
+    // 旧実装は response.done + AutoPause + Stop でしか StatsUpdated が走らず、 「Start 直後の数十秒間 stats が止まる」体感バグだった。
+    private Task? _statsTickTask;
+    private CancellationTokenSource? _statsTickCts;
+    // StartAsync / StopAsync を直列化する semaphore (rere B1-004 対応)。
+    // 旧実装は _isRunning フラグだけで状態管理しており、 「Start 中 (ConnectAsync 待機中) に
+    // OnSettingsSaved 経由で Stop が呼ばれる」シナリオで pipeline 側 `if (!_isRunning) return;` が
+    // 空振りして Channel / Task が orphan として残る経路があった。 全状態遷移をこの semaphore で
+    // 直列化することで、 Start と Stop が交差する経路を構造的に消す。
+    private readonly SemaphoreSlim _startStopLock = new(1, 1);
 
     public event EventHandler<SubtitleItem>? SubtitleGenerated;
     public event EventHandler<PipelineStatsEventArgs>? StatsUpdated;
@@ -126,8 +136,22 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
 
     public async Task StartAsync(CancellationToken token)
     {
-        if (_isRunning) return;
+        // rere B1-004: Start ↔ Stop の TOCTOU を消すため semaphore で全初期化を直列化。
+        // Stop が並行に走った場合は Stop が完了するまでブロック → Start は全部完了済み状態から走り直す。
+        await _startStopLock.WaitAsync(token).ConfigureAwait(false);
+        try
+        {
+            if (_isRunning) return;
+            await StartCoreAsync(token).ConfigureAwait(false);
+        }
+        finally
+        {
+            _startStopLock.Release();
+        }
+    }
 
+    private async Task StartCoreAsync(CancellationToken token)
+    {
         // settings.json で変更したばかりの内容 (OutputLanguage 等) が反映されるよう、
         // 起動直前に IOptionsMonitor から最新値を取り直す。
         // 旧実装は _cachedRealtimeSettings (構築時 or ApplySettingsAsync の値) を
@@ -160,7 +184,8 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
             _hasPendingDelta = false;
         }
 
-        await _realtimeClient.ConnectAsync(settings, token);
+        // rere B1-011: Core layer 統一で ConfigureAwait(false) 付与。
+        await _realtimeClient.ConnectAsync(settings, token).ConfigureAwait(false);
 
         // WASAPI コールバックスレッドで重い変換を行うと audio glitch の原因になるため、
         // Channel に raw float[] を投入だけして変換は専用タスクで行う。
@@ -193,6 +218,10 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         _autoPauseCts = new CancellationTokenSource();
         _autoPauseTask = Task.Run(() => AutoPauseLoopAsync(_autoPauseCts.Token));
 
+        // リアルタイム stats tick 起動 (1 秒周期で UI に経過時間 / トークン / VAD 節約秒数を反映)。
+        _statsTickCts = new CancellationTokenSource();
+        _statsTickTask = Task.Run(() => StatsTickLoopAsync(_statsTickCts.Token));
+
         _audioCaptureService.AudioDataAvailable += OnAudioDataAvailable;
         _isRunning = true;
         _latencyStopwatch.Start();
@@ -209,8 +238,22 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
 
     public async Task StopAsync(CancellationToken cancellationToken = default)
     {
-        if (!_isRunning) return;
+        // rere B1-004: Start 中の Stop 呼び出し (OnSettingsSaved 経由等) も含めて直列化。
+        // Start が走っている最中は完了を待ってから Stop を実行する。
+        await _startStopLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (!_isRunning) return;
+            await StopCoreAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _startStopLock.Release();
+        }
+    }
 
+    private async Task StopCoreAsync(CancellationToken cancellationToken)
+    {
         Logger.Info("翻訳パイプライン停止");
         _audioCaptureService.AudioDataAvailable -= OnAudioDataAvailable;
         _isRunning = false;
@@ -267,6 +310,19 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         _autoPauseCts?.Dispose();
         _autoPauseCts = null;
 
+        // リアルタイム stats tick の停止 (Stop ボタン押下後は更新不要)。
+        _statsTickCts?.Cancel();
+        if (_statsTickTask is { } stTask)
+        {
+            try { await stTask.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false); }
+            catch (TimeoutException) { Logger.Warn("stats tick タスク停止がタイムアウト"); }
+            catch (OperationCanceledException) { }
+            catch (Exception ex) { Logger.Warn("stats tick タスク停止中の例外", ex); }
+        }
+        _statsTickTask = null;
+        _statsTickCts?.Dispose();
+        _statsTickCts = null;
+
         // WebSocket 切断も外部待機を入れて UI スレッドに戻る前に確実に完了させる
         try
         {
@@ -294,14 +350,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
 
         Logger.Info("翻訳パイプライン停止 完了");
 
-        StatsUpdated?.Invoke(this, new PipelineStatsEventArgs
-        {
-            StatusText = "停止",
-            SessionDuration = DateTime.UtcNow - _sessionStartUtc,
-            InputAudioTokensEstimate = ComputeCurrentTokens(),
-            EstimatedCostUsd = ComputeCurrentCostUsd(),
-            SkippedSecondsByVad = _skippedSecondsByVad,
-        });
+        StatsUpdated?.Invoke(this, BuildCurrentStats("停止"));
     }
 
     private void OnAudioDataAvailable(object? sender, AudioDataEventArgs e)
@@ -645,12 +694,11 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
             SubtitleGenerated?.Invoke(this, subtitle);
         }
 
-        StatsUpdated?.Invoke(this, new PipelineStatsEventArgs
-        {
-            ProcessingLatency = latencyMs,
-            TranslationLatency = latencyMs,
-            StatusText = $"翻訳完了 ({latencyMs:F0}ms)"
-        });
+        // 累積フィールド (Tokens/Cost/SessionDuration/SkippedSecondsByVad) を 0 上書きしないよう BuildCurrentStats で埋める。
+        var doneStats = BuildCurrentStats($"翻訳完了 ({latencyMs:F0}ms)");
+        doneStats.ProcessingLatency = latencyMs;
+        doneStats.TranslationLatency = latencyMs;
+        StatsUpdated?.Invoke(this, doneStats);
     }
 
     private void OnClientError(Exception ex)
@@ -674,11 +722,9 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                 Logger.Warn($"OnClientError: AudioCapture 停止に失敗 — {stopEx.Message}");
             }
 
-            // UI のステータス文字列も警告に切替え (StatsUpdated 経由)
-            StatsUpdated?.Invoke(this, new PipelineStatsEventArgs
-            {
-                StatusText = apiEx.FriendlyMessage
-            });
+            // UI のステータス文字列も警告に切替え (StatsUpdated 経由)。
+            // 累積統計は BuildCurrentStats で必ず埋める (Fatal エラー時も「これまで何 token 使ったか」を維持)。
+            StatsUpdated?.Invoke(this, BuildCurrentStats(apiEx.FriendlyMessage));
         }
     }
 
@@ -716,20 +762,19 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
             _ => ""
         };
 
-        StatsUpdated?.Invoke(this, new PipelineStatsEventArgs
-        {
-            StatusText = statusText
-        });
+        // 接続状態変化時も累積統計を維持 (再接続中も「これまで何 token 使ったか」を消さない)。
+        StatsUpdated?.Invoke(this, BuildCurrentStats(statusText));
     }
 
     public async ValueTask DisposeAsync()
     {
-        if (_disposed) return;
-        _disposed = true;
+        // rere B1-006: Interlocked で並行 Dispose を排他制御。
+        if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0) return;
 
         try
         {
-            await StopAsync();
+            // rere B1-011: Core layer の await は ConfigureAwait(false) で統一。
+            await StopAsync().ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -742,12 +787,13 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         _realtimeClient.ErrorReceived -= OnClientError;
         _realtimeClient.StateChanged -= OnConnectionStateChanged;
         _audioCaptureService.AudioDataAvailable -= OnAudioDataAvailable;
+        _startStopLock.Dispose();
     }
 
     public void Dispose()
     {
-        if (_disposed) return;
-        _disposed = true;
+        // rere B1-006: Interlocked で並行 Dispose を排他制御。
+        if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0) return;
 
         // 同期版: UIスレッドでのデッドロックを回避するため Task.Run 経由で呼び出す
         try
@@ -762,6 +808,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         _realtimeClient.ErrorReceived -= OnClientError;
         _realtimeClient.StateChanged -= OnConnectionStateChanged;
         _audioCaptureService.AudioDataAvailable -= OnAudioDataAvailable;
+        _startStopLock.Dispose();
     }
 
     // TruncateForLog / ShouldLogAtCount は Core/Services/LogFormatting.cs に集約 (rere D1 修正)。
@@ -897,22 +944,6 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         int preRollCapacity = Math.Max(1, (int)(settings.VadPreRollMs / frameMs));
         int hangoverFrames = Math.Max(0, (int)(settings.VadHangoverMs / frameMs));
 
-        // 診断ログ: 約 1 秒に 1 回、 speech_prob / 状態 / preroll サイズ / フレーム最大振幅を出す。
-        // 「翻訳されない」報告時に、 (a) VAD 入力が無音か (frameMax≈0) (b) VAD が常に低 prob を返すか
-        // (c) PreRoll に積まれてるだけで送信に至らないか を切り分けるための診断。
-        if (Interlocked.Increment(ref _vadDiagFrameCount) % VadDiagLogEvery == 0)
-        {
-            float frameMax = 0f;
-            for (int i = 0; i < frame16kHz.Length; i++)
-            {
-                var abs = MathF.Abs(frame16kHz[i]);
-                if (abs > frameMax) frameMax = abs;
-            }
-            Logger.Info(
-                $"[VAD診断] prob={prob:F3} threshold={settings.VadThreshold:F2} isSpeech={isSpeech} " +
-                $"state={_vadState} hangoverRemaining={_hangoverFramesRemaining} preRollSize={_preRollBuffer.Count} " +
-                $"frameMax={frameMax:F4} skippedSec={_skippedSecondsByVad:F1}");
-        }
 
         switch (_vadState)
         {
@@ -1018,14 +1049,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                     Logger.Warn($"自動 Pause で StopCapture 失敗: {ex.Message}");
                 }
 
-                StatsUpdated?.Invoke(this, new PipelineStatsEventArgs
-                {
-                    StatusText = $"⏸️ 約{(int)elapsed}秒間 speech 未検出のため自動停止しました",
-                    SessionDuration = DateTime.UtcNow - _sessionStartUtc,
-                    InputAudioTokensEstimate = ComputeCurrentTokens(),
-                    EstimatedCostUsd = ComputeCurrentCostUsd(),
-                    SkippedSecondsByVad = _skippedSecondsByVad,
-                });
+                StatsUpdated?.Invoke(this, BuildCurrentStats($"⏸️ 約{(int)elapsed}秒間 speech 未検出のため自動停止しました"));
 
                 // 1 回発火で抜ける (ユーザーが Start 押し直すと新タスクが起動)。
                 break;
@@ -1036,6 +1060,62 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         {
             Logger.Warn($"自動 Pause ループで予期しないエラー: {ex.Message}", ex);
         }
+    }
+
+    /// <summary>
+    /// 1 秒周期で StatsUpdated を発火する tick ループ。
+    /// API response が来ない silence 区間でも UI の経過時間 / 累計トークン / VAD 節約秒数を
+    /// リアルタイム表示するために存在する。 StatusText は空文字を渡し (MainViewModel 側で空なら
+    /// 既存値を維持する設計) Status ラベルを上書きしない。
+    /// </summary>
+    private async Task StatsTickLoopAsync(CancellationToken ct)
+    {
+        // rere F-005: ループ全体を 1 度の try/catch で包むと、 ハンドラ側の例外で stats tick 全体が止まり
+        // UI が「時計止まった = アプリ死んだ」と誤解される。 try/catch を内側に入れて 1 周スキップで継続させる。
+        // ErrorOccurred を発火して UI 側にバナー通知する経路も追加。 ただし 1 秒周期で連発を避けるため、
+        // 前回エラーから 60 秒以上経過時のみ ErrorOccurred を発火する rate-limit を入れる。
+        DateTime lastErrorReportUtc = DateTime.MinValue;
+        while (!ct.IsCancellationRequested)
+        {
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(1), ct).ConfigureAwait(false);
+                if (!_isRunning) continue;
+                StatsUpdated?.Invoke(this, BuildCurrentStats(string.Empty));
+            }
+            catch (OperationCanceledException)
+            {
+                // StopAsync 経由の正常終了
+                return;
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"stats tick ループで予期しないエラー (1 周スキップ): {ex.Message}", ex);
+                if ((DateTime.UtcNow - lastErrorReportUtc).TotalSeconds >= 60)
+                {
+                    lastErrorReportUtc = DateTime.UtcNow;
+                    ErrorOccurred?.Invoke(this, ex);
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// 現セッションの完全な統計スナップショットを構築する。 StatusText のみイベント特有値、
+    /// 他フィールド (SessionDuration / Tokens / Cost / SkippedSecondsByVad) は累積値で必ず埋める。
+    /// rere C2-001 / B2-005 対応: 個別 invoke で累積フィールドを忘れて UI を 0 に巻き戻す経路を構造的に消す。
+    /// ProcessingLatency / TranslationLatency が必要な箇所は呼び出し側で result.X = ... と追加 set する。
+    /// </summary>
+    private PipelineStatsEventArgs BuildCurrentStats(string statusText = "")
+    {
+        return new PipelineStatsEventArgs
+        {
+            StatusText = statusText,
+            SessionDuration = DateTime.UtcNow - _sessionStartUtc,
+            InputAudioTokensEstimate = ComputeCurrentTokens(),
+            EstimatedCostUsd = ComputeCurrentCostUsd(),
+            SkippedSecondsByVad = _skippedSecondsByVad,
+        };
     }
 
     /// <summary>

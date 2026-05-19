@@ -33,11 +33,22 @@ public class OverlaySettings
     // の両方でここがフォールバック値になる。
     public string FontFamily { get; set; } = "IBM Plex Sans JP";
     public double FontSize { get; set; } = 24;
+    /// <summary>フォントの太さ。 "Normal" または "Bold"。 OverlayViewModel が Avalonia.Media.FontWeight に変換する。</summary>
+    public string FontWeight { get; set; } = "Normal";
     // 既定 partial 字幕色は半透明白 (alpha 0x80)。 SettingsViewModel.TextColorOptions の
     // 「白（半透明）」と整合させて ComboBox 未選択状態が起きないようにしている。
     public string PartialTextColor { get; set; } = "#80FFFFFF";
     public string FinalTextColor { get; set; } = "#FFFFFFFF";
+    // 旧 settings.json との後方互換のため #AARRGGBB を保持する。
+    // 新 UI では BackgroundColorBase (#RRGGBB) × BackgroundOpacityPercent (0-100) から合成して
+    // BackgroundColor を埋める運用 (SettingsViewModel が autoSave 時に同期)。
+    // 既存環境からのマイグレーション: SanitizeSettings で BackgroundColor から
+    // BackgroundColorBase / BackgroundOpacityPercent を逆算して埋める。
     public string BackgroundColor { get; set; } = "#80000000";
+    /// <summary>背景色の RGB のみ (#RRGGBB)。 透明度は BackgroundOpacityPercent で別管理。</summary>
+    public string BackgroundColorBase { get; set; } = "#000000";
+    /// <summary>背景の不透明度 (0-100%)。 0/25/50/75/100 の 5 段階を想定 (0% = 完全透明)。</summary>
+    public int BackgroundOpacityPercent { get; set; } = 50;
     public double DisplayDuration { get; set; } = 5.0;
     public double FadeOutDuration { get; set; } = 0.5;
     public double BottomMarginPercent { get; set; } = 10;
@@ -48,23 +59,36 @@ public class AudioCaptureSettings
 {
     public int SampleRate { get; set; } = 16000;
 
-    // ───────── VAD (Voice Activity Detection) ─────────
+    // ────────── VAD (Voice Activity Detection) ──────────
     // BGM / 効果音だけが鳴っているシーンでの OpenAI 送信を抑制するためのゲート。
     // EnableVad=false の場合は素通し (旧挙動)。
 
     /// <summary>VAD ゲートを有効にする (default: true)。 BGM/SE 中の token 浪費を防ぐ。</summary>
     public bool EnableVad { get; set; } = true;
 
+    /// <summary>
+    /// VAD の感度プリセット。 "Balanced" (推奨) / "PrioritizeEdges" (頭尻尾重視) /
+    /// "AggressiveSavings" (節約重視) / "Custom" (下の Threshold/PreRollMs/HangoverMs を直接使用)。
+    /// プリセット選択時は SettingsViewModel が Threshold/PreRollMs/HangoverMs を上書きする。
+    /// </summary>
+    public string VadPreset { get; set; } = "Balanced";
+
     /// <summary>speech probability のしきい値 (0.0-1.0, default: 0.5 = Silero VAD 公式推奨)。</summary>
     public float VadThreshold { get; set; } = 0.5f;
 
-    /// <summary>発話冒頭の取りこぼし防止用にリングバッファに保持する直近音声の長さ (ms)。</summary>
-    public int VadPreRollMs { get; set; } = 400;
+    /// <summary>
+    /// 発話冒頭の取りこぼし防止用にリングバッファに保持する直近音声の長さ (ms)。
+    /// Balanced プリセットの推奨値は 600ms (threshold=0.5 維持で頭の子音を確実に拾うバランス値)。
+    /// </summary>
+    public int VadPreRollMs { get; set; } = 600;
 
-    /// <summary>発話末尾の切れ防止用に speech 終了判定後も送信を継続する長さ (ms)。</summary>
-    public int VadHangoverMs { get; set; } = 200;
+    /// <summary>
+    /// 発話末尾の切れ防止用に speech 終了判定後も送信を継続する長さ (ms)。
+    /// Balanced プリセットの推奨値は 400ms (語尾の無声子音 / 息継ぎ込みの「、」を取りこぼさない)。
+    /// </summary>
+    public int VadHangoverMs { get; set; } = 400;
 
-    // ───────── 自動 Pause 保険 ─────────
+    // ────────── 自動 Pause 保険 ──────────
 
     /// <summary>
     /// 連続 N 秒間 speech 未検出ならキャプチャを自動停止する (0 = 無効, default: 0)。

@@ -239,32 +239,62 @@
                                       Content="人の声と判定された区間だけ OpenAI に送る (推奨)"/>
                         </HeaderedContentControl>
 
-                        <HeaderedContentControl Header="検出しきい値" Margin="0,16,0,0">
+                        <HeaderedContentControl Header="感度プリセット" Margin="0,16,0,0">
                             <StackPanel>
-                                <Slider Minimum="0.1" Maximum="0.9" Value="{Binding VadThreshold, Mode=TwoWay}"
-                                        TickFrequency="0.05" IsSnapToTickEnabled="True"/>
-                                <TextBlock Text="{Binding VadThreshold, StringFormat='現在の値: {0:F2}  (公式推奨 = 0.50、 上げるほど判定が厳しくなり送信量減)'}"
-                                           FontSize="11" Foreground="{DynamicResource Brush.FG2}"/>
+                                <ComboBox ItemsSource="{Binding VadPresetOptions}"
+                                          SelectedItem="{Binding SelectedVadPreset, Mode=TwoWay}"
+                                          HorizontalAlignment="Stretch">
+                                    <ComboBox.ItemTemplate>
+                                        <DataTemplate x:DataType="vm:VadPresetOption">
+                                            <TextBlock Text="{Binding Name}"/>
+                                        </DataTemplate>
+                                    </ComboBox.ItemTemplate>
+                                </ComboBox>
+                                <TextBlock Text="「ふつう」で OK。 短い発話を取りこぼすなら「頭と尻尾を取りこぼさない」、 ゲーム配信を長時間流すなら「ガッツリ節約」を選んでね。"
+                                           FontSize="11" Foreground="{DynamicResource Brush.FG2}"
+                                           TextWrapping="Wrap" Margin="0,4,0,0"/>
                             </StackPanel>
                         </HeaderedContentControl>
 
-                        <HeaderedContentControl Header="プリロール時間 (ms) — 発話冒頭の取りこぼし防止" Margin="0,16,0,0">
-                            <NumericUpDown Value="{Binding VadPreRollMs, Mode=TwoWay}"
-                                           Minimum="0" Maximum="2000" Increment="50"/>
-                        </HeaderedContentControl>
+                        <!-- カスタム選択時のみ表示する詳細スライダー (上級者向け) -->
+                        <Border IsVisible="{Binding IsVadPresetCustom}"
+                                Margin="0,12,0,0" Padding="12"
+                                Background="{DynamicResource Brush.Container}"
+                                BorderBrush="{DynamicResource Brush.Border}"
+                                BorderThickness="1" CornerRadius="8">
+                            <StackPanel>
+                                <TextBlock Text="🛠 カスタム詳細" FontWeight="Bold" Margin="0,0,0,8"/>
 
-                        <HeaderedContentControl Header="ハングオーバー時間 (ms) — 発話末尾の切れ防止" Margin="0,16,0,0">
-                            <NumericUpDown Value="{Binding VadHangoverMs, Mode=TwoWay}"
-                                           Minimum="0" Maximum="2000" Increment="50"/>
-                        </HeaderedContentControl>
+                                <TextBlock Text="検出しきい値 (Silero VAD speech probability)" FontSize="12" Margin="0,4,0,2"/>
+                                <Slider Minimum="0.1" Maximum="0.9" Value="{Binding VadThreshold, Mode=TwoWay}"
+                                        TickFrequency="0.05" IsSnapToTickEnabled="True"/>
+                                <TextBlock Text="{Binding VadThreshold, StringFormat='現在: {0:F2} (公式推奨 0.50、 上げるほど判定が厳しくなり送信量減)'}"
+                                           FontSize="11" Foreground="{DynamicResource Brush.FG2}" Margin="0,0,0,8"/>
+
+                                <TextBlock Text="プリロール時間 (ms) — 発話冒頭の取りこぼし防止" FontSize="12" Margin="0,4,0,2"/>
+                                <NumericUpDown Value="{Binding VadPreRollMs, Mode=TwoWay}"
+                                               Minimum="0" Maximum="2000" Increment="50" Margin="0,0,0,8"/>
+
+                                <TextBlock Text="ハングオーバー時間 (ms) — 発話末尾の切れ防止" FontSize="12" Margin="0,4,0,2"/>
+                                <NumericUpDown Value="{Binding VadHangoverMs, Mode=TwoWay}"
+                                               Minimum="0" Maximum="2000" Increment="50"/>
+                            </StackPanel>
+                        </Border>
 
                         <TextBlock Text="自動 Pause 保険" FontSize="16" FontWeight="Bold" Margin="0,24,0,8"/>
 
-                        <HeaderedContentControl Header="連続無音秒数 (0 = 無効)">
+                        <HeaderedContentControl Header="連続無音時間で自動停止">
                             <StackPanel>
-                                <NumericUpDown Value="{Binding AutoPauseOnSilenceSec, Mode=TwoWay}"
-                                               Minimum="0" Maximum="600" Increment="10"/>
-                                <TextBlock Text="設定秒数の間 speech が検出されないとキャプチャを自動停止します。 席を離れた間の token 垂れ流し事故防止用。 0 で無効。"
+                                <ComboBox ItemsSource="{Binding AutoPauseOptions}"
+                                          SelectedItem="{Binding SelectedAutoPauseOption, Mode=TwoWay}"
+                                          HorizontalAlignment="Stretch">
+                                    <ComboBox.ItemTemplate>
+                                        <DataTemplate x:DataType="vm:AutoPauseOption">
+                                            <TextBlock Text="{Binding Name}"/>
+                                        </DataTemplate>
+                                    </ComboBox.ItemTemplate>
+                                </ComboBox>
+                                <TextBlock Text="この時間ずっと speech が検出されないとキャプチャを自動停止します。 席を離れた間の token 垂れ流し事故防止用。 VAD 有効時のみ機能します。"
                                            FontSize="11" Foreground="{DynamicResource Brush.FG2}"
                                            TextWrapping="Wrap" Margin="0,4,0,0"/>
                             </StackPanel>
@@ -284,22 +314,36 @@
 
                         <!-- Font -->
                         <HeaderedContentControl Header="フォント">
-                            <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto">
+                            <Grid ColumnDefinitions="100,*" RowDefinitions="Auto,Auto,Auto">
                                 <ComboBox Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="2"
                                           ItemsSource="{Binding FontFamilies}"
                                           SelectedItem="{Binding SelectedFontFamily, Mode=TwoWay}"
                                           HorizontalAlignment="Stretch"
                                           Margin="0,0,0,8"/>
                                 <TextBlock Grid.Row="1" Grid.Column="0" Text="サイズ"
-                                           VerticalAlignment="Center" Margin="0,0,8,0"
+                                           VerticalAlignment="Center"
                                            Foreground="{DynamicResource Brush.FG2}" FontSize="13"/>
                                 <ComboBox Grid.Row="1" Grid.Column="1"
                                           ItemsSource="{Binding FontSizes}"
                                           SelectedItem="{Binding SelectedFontSize, Mode=TwoWay}"
-                                          Width="100">
+                                          HorizontalAlignment="Stretch" Margin="0,0,0,6">
                                     <ComboBox.ItemTemplate>
                                         <DataTemplate>
                                             <TextBlock Text="{Binding StringFormat=\{0\}px}"/>
+                                        </DataTemplate>
+                                    </ComboBox.ItemTemplate>
+                                </ComboBox>
+
+                                <TextBlock Grid.Row="2" Grid.Column="0" Text="太さ"
+                                           VerticalAlignment="Center"
+                                           Foreground="{DynamicResource Brush.FG2}" FontSize="13"/>
+                                <ComboBox Grid.Row="2" Grid.Column="1"
+                                          ItemsSource="{Binding FontWeightOptions}"
+                                          SelectedItem="{Binding SelectedFontWeightOption, Mode=TwoWay}"
+                                          HorizontalAlignment="Stretch" Margin="0,6,0,0">
+                                    <ComboBox.ItemTemplate>
+                                        <DataTemplate x:DataType="vm:FontWeightOption">
+                                            <TextBlock Text="{Binding Name}"/>
                                         </DataTemplate>
                                     </ComboBox.ItemTemplate>
                                 </ComboBox>
@@ -308,7 +352,7 @@
 
                         <!-- Colors -->
                         <HeaderedContentControl Header="字幕カラー">
-                            <Grid ColumnDefinitions="100,*" RowDefinitions="Auto,Auto,Auto">
+                            <Grid ColumnDefinitions="100,*" RowDefinitions="Auto,Auto,Auto,Auto">
                                 <TextBlock Grid.Row="0" Grid.Column="0" Text="仮字幕色"
                                            VerticalAlignment="Center"
                                            Foreground="{DynamicResource Brush.FG2}" FontSize="13"/>
@@ -341,11 +385,25 @@
                                            VerticalAlignment="Center"
                                            Foreground="{DynamicResource Brush.FG2}" FontSize="13"/>
                                 <ComboBox Grid.Row="2" Grid.Column="1"
-                                          ItemsSource="{Binding BackgroundColorOptions}"
-                                          SelectedItem="{Binding SelectedBackgroundColorOption, Mode=TwoWay}"
-                                          HorizontalAlignment="Stretch" Margin="0,6,0,0">
+                                          ItemsSource="{Binding BackgroundColorBaseOptions}"
+                                          SelectedItem="{Binding SelectedBackgroundColorBaseOption, Mode=TwoWay}"
+                                          HorizontalAlignment="Stretch" Margin="0,6,0,6">
                                     <ComboBox.ItemTemplate>
                                         <DataTemplate x:DataType="vm:ColorOption">
+                                            <TextBlock Text="{Binding Name}"/>
+                                        </DataTemplate>
+                                    </ComboBox.ItemTemplate>
+                                </ComboBox>
+
+                                <TextBlock Grid.Row="3" Grid.Column="0" Text="背景の濃さ"
+                                           VerticalAlignment="Center"
+                                           Foreground="{DynamicResource Brush.FG2}" FontSize="13"/>
+                                <ComboBox Grid.Row="3" Grid.Column="1"
+                                          ItemsSource="{Binding OpacityOptions}"
+                                          SelectedItem="{Binding SelectedBackgroundOpacityOption, Mode=TwoWay}"
+                                          HorizontalAlignment="Stretch" Margin="0,6,0,0">
+                                    <ComboBox.ItemTemplate>
+                                        <DataTemplate x:DataType="vm:OpacityOption">
                                             <TextBlock Text="{Binding Name}"/>
                                         </DataTemplate>
                                     </ComboBox.ItemTemplate>
@@ -355,37 +413,46 @@
 
                         <!-- Max Lines + Display Duration -->
                         <HeaderedContentControl Header="表示">
-                            <Grid ColumnDefinitions="100,*" RowDefinitions="Auto,Auto">
-                                <TextBlock Grid.Row="0" Grid.Column="0" Text="最大行数"
+                            <Grid ColumnDefinitions="160,*" RowDefinitions="Auto,Auto,Auto,Auto">
+                                <TextBlock Grid.Row="0" Grid.Column="0" Text="最大行数 (確定+未確定の合計)"
                                            VerticalAlignment="Center"
+                                           TextWrapping="Wrap"
                                            Foreground="{DynamicResource Brush.FG2}" FontSize="13"/>
                                 <ComboBox Grid.Row="0" Grid.Column="1"
                                           ItemsSource="{Binding MaxLinesList}"
                                           SelectedItem="{Binding SelectedMaxLines, Mode=TwoWay}"
-                                          Width="100"
-                                          HorizontalAlignment="Left"
-                                          Margin="0,0,0,6">
+                                          HorizontalAlignment="Stretch"
+                                          Margin="0,0,0,2">
                                     <ComboBox.ItemTemplate>
                                         <DataTemplate>
                                             <TextBlock Text="{Binding}"/>
                                         </DataTemplate>
                                     </ComboBox.ItemTemplate>
                                 </ComboBox>
+                                <TextBlock Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2"
+                                           Text="画面に同時に並ぶ行数の上限。 確定済み字幕 + 翻訳中の未確定字幕の合計をこの行数で制限します。"
+                                           FontSize="11" TextWrapping="Wrap"
+                                           Foreground="{DynamicResource Brush.FG2}" Margin="0,0,0,10"/>
 
-                                <TextBlock Grid.Row="1" Grid.Column="0" Text="表示時間"
+                                <TextBlock Grid.Row="2" Grid.Column="0" Text="確定字幕の表示時間"
                                            VerticalAlignment="Center"
+                                           TextWrapping="Wrap"
                                            Foreground="{DynamicResource Brush.FG2}" FontSize="13"/>
-                                <ComboBox Grid.Row="1" Grid.Column="1"
+                                <ComboBox Grid.Row="2" Grid.Column="1"
                                           ItemsSource="{Binding DisplayDurations}"
                                           SelectedItem="{Binding SelectedDisplayDuration, Mode=TwoWay}"
-                                          Width="100"
-                                          HorizontalAlignment="Left">
+                                          HorizontalAlignment="Stretch"
+                                          Margin="0,0,0,2">
                                     <ComboBox.ItemTemplate>
                                         <DataTemplate>
                                             <TextBlock Text="{Binding StringFormat=\{0\} 秒}"/>
                                         </DataTemplate>
                                     </ComboBox.ItemTemplate>
                                 </ComboBox>
+                                <TextBlock Grid.Row="3" Grid.Column="0" Grid.ColumnSpan="2"
+                                           Text="確定済み字幕が画面から消えるまでの秒数。 未確定字幕は新しい音声が来るまで表示され続けます。"
+                                           FontSize="11" TextWrapping="Wrap"
+                                           Foreground="{DynamicResource Brush.FG2}" Margin="0,0,0,0"/>
                             </Grid>
                         </HeaderedContentControl>
 

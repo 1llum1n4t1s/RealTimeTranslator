@@ -1,5 +1,6 @@
 using System;
 using System.Collections.ObjectModel;
+using System.Globalization;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -53,20 +54,58 @@ public partial class SettingsViewModel : ObservableObject
             new("緑",             "#FF00FF7F"),
             new("赤",             "#FFFF6B6B")
         });
-        BackgroundColorOptions = new ReadOnlyCollection<ColorOption>(new ColorOption[]
+        // 背景色は「色 (RGB)」と「透明度 (Alpha)」を分離してドロップダウン化する。
+        // 旧 BackgroundColorOptions (#AARRGGBB 12 色) は廃止、 ユーザーが色と濃さを独立に選べる UI に統一。
+        BackgroundColorBaseOptions = new ReadOnlyCollection<ColorOption>(new ColorOption[]
         {
-            new("黒（標準）",   "#80000000"),
-            new("黒（濃い）",   "#CC000000"),
-            new("黒（薄い）",   "#40000000"),
-            new("白（薄い）",   "#80FFFFFF"),
-            new("白（濃い）",   "#CCEFEFEF"),
-            new("灰（中）",     "#CC404040"),
-            new("濃紺",         "#CC0F1A4C"),
-            new("濃緑",         "#CC0F4C1F"),
-            new("濃赤",         "#CC4C0F1F"),
-            new("茶（暖色）",   "#CC3A2218"),
-            new("紫（深）",     "#CC2A0F4C"),
-            new("透明",         "#00000000")
+            new("黒",     "#000000"),
+            new("白",     "#FFFFFF"),
+            new("灰",     "#404040"),
+            new("濃紺",   "#0F1A4C"),
+            new("濃緑",   "#0F4C1F"),
+            new("濃赤",   "#4C0F1F"),
+            new("茶",     "#3A2218"),
+            new("濃紫",   "#2A0F4C")
+        });
+        OpacityOptions = new ReadOnlyCollection<OpacityOption>(new OpacityOption[]
+        {
+            new(0,   "透明 (0%)"),
+            new(25,  "薄い (25%)"),
+            new(50,  "標準 (50%)"),
+            new(75,  "濃い (75%)"),
+            new(100, "ベタ (100%)")
+        });
+        FontWeightOptions = new ReadOnlyCollection<FontWeightOption>(new FontWeightOption[]
+        {
+            new("Normal", "標準"),
+            new("Bold",   "太字")
+        });
+        VadPresetOptions = new ReadOnlyCollection<VadPresetOption>(new VadPresetOption[]
+        {
+            // Balanced (デフォルト): Silero VAD 公式推奨 threshold=0.5 を維持して BGM/効果音の誤判定を抑えつつ、
+            // preroll/hangover をやや厚めに取って発話冒頭の子音 / 語尾の無声子音の取りこぼしを防ぐ。
+            // 課金影響は発話前後に +600/+400ms 余分に送るだけ (= 1 発話あたり数 % 増) で、 BGM 全部送信のような事故は起きない。
+            new("Balanced",          "ふつう (推奨)",                    0.5f, 600, 400),
+            // PrioritizeEdges: threshold=0.4 で短い発話 (「はい」「うん」等) を取りこぼさず、
+            // preroll=800 / hangover=600 で文の頭・尻尾の音素切れを更に強く抑える。 通話・会議・コマンド発話向け。
+            // BGM 混入で課金 10-30% 増のリスクあり (ゆろさんの体感確認後に調整可)。
+            new("PrioritizeEdges",   "頭と尻尾を取りこぼさない",         0.4f, 800, 600),
+            // AggressiveSavings: threshold=0.6 で誤検出 (BGM のドラム/拍手等を speech 扱い) を抑え、
+            // preroll/hangover を短くして送信秒数を最小化。 長時間視聴で課金を切り詰めたい時向け。
+            new("AggressiveSavings", "ガッツリ節約",                      0.6f, 300, 150),
+            // Custom は下の詳細スライダーで個別調整するモード。 setter で 3 値は上書きしないため、
+            // ここの 3 値は実際には参照されない (rere B2-007 対応: 死コード相当だったので 0/0/0 に)。
+            new("Custom",            "カスタム (詳細設定)",               0f,   0,   0)
+        });
+        AutoPauseOptions = new ReadOnlyCollection<AutoPauseOption>(new AutoPauseOption[]
+        {
+            new(0,    "無効 (停止しない)"),
+            new(30,   "30 秒"),
+            new(60,   "1 分"),
+            new(180,  "3 分"),
+            new(300,  "5 分"),
+            new(600,  "10 分"),
+            new(1800, "30 分")
         });
         MaxLinesList = new ReadOnlyCollection<int>(new[] { 1, 2, 3, 4, 5 });
         // 確定字幕がフェード開始するまでの時間 (秒)。 SubtitleDisplayItem の _displayEndTime に渡される。
@@ -98,6 +137,16 @@ public partial class SettingsViewModel : ObservableObject
     }
 
     public AppSettings Settings => _settings;
+
+    /// <summary>
+    /// SanitizeSettings で「ユーザーが視認できる UI 要素」が黙って矯正された場合、 ここに通知文を蓄積する。
+    /// MainViewModel がコンストラクタで読んで起動直後にバナー表示する (rere F-007 対応)。
+    /// 対象: 背景色 (一覧外 → 黒に矯正) — 旧バージョンでマゼンタ等を設定していたユーザーが
+    /// 「いつのまにか黒に戻った」と感じる UX バグを防ぐ。
+    /// Font / Size / MaxLines / DisplayDuration 等の矯正は表示影響が軽微なのでバナー対象外。
+    /// </summary>
+    public IReadOnlyList<string> SanitizeWarnings => _sanitizeWarnings;
+    private readonly List<string> _sanitizeWarnings = new();
 
     /// <summary>
     /// 設定値が UI の選択肢一覧に存在するか検証し、存在しない場合は「最も妥当なデフォルト」に矯正する。
@@ -157,10 +206,88 @@ public partial class SettingsViewModel : ObservableObject
             changed = true;
         }
 
-        if (!BackgroundColorOptions.Any(o => o.Value == _settings.Overlay.BackgroundColor))
+        // 背景色のマイグレーション + 矯正:
+        //  1. BackgroundColorBase が空 (旧 settings.json) なら、 旧 BackgroundColor (#AARRGGBB) から
+        //     RGB と Alpha を逆算して BackgroundColorBase / BackgroundOpacityPercent を埋める。
+        //  2. その後、 一覧外の値なら標準 (黒 50%) に矯正。
+        if (string.IsNullOrWhiteSpace(_settings.Overlay.BackgroundColorBase))
         {
-            LoggerService.LogInfo($"SettingsViewModel.Sanitize: BackgroundColor='{_settings.Overlay.BackgroundColor}' が一覧外 → 先頭の '{BackgroundColorOptions[0].Name}' に矯正");
-            _settings.Overlay.BackgroundColor = BackgroundColorOptions[0].Value;
+            (string baseRgb, int opacityPct) = SplitArgbToRgbAndOpacity(_settings.Overlay.BackgroundColor);
+            LoggerService.LogInfo($"SettingsViewModel.Sanitize: 旧 BackgroundColor='{_settings.Overlay.BackgroundColor}' を BackgroundColorBase='{baseRgb}' / BackgroundOpacityPercent={opacityPct} に分解");
+            _settings.Overlay.BackgroundColorBase = baseRgb;
+            _settings.Overlay.BackgroundOpacityPercent = opacityPct;
+            changed = true;
+        }
+
+        if (!BackgroundColorBaseOptions.Any(o => string.Equals(o.Value, _settings.Overlay.BackgroundColorBase, StringComparison.OrdinalIgnoreCase)))
+        {
+            string oldBase = _settings.Overlay.BackgroundColorBase;
+            LoggerService.LogInfo($"SettingsViewModel.Sanitize: BackgroundColorBase='{oldBase}' が一覧外 → 先頭の '{BackgroundColorBaseOptions[0].Name}' に矯正");
+            _settings.Overlay.BackgroundColorBase = BackgroundColorBaseOptions[0].Value;
+            changed = true;
+            // rere F-007: UI に視認できる変化なので起動直後にバナーで通知 (MainViewModel が SanitizeWarnings を読む)。
+            _sanitizeWarnings.Add(
+                $"互換性対応のため背景色 ({oldBase}) を '{BackgroundColorBaseOptions[0].Name}' に変更しました。 " +
+                "「表示設定」タブで好みの色 / 濃さを選び直してください。");
+        }
+
+        if (!OpacityOptions.Any(o => o.Percent == _settings.Overlay.BackgroundOpacityPercent))
+        {
+            // 最も近い百分位に丸める (旧 alpha 0x80=50, 0xCC=80→75 に丸まる、 0x40=25, 0x00=0)。
+            int snapped = OpacityOptions
+                .OrderBy(o => Math.Abs(o.Percent - _settings.Overlay.BackgroundOpacityPercent))
+                .First().Percent;
+            LoggerService.LogInfo($"SettingsViewModel.Sanitize: BackgroundOpacityPercent={_settings.Overlay.BackgroundOpacityPercent} が一覧外 → {snapped}% に丸め");
+            _settings.Overlay.BackgroundOpacityPercent = snapped;
+            changed = true;
+        }
+
+        // 合成済み BackgroundColor (#AARRGGBB) を再生成。 これが OverlayViewModel が直接 parse する値。
+        string composed = ComposeArgbHex(_settings.Overlay.BackgroundColorBase, _settings.Overlay.BackgroundOpacityPercent);
+        if (!string.Equals(composed, _settings.Overlay.BackgroundColor, StringComparison.OrdinalIgnoreCase))
+        {
+            _settings.Overlay.BackgroundColor = composed;
+            changed = true;
+        }
+
+        if (!FontWeightOptions.Any(o => string.Equals(o.Key, _settings.Overlay.FontWeight, StringComparison.OrdinalIgnoreCase)))
+        {
+            LoggerService.LogInfo($"SettingsViewModel.Sanitize: FontWeight='{_settings.Overlay.FontWeight}' が一覧外 → 'Normal' に矯正");
+            _settings.Overlay.FontWeight = "Normal";
+            changed = true;
+        }
+
+        if (!VadPresetOptions.Any(o => string.Equals(o.Key, _settings.AudioCapture.VadPreset, StringComparison.OrdinalIgnoreCase)))
+        {
+            LoggerService.LogInfo($"SettingsViewModel.Sanitize: VadPreset='{_settings.AudioCapture.VadPreset}' が一覧外 → 'Balanced' に矯正");
+            _settings.AudioCapture.VadPreset = "Balanced";
+            changed = true;
+        }
+        // プリセット選択時 (Custom 以外) は 3 値をプリセット値に強制同期させる
+        // (settings.json を手で書いて threshold だけ別値にしたケースの整合性確保)。
+        var preset = VadPresetOptions.First(o => string.Equals(o.Key, _settings.AudioCapture.VadPreset, StringComparison.OrdinalIgnoreCase));
+        if (!string.Equals(preset.Key, "Custom", StringComparison.OrdinalIgnoreCase))
+        {
+            if (Math.Abs(_settings.AudioCapture.VadThreshold - preset.Threshold) > 0.005f ||
+                _settings.AudioCapture.VadPreRollMs != preset.PreRollMs ||
+                _settings.AudioCapture.VadHangoverMs != preset.HangoverMs)
+            {
+                LoggerService.LogInfo($"SettingsViewModel.Sanitize: VadPreset='{preset.Key}' のため Threshold/PreRoll/Hangover を ({preset.Threshold}/{preset.PreRollMs}/{preset.HangoverMs}) に強制同期");
+                _settings.AudioCapture.VadThreshold = preset.Threshold;
+                _settings.AudioCapture.VadPreRollMs = preset.PreRollMs;
+                _settings.AudioCapture.VadHangoverMs = preset.HangoverMs;
+                changed = true;
+            }
+        }
+
+        if (!AutoPauseOptions.Any(o => o.Seconds == _settings.AudioCapture.AutoPauseOnSilenceSec))
+        {
+            // 一覧にない秒数 (旧 NumericUpDown で 45 秒等を入れていた) は最も近い既定値に丸める。
+            int snappedSec = AutoPauseOptions
+                .OrderBy(o => Math.Abs(o.Seconds - _settings.AudioCapture.AutoPauseOnSilenceSec))
+                .First().Seconds;
+            LoggerService.LogInfo($"SettingsViewModel.Sanitize: AutoPauseOnSilenceSec={_settings.AudioCapture.AutoPauseOnSilenceSec} が一覧外 → {snappedSec} 秒に丸め");
+            _settings.AudioCapture.AutoPauseOnSilenceSec = snappedSec;
             changed = true;
         }
 
@@ -181,11 +308,15 @@ public partial class SettingsViewModel : ObservableObject
 
     public ReadOnlyCollection<string> FontFamilies { get; }
     public ReadOnlyCollection<double> FontSizes { get; }
+    public ReadOnlyCollection<FontWeightOption> FontWeightOptions { get; }
     public ReadOnlyCollection<ColorOption> TextColorOptions { get; }
-    public ReadOnlyCollection<ColorOption> BackgroundColorOptions { get; }
+    public ReadOnlyCollection<ColorOption> BackgroundColorBaseOptions { get; }
+    public ReadOnlyCollection<OpacityOption> OpacityOptions { get; }
     public ReadOnlyCollection<int> MaxLinesList { get; }
     public ReadOnlyCollection<double> DisplayDurations { get; }
     public ReadOnlyCollection<OutputLanguageOption> OutputLanguageOptions { get; }
+    public ReadOnlyCollection<VadPresetOption> VadPresetOptions { get; }
+    public ReadOnlyCollection<AutoPauseOption> AutoPauseOptions { get; }
 
     [ObservableProperty]
     public partial bool IsTestingApi { get; set; }
@@ -312,15 +443,49 @@ public partial class SettingsViewModel : ObservableObject
         }
     }
 
-    public ColorOption? SelectedBackgroundColorOption
+    // 背景色は「色 (RGB)」と「透明度 (Alpha)」を独立に選び、 setter で合成して BackgroundColor に書き戻す。
+    // OverlayViewModel は従来通り BackgroundColor (#AARRGGBB) を parse するだけで済む (互換維持)。
+    public ColorOption? SelectedBackgroundColorBaseOption
     {
-        get => BackgroundColorOptions.FirstOrDefault(o => o.Value == _settings.Overlay.BackgroundColor)
-               ?? BackgroundColorOptions[0];
+        get => BackgroundColorBaseOptions.FirstOrDefault(o => string.Equals(o.Value, _settings.Overlay.BackgroundColorBase, StringComparison.OrdinalIgnoreCase))
+               ?? BackgroundColorBaseOptions[0];
         set
         {
-            if (value != null && _settings.Overlay.BackgroundColor != value.Value)
+            if (value != null && !string.Equals(_settings.Overlay.BackgroundColorBase, value.Value, StringComparison.OrdinalIgnoreCase))
             {
-                _settings.Overlay.BackgroundColor = value.Value;
+                _settings.Overlay.BackgroundColorBase = value.Value;
+                _settings.Overlay.BackgroundColor = ComposeArgbHex(value.Value, _settings.Overlay.BackgroundOpacityPercent);
+                OnPropertyChanged();
+                ScheduleAutoSave();
+            }
+        }
+    }
+
+    public OpacityOption? SelectedBackgroundOpacityOption
+    {
+        get => OpacityOptions.FirstOrDefault(o => o.Percent == _settings.Overlay.BackgroundOpacityPercent)
+               ?? OpacityOptions[2]; // default = 標準 (50%)
+        set
+        {
+            if (value != null && _settings.Overlay.BackgroundOpacityPercent != value.Percent)
+            {
+                _settings.Overlay.BackgroundOpacityPercent = value.Percent;
+                _settings.Overlay.BackgroundColor = ComposeArgbHex(_settings.Overlay.BackgroundColorBase, value.Percent);
+                OnPropertyChanged();
+                ScheduleAutoSave();
+            }
+        }
+    }
+
+    public FontWeightOption? SelectedFontWeightOption
+    {
+        get => FontWeightOptions.FirstOrDefault(o => string.Equals(o.Key, _settings.Overlay.FontWeight, StringComparison.OrdinalIgnoreCase))
+               ?? FontWeightOptions[0];
+        set
+        {
+            if (value != null && !string.Equals(_settings.Overlay.FontWeight, value.Key, StringComparison.OrdinalIgnoreCase))
+            {
+                _settings.Overlay.FontWeight = value.Key;
                 OnPropertyChanged();
                 ScheduleAutoSave();
             }
@@ -329,7 +494,8 @@ public partial class SettingsViewModel : ObservableObject
 
     // ───── VAD (Voice Activity Detection) 設定 ─────
     // 既存 Overlay 系プロパティと同じく `_settings.AudioCapture` を直接 get/set し、
-    // 変更があれば ScheduleAutoSave で 1.5 秒後に settings.json へ atomic write。
+    // 変更があれば ScheduleAutoSave で AutoSaveDelay (500ms) 後に settings.json へ atomic write。
+    // (rere B2-003 対応: 旧コメント「1.5 秒後」は AutoSaveDelay 変更時に追随していなかった嘘記述だったので訂正)
 
     public bool EnableVad
     {
@@ -344,6 +510,39 @@ public partial class SettingsViewModel : ObservableObject
             }
         }
     }
+
+    /// <summary>
+    /// VAD 感度プリセット ComboBox。 Custom 以外を選択すると、 Threshold / PreRoll / Hangover を
+    /// プリセット値に一括上書きする (旧 UI の 3 つのスライダー/NumericUpDown を 1 つの選択肢に集約)。
+    /// </summary>
+    public VadPresetOption? SelectedVadPreset
+    {
+        get => VadPresetOptions.FirstOrDefault(o => string.Equals(o.Key, _settings.AudioCapture.VadPreset, StringComparison.OrdinalIgnoreCase))
+               ?? VadPresetOptions[0];
+        set
+        {
+            if (value == null || string.Equals(_settings.AudioCapture.VadPreset, value.Key, StringComparison.OrdinalIgnoreCase))
+                return;
+            _settings.AudioCapture.VadPreset = value.Key;
+            // Custom 以外: プリセット値を強制適用 (現在のカスタム値は捨てる)。
+            if (!string.Equals(value.Key, "Custom", StringComparison.OrdinalIgnoreCase))
+            {
+                _settings.AudioCapture.VadThreshold = value.Threshold;
+                _settings.AudioCapture.VadPreRollMs = value.PreRollMs;
+                _settings.AudioCapture.VadHangoverMs = value.HangoverMs;
+                // 詳細スライダーが裏で動くので追従通知する。 IsVadPresetCustom もここで切替わる。
+                OnPropertyChanged(nameof(VadThreshold));
+                OnPropertyChanged(nameof(VadPreRollMs));
+                OnPropertyChanged(nameof(VadHangoverMs));
+            }
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(IsVadPresetCustom));
+            ScheduleAutoSave();
+        }
+    }
+
+    /// <summary>カスタムプリセット選択時のみ詳細スライダー UI を表示するフラグ。</summary>
+    public bool IsVadPresetCustom => string.Equals(_settings.AudioCapture.VadPreset, "Custom", StringComparison.OrdinalIgnoreCase);
 
     public float VadThreshold
     {
@@ -388,14 +587,17 @@ public partial class SettingsViewModel : ObservableObject
         }
     }
 
-    public int AutoPauseOnSilenceSec
+    // AutoPause は ComboBox 化したため AutoPauseOnSilenceSec プロパティ (NumericUpDown 用) は廃止。
+    // 旧 settings.json の任意秒数は SanitizeSettings で最も近い既定値に丸められる。
+    public AutoPauseOption? SelectedAutoPauseOption
     {
-        get => _settings.AudioCapture.AutoPauseOnSilenceSec;
+        get => AutoPauseOptions.FirstOrDefault(o => o.Seconds == _settings.AudioCapture.AutoPauseOnSilenceSec)
+               ?? AutoPauseOptions[0];
         set
         {
-            if (_settings.AudioCapture.AutoPauseOnSilenceSec != value)
+            if (value != null && _settings.AudioCapture.AutoPauseOnSilenceSec != value.Seconds)
             {
-                _settings.AudioCapture.AutoPauseOnSilenceSec = value;
+                _settings.AudioCapture.AutoPauseOnSilenceSec = value.Seconds;
                 OnPropertyChanged();
                 ScheduleAutoSave();
             }
@@ -441,6 +643,41 @@ public partial class SettingsViewModel : ObservableObject
         }
     }
 
+    // ───── 背景色 合成 / 分解ヘルパー ─────
+
+    /// <summary>
+    /// #RRGGBB と Opacity (0-100%) を #AARRGGBB に合成する。 OverlayViewModel が parse する形式に揃える。
+    /// テスト容易化のため internal (InternalsVisibleTo=RealTimeTranslator.Tests、 rere B2-001 対応)。
+    /// </summary>
+    internal static string ComposeArgbHex(string rgbHex, int opacityPercent)
+    {
+        if (string.IsNullOrWhiteSpace(rgbHex)) rgbHex = "#000000";
+        // # 抜き、 RRGGBB だけ取り出す。 旧データで #AARRGGBB が紛れ込んだら下位 6 桁を使う。
+        string trimmed = rgbHex.TrimStart('#');
+        if (trimmed.Length == 8) trimmed = trimmed[2..];
+        if (trimmed.Length != 6) trimmed = "000000";
+        int pct = Math.Clamp(opacityPercent, 0, 100);
+        int alpha = (int)Math.Round(pct * 255.0 / 100.0);
+        return $"#{alpha:X2}{trimmed.ToUpperInvariant()}";
+    }
+
+    /// <summary>
+    /// 旧形式 #AARRGGBB から RGB 部分 (#RRGGBB) と Opacity (%) を逆算する。
+    /// マイグレーション用。 不正値は (#000000, 50%) を返す。
+    /// テスト容易化のため internal (InternalsVisibleTo=RealTimeTranslator.Tests、 rere B2-001 対応)。
+    /// </summary>
+    internal static (string Rgb, int OpacityPercent) SplitArgbToRgbAndOpacity(string argbHex)
+    {
+        if (string.IsNullOrWhiteSpace(argbHex)) return ("#000000", 50);
+        string trimmed = argbHex.TrimStart('#');
+        if (trimmed.Length == 6) return ("#" + trimmed.ToUpperInvariant(), 100); // alpha 省略 = ベタ
+        if (trimmed.Length != 8) return ("#000000", 50);
+        if (!byte.TryParse(trimmed.AsSpan(0, 2), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out byte alpha))
+            return ("#000000", 50);
+        int pct = (int)Math.Round(alpha * 100.0 / 255.0);
+        return ("#" + trimmed[2..].ToUpperInvariant(), pct);
+    }
+
     // ───── API接続テスト ─────
 
     [RelayCommand]
@@ -476,3 +713,15 @@ public partial class SettingsViewModel : ObservableObject
 public sealed record OutputLanguageOption(string Code, string DisplayName);
 public sealed record ColorOption(string Name, string Value);
 public sealed record SettingsSavedEventArgs(AppSettings Settings);
+
+/// <summary>VAD 感度プリセット。 SelectedVadPreset の setter で 3 値を一括上書きする。</summary>
+public sealed record VadPresetOption(string Key, string Name, float Threshold, int PreRollMs, int HangoverMs);
+
+/// <summary>自動 Pause の選択肢。 Seconds=0 が無効。</summary>
+public sealed record AutoPauseOption(int Seconds, string Name);
+
+/// <summary>フォントの太さ。 Key は OverlaySettings.FontWeight に保存される。</summary>
+public sealed record FontWeightOption(string Key, string Name);
+
+/// <summary>背景の不透明度。 Percent は OverlaySettings.BackgroundOpacityPercent に保存される。</summary>
+public sealed record OpacityOption(int Percent, string Name);

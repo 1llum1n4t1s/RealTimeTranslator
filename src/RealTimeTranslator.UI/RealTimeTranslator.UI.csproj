@@ -12,6 +12,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\RealTimeTranslator.Core\RealTimeTranslator.Core.csproj" />
+    <!-- ComposeArgbHex / SplitArgbToRgbAndOpacity などの private helper をテストから呼べるようにする (rere B2-001 対応)。 -->
+    <InternalsVisibleTo Include="RealTimeTranslator.Tests" />
   </ItemGroup>
 
   <ItemGroup>

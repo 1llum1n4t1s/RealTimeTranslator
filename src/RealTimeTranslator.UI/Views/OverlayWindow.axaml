@@ -44,6 +44,7 @@
                         <TextBlock Text="{Binding DisplayText}"
                                    FontFamily="{Binding $parent[ItemsControl].DataContext.FontFamily}"
                                    FontSize="{Binding $parent[ItemsControl].DataContext.FontSize}"
+                                   FontWeight="{Binding $parent[ItemsControl].DataContext.FontWeight}"
                                    TextWrapping="Wrap" TextAlignment="Center"
                                    Foreground="{Binding TextBrush}">
                             <TextBlock.Effect>

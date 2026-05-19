@@ -33,6 +33,11 @@ public partial class OverlayViewModel : ObservableObject, IDisposable
     [ObservableProperty]
     public partial double FontSize { get; set; } = 24;
 
+    // OverlaySettings.FontWeight ("Normal"/"Bold") を Avalonia.Media.FontWeight enum に変換して保持。
+    // Bold だと暗背景でもクッキリ見えるが、 細フォントの繊細さが消える。 ユーザー選択肢。
+    [ObservableProperty]
+    public partial FontWeight FontWeight { get; set; } = Avalonia.Media.FontWeight.Normal;
+
     [ObservableProperty]
     public partial IBrush BackgroundBrush { get; set; } = new SolidColorBrush(Color.FromArgb(128, 0, 0, 0));
 
@@ -61,6 +66,7 @@ public partial class OverlayViewModel : ObservableObject, IDisposable
         }
         FontFamily = ResolveFontFamily(_settings.FontFamily);
         FontSize = _settings.FontSize;
+        FontWeight = ResolveFontWeight(_settings.FontWeight);
         BackgroundBrush = ParseBrush(_settings.BackgroundColor);
         BorderBrush = DeriveBorderBrush(_settings.BackgroundColor);
         BottomMarginPercent = _settings.BottomMarginPercent;
@@ -136,10 +142,21 @@ public partial class OverlayViewModel : ObservableObject, IDisposable
         {
             FontFamily = ResolveFontFamily(_settings.FontFamily);
             FontSize = _settings.FontSize;
+            FontWeight = ResolveFontWeight(_settings.FontWeight);
             BackgroundBrush = ParseBrush(_settings.BackgroundColor);
             BorderBrush = DeriveBorderBrush(_settings.BackgroundColor);
             BottomMarginPercent = _settings.BottomMarginPercent;
         });
+    }
+
+    // settings.json には "Normal" / "Bold" の文字列で保存し、 ここで Avalonia.Media.FontWeight enum に変換する。
+    // 不明値 (旧設定の null / 想定外文字列) は Normal にフォールバック。
+    private static FontWeight ResolveFontWeight(string weightName)
+    {
+        if (string.IsNullOrWhiteSpace(weightName)) return Avalonia.Media.FontWeight.Normal;
+        return Enum.TryParse<FontWeight>(weightName, ignoreCase: true, out var parsed)
+            ? parsed
+            : Avalonia.Media.FontWeight.Normal;
     }
 
     // settings.json には "IBM Plex Sans JP" のような表示名 (= フォント本体の family name) を保存し、
@@ -227,17 +244,32 @@ public partial class SubtitleDisplayItem : ObservableObject
     private DateTime _displayEndTime;
     private readonly double _fadeOutDuration;
 
+    // rere C2-006 対応: partial/final 用の Brush を 2 個だけキャッシュして使い回す。
+    // 旧実装は Update のたびに `new SolidColorBrush(...)` を行い、 partial 字幕 30ms 周期 = 33Hz で
+    // SolidColorBrush 生成、 さらに毎回 Color.Parse(colorString) も走って Gen0 圧をかけていた。
+    // SubtitleDisplayItem 寿命中 (= 1 字幕の表示時間) は色設定が変わらない前提で、 コンストラクタで一度だけ確保する。
+    private readonly IBrush _partialBrush;
+    private readonly IBrush _finalBrush;
+
     public SubtitleDisplayItem(SubtitleItem item, OverlaySettings settings)
     {
         SegmentId = item.SegmentId;
         _fadeOutDuration = settings.FadeOutDuration;
+        _partialBrush = BrushHelper.ParseBrush(settings.PartialTextColor, Colors.White);
+        _finalBrush = BrushHelper.ParseBrush(settings.FinalTextColor, Colors.White);
         Update(item, settings);
     }
 
     public void Update(SubtitleItem item, OverlaySettings settings)
     {
         DisplayText = item.DisplayText;
-        TextBrush = BrushHelper.ParseBrush(item.IsFinal ? settings.FinalTextColor : settings.PartialTextColor, Colors.White);
+        // キャッシュ済み brush を切替えるだけ。 ref が同じなら setter ガード (CommunityToolkit の
+        // EqualityComparer<T>.Default 比較) で OnPropertyChanged も発火しない → UI 再描画も skip。
+        var newBrush = item.IsFinal ? _finalBrush : _partialBrush;
+        if (!ReferenceEquals(TextBrush, newBrush))
+        {
+            TextBrush = newBrush;
+        }
         _displayEndTime = DateTime.Now.AddSeconds(settings.DisplayDuration);
         Opacity = 1.0;
     }

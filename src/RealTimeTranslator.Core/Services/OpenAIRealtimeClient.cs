@@ -27,9 +27,14 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
         if (uri.Scheme != "wss")
             throw new InvalidOperationException(
                 $"セキュアでない WebSocket スキーム '{uri.Scheme}' は許可されていません。Endpoint には wss:// を使用してください。");
-        if (!AllowedHosts.Contains(uri.Host))
+        // rere A2-002: user-info (user:pass@host) を拒否。 host spoofing 防止 (UpdateService と整合)。
+        if (!string.IsNullOrEmpty(uri.UserInfo))
             throw new InvalidOperationException(
-                $"Endpoint のホスト '{uri.Host}' は許可リスト外です（api.openai.com のみ）。settings.json を確認してください。");
+                "Endpoint に user-info (user:pass@) を含めることはできません。");
+        // rere A2-002: IdnHost で比較 (Punycode 攻撃対策、 ASCII ドメインでは Host と同値)。
+        if (!AllowedHosts.Contains(uri.IdnHost))
+            throw new InvalidOperationException(
+                $"Endpoint のホスト '{uri.IdnHost}' は許可リスト外です（api.openai.com のみ）。settings.json を確認してください。");
     }
 
     private ClientWebSocket? _ws;
@@ -244,7 +249,8 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
             var result = await ws.ReceiveAsync(buffer, timeoutCts.Token).ConfigureAwait(false);
             var json = Encoding.UTF8.GetString(buffer, 0, result.Count);
 
-            using var doc = JsonDocument.Parse(json);
+            // rere A2-001: 本流 ProcessMessage 同様に MaxDepth=32 でガード (defense-in-depth)。
+            using var doc = JsonDocument.Parse(json, s_jsonDocumentOptions);
             var root = doc.RootElement;
             var type = root.TryGetProperty("type", out var t) ? t.GetString() : null;
 

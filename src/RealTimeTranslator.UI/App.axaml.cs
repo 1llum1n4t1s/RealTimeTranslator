@@ -253,7 +253,23 @@ public partial class App : Application
         // Silero VAD (ONNX 推論セッション)。 onnx ファイルは Assets/silero_vad.onnx に同梱。
         // Singleton にすることで onnx ロード (~10ms) は起動時 1 回のみ。 LSTM state は
         // TranslationPipelineService が Start のたびに Reset を呼んでクリアする。
-        services.AddSingleton<IVoiceActivityDetector, SileroVadDetector>();
+        //
+        // rere F-002 対応: factory 経由で構築失敗 (onnx 同梱漏れ / AV 隔離 / VC++ ランタイム不足等) を
+        // catch して NullVoiceActivityDetector に fallback する。 これがないと VAD 初期化失敗で
+        // アプリ全体が起動不能 (brick) になる。 fallback 動作時は全音声を OpenAI に送る素通し動作になり、
+        // VAD による課金抑制は効かないが、 翻訳本体は継続できる。
+        services.AddSingleton<IVoiceActivityDetector>(sp =>
+        {
+            try
+            {
+                return new SileroVadDetector();
+            }
+            catch (Exception ex)
+            {
+                LoggerService.LogException("SileroVadDetector 初期化失敗、 VAD ゲートを無効化して NullVoiceActivityDetector にフォールバック", ex);
+                return new NullVoiceActivityDetector();
+            }
+        });
         services.AddSingleton<IUpdateService, UpdateService>();
         services.AddSingleton<ITranslationPipelineService, TranslationPipelineService>();
         services.AddSingleton<OverlayViewModel>();
