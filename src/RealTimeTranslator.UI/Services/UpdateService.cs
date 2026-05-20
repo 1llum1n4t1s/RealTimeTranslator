@@ -18,24 +18,10 @@ namespace RealTimeTranslator.UI.Services;
 
 public class UpdateService : IUpdateService
 {
-    // FeedUrl で許可するホスト（HTTPS + 完全一致）。
-    // Authenticode / RSA 署名は今回見送りのため、 最低限のホスト固定でフィッシング feed への接続を防ぐ。
-    private static readonly HashSet<string> AllowedFeedHosts = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "github.com",
-        "objects.githubusercontent.com",
-    };
-
-    // FeedUrl が github.com を指す場合の owner/repo 完全一致 allowlist (rere A1-001 対応)。
-    // 旧実装はホスト一致のみで path 検証なしだったため、 settings.json の Update.FeedUrl を
-    // `https://github.com/attacker/malicious-fork` に書き換えるだけで Velopack が任意リポの
-    // release を信頼して DL → Apply → Restart する経路があった。 path 部の owner/repo を
-    // 公式リポに固定して攻撃面を消す。
-    // objects.githubusercontent.com (CDN) は owner/repo 形式ではないため別扱い (host だけ allowlist で検証)。
-    private static readonly HashSet<string> AllowedGitHubRepoPaths = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "1llum1n4t1s/RealTimeTranslator",
-    };
+    // 配信元 URL は AppSettings.UpdateSettings.UpdateBaseUrl に [JsonIgnore] でハードコード固定されており、
+    // settings.json から書き換えできない (Cloudflare R2 へ移行)。攻撃者が任意ホストへ誘導する経路が
+    // 構造的に塞がれているため、旧来の host / owner-repo allowlist は不要。TryGetValidFeedUri は
+    // HTTPS + 絶対 URI + userinfo 排除の防御チェックのみ残す。
 
     // Komorebi 互換: 自動チェックは DNS 半切断 / TCP ハングで Velopack 内部ロックが長時間保有される
     // 事故を防ぐため 30 秒で打ち切る。 手動チェックはユーザーがダイアログ前で待てるのでタイムアウト無し。
@@ -67,12 +53,12 @@ public class UpdateService : IUpdateService
             _settings = new UpdateSettings
             {
                 Enabled = settings.Enabled,
-                FeedUrl = settings.FeedUrl,
                 IgnoredTagName = settings.IgnoredTagName
             };
         }
 
-        if (!_settings.Enabled || string.IsNullOrWhiteSpace(_settings.FeedUrl))
+        // UpdateBaseUrl は [JsonIgnore] ハードコード固定なので常に非空。実質 Enabled だけで無効判定する。
+        if (!_settings.Enabled || string.IsNullOrWhiteSpace(_settings.UpdateBaseUrl))
         {
             OnStatusChanged(UpdateStatus.Disabled, "更新チェックは無効です。");
         }
@@ -112,20 +98,19 @@ public class UpdateService : IUpdateService
             snapshot = new UpdateSettings
             {
                 Enabled = _settings.Enabled,
-                FeedUrl = _settings.FeedUrl,
                 IgnoredTagName = _settings.IgnoredTagName
             };
         }
 
-        if (!snapshot.Enabled || string.IsNullOrWhiteSpace(snapshot.FeedUrl))
+        if (!snapshot.Enabled || string.IsNullOrWhiteSpace(snapshot.UpdateBaseUrl))
         {
             OnStatusChanged(UpdateStatus.Disabled, "更新チェックは無効です。");
             return;
         }
 
-        if (!TryGetValidFeedUri(snapshot.FeedUrl, out var feedUri, out var validationReason))
+        if (!TryGetValidFeedUri(snapshot.UpdateBaseUrl, out var feedUri, out var validationReason))
         {
-            LoggerService.LogError($"UpdateService: FeedUrl 検証失敗 — {validationReason}");
+            LoggerService.LogError($"UpdateService: 配信元 URL 検証失敗 — {validationReason}");
             OnStatusChanged(UpdateStatus.Failed, validationReason);
             return;
         }
@@ -145,11 +130,10 @@ public class UpdateService : IUpdateService
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
-            // GithubSource は GitHub Releases API で latest release の assets を解析する。
-            // SimpleWebSource は `<FeedUrl>/releases-{channel}.json` を直接 GET するため、
-            // GitHub のリポジトリトップ URL (https://github.com/owner/repo) には対応できず 404 になる。
-            // Komorebi も GithubSource を使用している。
-            var source = new GithubSource(feedUri.AbsoluteUri.TrimEnd('/'), accessToken: string.Empty, prerelease: false);
+            // SimpleWebSource: Cloudflare R2 (静的 HTTP ホスティング) から `<UpdateBaseUrl>/releases.{channel}.json`
+            // を直接 GET し、同ディレクトリの nupkg をダウンロードする。channel はインストール時の値を
+            // Velopack が内部記憶して自動再利用するため、明示指定は不要 (win / win-arm64)。
+            var source = new SimpleWebSource(feedUri.AbsoluteUri.TrimEnd('/'));
             var manager = new UpdateManager(source);
 
             // Velopack でインストールされていない場合（開発環境など）はチェックをスキップする。
@@ -338,55 +322,29 @@ public class UpdateService : IUpdateService
     }
 
     /// <summary>
-    /// FeedUrl の HTTPS + ホスト許可リスト検証。
-    /// 攻撃者が settings.json を書換えて任意の URL に誘導することを防ぐ最低限のガード。
-    /// rere A2-003: userinfo (user:pass@host) と Punycode 経由の host spoofing を追加で拒否。
+    /// 配信元 URL (UpdateBaseUrl) の HTTPS + 絶対 URI 形式の防御チェック。
+    /// 配信元は <see cref="UpdateSettings.UpdateBaseUrl"/> に [JsonIgnore] でハードコード固定されており
+    /// settings.json から書き換え不可だが、万一の不正値を弾く防御として最低限の検証を残す。
+    /// rere A2-003: userinfo (user:pass@host) 経由の host spoofing を拒否。
     /// </summary>
     private static bool TryGetValidFeedUri(string feedUrl, out Uri uri, out string reason)
     {
         uri = null!;
         if (!Uri.TryCreate(feedUrl, UriKind.Absolute, out var parsed))
         {
-            reason = "FeedUrl が絶対 URI 形式ではありません。";
+            reason = "配信元 URL が絶対 URI 形式ではありません。";
             return false;
         }
         if (parsed.Scheme != Uri.UriSchemeHttps)
         {
-            reason = $"FeedUrl の HTTPS 以外のスキーム（{parsed.Scheme}）は許可されていません。";
+            reason = $"配信元 URL の HTTPS 以外のスキーム（{parsed.Scheme}）は許可されていません。";
             return false;
         }
         // userinfo (user:pass@host) を含む URL を拒否。 host spoofing 防止
         if (!string.IsNullOrEmpty(parsed.UserInfo))
         {
-            reason = "FeedUrl に user-info (user:pass@) を含めることはできません。";
+            reason = "配信元 URL に user-info (user:pass@) を含めることはできません。";
             return false;
-        }
-        // IdnHost で比較 (Punycode 攻撃対策、 ASCII ドメインでは Host と同値)
-        if (!AllowedFeedHosts.Contains(parsed.IdnHost))
-        {
-            reason = $"FeedUrl のホスト '{parsed.IdnHost}' は許可リスト外です（github.com / objects.githubusercontent.com のみ）。";
-            return false;
-        }
-        // rere A1-001: github.com の場合は owner/repo path も完全一致 allowlist で検証する。
-        // ホスト一致のみだと settings.json 改竄で任意の owner/repo の release が信頼されて Velopack 経由 RCE。
-        if (string.Equals(parsed.IdnHost, "github.com", StringComparison.OrdinalIgnoreCase))
-        {
-            // parsed.Segments は "/", "owner/", "repo" や "owner/", "repo/", "..." のような segment 配列。
-            // 先頭 2 segment (owner/repo) を取り出して照合する。 末尾の / を除いて結合。
-            var segments = parsed.Segments;
-            if (segments.Length < 3)
-            {
-                reason = $"FeedUrl の path '{parsed.AbsolutePath}' に owner/repo が含まれていません。";
-                return false;
-            }
-            string owner = segments[1].TrimEnd('/');
-            string repo = segments[2].TrimEnd('/');
-            string ownerRepo = $"{owner}/{repo}";
-            if (!AllowedGitHubRepoPaths.Contains(ownerRepo))
-            {
-                reason = $"FeedUrl の owner/repo '{ownerRepo}' は許可リスト外です（1llum1n4t1s/RealTimeTranslator のみ）。";
-                return false;
-            }
         }
         uri = parsed;
         reason = string.Empty;

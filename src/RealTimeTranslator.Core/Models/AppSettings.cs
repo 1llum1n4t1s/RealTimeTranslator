@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace RealTimeTranslator.Core.Models;
 
 public class AppSettings
@@ -26,10 +28,28 @@ public class TranslationLogSettings
 
 public class UpdateSettings
 {
-    // デフォルトで有効: UpdateService.TryGetValidFeedUri により HTTPS + github.com /
-    // objects.githubusercontent.com ホスト allowlist で安全性確保済み。
+    /// <summary>
+    /// 自動更新で許可する R2 配信元の正規 URL（悪意ある誘導を防ぐためハードコード固定）。
+    /// Velopack の <see cref="Velopack.Sources.SimpleWebSource"/> がこの base URL + <c>/releases.{channel}.json</c>
+    /// を取得しに行く。末尾の "/" は付けない（Velopack 内部で正規化される）。
+    /// 旧 GitHub Releases (github.com/1llum1n4t1s/RealTimeTranslator) からは Cloudflare R2 へ移行。
+    /// 配信元は中立ドメイン rtt.nephilim.jp を使う (1llum1n4t1.com 系はクラウド/企業 egress の
+    /// SNI フィルタで false positive を起こすため中立ドメインに統一。Lhamiel の lhamiel.nephilim.jp と同方針)。
+    /// 超旧 GithubSource クライアント救済のため、GitHub Releases に R2 対応版を「踏み台」として 1 つ publish する
+    /// （GithubSource は最新版を選ぶので、それ経由で更新 → 再起動後に R2 を見るようになる）。
+    /// </summary>
+    internal const string CanonicalUpdateBaseUrl = "https://rtt.nephilim.jp";
+
+    // デフォルトで有効: UpdateBaseUrl は [JsonIgnore] ハードコード固定で外部誘導を防止済み。
     public bool Enabled { get; set; } = true;
-    public string FeedUrl { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 自動更新の配信元 base URL（Cloudflare R2 でホスティング）。
+    /// セキュリティ上の理由でハードコード固定（<see cref="CanonicalUpdateBaseUrl"/>）。
+    /// settings.json から書き換えても反映されない（悪意ある第三者ホストへの誘導を防ぐため）。
+    /// </summary>
+    [JsonIgnore]
+    public string UpdateBaseUrl => CanonicalUpdateBaseUrl;
 
     // ユーザーが「このバージョンを無視」を選択したタグ名 (例: "v1.0.13")。
     // 起動時の自動チェックで取得した最新タグがこれと一致したら、ダイアログを開かずスキップする。

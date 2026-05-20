@@ -35,73 +35,50 @@ jobs:
     with:
       version: ${{ needs.version.outputs.version }}
 
-  release:
+  r2-upload:
     needs: [velopack, version]
-    name: Release
+    name: R2 Upload
     runs-on: ubuntu-latest
+    # 配信元は Cloudflare R2 単独。GitHub Releases は作らないため contents: write は不要。
     permissions:
-      contents: write
+      contents: read
     steps:
-      - name: Checkout sources
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-      - name: Delete existing releases
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ needs.version.outputs.tag }}
-        run: |
-          if gh release view "$TAG" > /dev/null 2>&1; then
-            gh release delete "$TAG" --yes --cleanup-tag
-          fi
-          if gh release view "velopack-$TAG" > /dev/null 2>&1; then
-            gh release delete "velopack-$TAG" --yes --cleanup-tag
-          fi
       - name: Download Velopack artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           pattern: velopack.*
-          path: velopack-packages
+          path: packages
           merge-multiple: true
-      - name: Create Velopack release
-        # Velopack 自動更新クライアント (UpdateService) が参照する RELEASES-* / nupkg を別タグで管理する。
-        # `latest=false` にすることで「最新リリース」表示は人間向けの本リリース側で維持。
+      - name: List artifacts
+        run: ls -lh packages/
+      - name: Setup Node.js (wrangler 4.x requires Node >=22)
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: '22'
+      - name: Install wrangler CLI
+        # サプライチェーン保護のため明示的にバージョン固定 (Velopack 同様、浮動バージョンは使わない)。
+        run: npm install -g wrangler@4.93.0
+      - name: Upload to R2 bucket (realtimetranslator-updates)
+        # 同名 releases.win-x64.json は冪等に上書き、過去バージョンの nupkg は触らず維持 (delta 更新のため残す)。
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ needs.version.outputs.tag }}
-          VERSION: ${{ needs.version.outputs.version }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
-          gh release create "velopack-$TAG" \
-            -t "Velopack $VERSION" \
-            --latest=false \
-            --notes "Auto-update packages for Velopack."
-          gh release upload "velopack-$TAG" velopack-packages/*
-      - name: Create release
-        # 人間向け本リリース (latest)。
-        # Velopack の GithubSource は `latest` リリースの assets から releases-{channel}.json と
-        # 対応 nupkg を取得するため、Setup.exe だけでなく velopack-packages の全 asset を
-        # 上げる必要がある（v1.0.5 まで Setup.exe のみで自動更新が機能しなかった）。
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ needs.version.outputs.tag }}
-          VERSION: ${{ needs.version.outputs.version }}
+          set -euo pipefail
+          uploaded=0
+          for f in packages/*; do
+            name=$(basename "$f")
+            echo "::group::Upload $name"
+            wrangler r2 object put "realtimetranslator-updates/$name" --file="$f" --remote
+            echo "::endgroup::"
+            uploaded=$((uploaded + 1))
+          done
+          echo "✅ R2 アップロード完了: $uploaded ファイル"
+      - name: Verify delivery (releases.win-x64.json の HTTP 200 を検証)
         run: |
-          gh release create "$TAG" -t "$VERSION" --generate-notes
-          gh release upload "$TAG" velopack-packages/*
-      - name: Cleanup old releases (keep latest 3)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          # 通常リリース: タグが数字始まり (1.0.2 等) で velopack- を含まないものを作成日降順で取得
-          gh release list --limit 100 --json tagName,createdAt \
-            --jq '[.[] | select(.tagName | test("^[0-9]"))] | sort_by(.createdAt) | reverse | .[3:] | .[].tagName' \
-          | while read -r tag; do
-              echo "Deleting old release: $tag"
-              gh release delete "$tag" --yes --cleanup-tag || true
-            done
-
-          # Velopack リリース: velopack-x.y.z 形式のものを作成日降順で取得
-          gh release list --limit 100 --json tagName,createdAt \
-            --jq '[.[] | select(.tagName | startswith("velopack-"))] | sort_by(.createdAt) | reverse | .[3:] | .[].tagName' \
-          | while read -r tag; do
-              echo "Deleting old velopack release: $tag"
-              gh release delete "$tag" --yes --cleanup-tag || true
-            done
+          set -euo pipefail
+          url="https://rtt.nephilim.jp/releases.win-x64.json"
+          curl --fail --silent --show-error --max-time 30 \
+               --retry 3 --retry-delay 5 --retry-all-errors \
+               -o /dev/null -w "HTTP %{http_code} (%{size_download} bytes)\n" \
+               "$url"
