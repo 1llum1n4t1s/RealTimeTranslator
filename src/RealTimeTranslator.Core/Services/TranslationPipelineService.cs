@@ -30,6 +30,10 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     private DateTime _lastEmitTime = DateTime.MinValue;
     private bool _hasPendingDelta;
     private readonly Timer _throttleTimer;
+    // 未確定の trailing が「確定字幕の表示時間」(Overlay.DisplayDuration) を過ぎても句点/done で確定しないとき、
+    // その trailing を確定 (IsFinal=true) として emit + ログ記録するためのアイドルタイマー。
+    // done が来ない発話 (2026-05-17 観測) や句点なしで終わる短い発話の取りこぼしを防ぐ。
+    private readonly Timer _idleFinalizeTimer;
     private readonly Stopwatch _latencyStopwatch = new();
     private volatile bool _isRunning;
     // rere B1-006: Dispose / DisposeAsync の二重実行を防ぐ Interlocked 占有マーク。
@@ -126,6 +130,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         _vad = vad;
         _cachedRealtimeSettings = settingsMonitor.CurrentValue.OpenAIRealtime;
         _throttleTimer = new Timer(OnThrottleTimerElapsed, null, Timeout.Infinite, Timeout.Infinite);
+        _idleFinalizeTimer = new Timer(OnIdleFinalizeTimerElapsed, null, Timeout.Infinite, Timeout.Infinite);
 
         _realtimeClient.TranscriptDeltaReceived += OnTranscriptDelta;
         _realtimeClient.TranscriptCompleted += OnTranscriptCompleted;
@@ -182,6 +187,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
             _currentSegmentId = Guid.NewGuid().ToString();
             _lastEmitTime = DateTime.MinValue;
             _hasPendingDelta = false;
+            _idleFinalizeTimer.Change(Timeout.Infinite, Timeout.Infinite);
         }
 
         // rere B1-011: Core layer 統一で ConfigureAwait(false) 付与。
@@ -255,6 +261,9 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     private async Task StopCoreAsync(CancellationToken cancellationToken)
     {
         Logger.Info("翻訳パイプライン停止");
+        // 未確定のまま残っている trailing を確定字幕として emit + ログ記録してから停止する
+        // (停止時に「未確定の文字が確定されず消える」データロスを防ぐ)。
+        FinalizePendingPartial("停止");
         _audioCaptureService.AudioDataAvailable -= OnAudioDataAvailable;
         _isRunning = false;
         _latencyStopwatch.Stop();
@@ -527,6 +536,10 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                 EmitPartialSubtitle();
             }
         }
+
+        // 未確定 trailing が残っていれば DisplayDuration 後のアイドル確定をリスケジュール
+        // (毎 delta でリスケされるため、 無活動が DisplayDuration 継続して初めて発火する)。
+        SyncIdleFinalizeTimer();
     }
 
     private void OnThrottleTimerElapsed(object? state)
@@ -563,6 +576,79 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         {
             Logger.Info($"partial emit #{count}: SegmentId={ShortSegmentId(segmentId)} 累積長={partialText.Length} 内容='{TruncateForLog(partialText)}'");
         }
+    }
+
+    /// <summary>
+    /// アイドル確定タイマー発火: 未確定の trailing が「確定字幕の表示時間」(Overlay.DisplayDuration) を過ぎても
+    /// 句点・done で確定しなかった場合に、 その trailing を確定 (IsFinal=true) として emit + ログ記録する。
+    /// done が来ない発話や、 句点なしで終わる短い発話の取りこぼしを防ぐ救済経路。
+    /// </summary>
+    private void OnIdleFinalizeTimerElapsed(object? state)
+    {
+        FinalizePendingPartial("無音タイムアウト");
+    }
+
+    /// <summary>
+    /// 未確定 trailing (_accumulatedText) の有無に応じてアイドル確定タイマーを再設定する。
+    /// trailing が残っていれば DisplayDuration 後に発火するようリスケジュール (毎 delta/done で呼ばれ、
+    /// 無活動が DisplayDuration 継続して初めて発火する)、 trailing が空なら停止する。
+    /// </summary>
+    private void SyncIdleFinalizeTimer()
+    {
+        lock (_textLock)
+        {
+            if (_accumulatedText.Length > 0)
+            {
+                // DisplayDuration は秒 (既定 5.0)。 「未確定が放置されたら確定扱いにする」しきい値に流用する。
+                // 0 や極端に小さい値で誤発火しないよう下限 1 秒でガードする。
+                var idle = TimeSpan.FromSeconds(Math.Max(1.0, _settingsMonitor.CurrentValue.Overlay.DisplayDuration));
+                _idleFinalizeTimer.Change(idle, Timeout.InfiniteTimeSpan);
+            }
+            else
+            {
+                _idleFinalizeTimer.Change(Timeout.Infinite, Timeout.Infinite);
+            }
+        }
+    }
+
+    /// <summary>
+    /// 未確定の trailing (_accumulatedText) を確定字幕 (IsFinal=true) として emit + ログ記録し、 状態を進める。
+    /// 停止時 (StopCoreAsync) とアイドルタイムアウト (OnIdleFinalizeTimerElapsed) から呼ばれる。
+    /// 空 / 空白のみのときは何もしない。 SegmentId は partial 表示時と同一にして overlay 側の partial を確定表示に置換させる。
+    /// </summary>
+    private void FinalizePendingPartial(string reason)
+    {
+        string sentence;
+        string segmentId;
+        lock (_textLock)
+        {
+            sentence = _accumulatedText.ToString();
+            if (string.IsNullOrWhiteSpace(sentence))
+            {
+                _idleFinalizeTimer.Change(Timeout.Infinite, Timeout.Infinite);
+                return;
+            }
+
+            segmentId = _currentSegmentId;
+            // 確定累積へ反映 (後続 done の prefix 一致を維持するため、 delta 経路の確定と同じ扱い)。
+            _lastFinalizedTranscript.Append(sentence);
+            _accumulatedText.Clear();
+            _currentSegmentId = Guid.NewGuid().ToString();
+            _hasPendingDelta = false;
+            _idleFinalizeTimer.Change(Timeout.Infinite, Timeout.Infinite);
+            _throttleTimer.Change(Timeout.Infinite, Timeout.Infinite);
+        }
+
+        Logger.Info($"未確定文を確定 emit ({reason}): SegmentId={ShortSegmentId(segmentId)} 長さ={sentence.Length} 内容='{TruncateForLog(sentence)}'");
+
+        // ロック外で emit (SubtitleGenerated ハンドラ側の再入によるデッドロックを避ける)。
+        SubtitleGenerated?.Invoke(this, new SubtitleItem
+        {
+            SegmentId = segmentId,
+            OriginalText = string.Empty,
+            TranslatedText = sentence,
+            IsFinal = true,
+        });
     }
 
     private void OnTranscriptCompleted(string transcript)
@@ -699,6 +785,9 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         doneStats.ProcessingLatency = latencyMs;
         doneStats.TranslationLatency = latencyMs;
         StatsUpdated?.Invoke(this, doneStats);
+
+        // done 後も未完結 trailing が残るケース (partial 表示中) のため、 アイドル確定タイマーを同期する。
+        SyncIdleFinalizeTimer();
     }
 
     private void OnClientError(Exception ex)
@@ -749,6 +838,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                 _lastEmitTime = DateTime.MinValue;
                 _hasPendingDelta = false;
                 _throttleTimer.Change(Timeout.Infinite, Timeout.Infinite);
+                _idleFinalizeTimer.Change(Timeout.Infinite, Timeout.Infinite);
             }
         }
 
@@ -782,6 +872,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         }
 
         _throttleTimer.Dispose();
+        _idleFinalizeTimer.Dispose();
         _realtimeClient.TranscriptDeltaReceived -= OnTranscriptDelta;
         _realtimeClient.TranscriptCompleted -= OnTranscriptCompleted;
         _realtimeClient.ErrorReceived -= OnClientError;
@@ -803,6 +894,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         catch { /* DisposeAsync を推奨 */ }
 
         _throttleTimer.Dispose();
+        _idleFinalizeTimer.Dispose();
         _realtimeClient.TranscriptDeltaReceived -= OnTranscriptDelta;
         _realtimeClient.TranscriptCompleted -= OnTranscriptCompleted;
         _realtimeClient.ErrorReceived -= OnClientError;

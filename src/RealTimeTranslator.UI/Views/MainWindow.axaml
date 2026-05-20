@@ -768,8 +768,13 @@
                       RowDefinitions="*,Auto">
 
                     <!-- 翻訳ログ本体: ADV ゲーム会話ログ風の縦並びカード -->
-                    <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto"
-                                  IsVisible="{Binding !IsEmpty}">
+                    <!-- Discord 風オートスクロール: 最下部追従 + 上スクロール中は追従停止 (MainWindow.axaml.cs)。
+                         イベントハンドラは DataContext (TranslationLogViewModel) ではなく code-behind の MainWindow に解決される。 -->
+                    <ScrollViewer Grid.Row="0" x:Name="LogScrollViewer"
+                                  VerticalScrollBarVisibility="Auto"
+                                  IsVisible="{Binding !IsEmpty}"
+                                  Loaded="OnLogScrollViewerLoaded"
+                                  ScrollChanged="OnLogScrollChanged">
                         <ItemsControl ItemsSource="{Binding Entries}" Margin="0,0,0,8">
                             <ItemsControl.ItemTemplate>
                                 <DataTemplate x:DataType="models:TranslationLogEntry">
@@ -830,6 +835,12 @@
                             <Button Command="{Binding ClearAllCommand}"
                                     Content="すべて削除" FontSize="12"
                                     IsEnabled="{Binding !IsEmpty}"/>
+                            <!-- 最新へ移動: 上にスクロールして追従が外れている間だけ有効 (IsEnabled は code-behind が制御)。
+                                 Click は code-behind の MainWindow.OnJumpToLatestClick に解決される。 -->
+                            <Button x:Name="JumpToLatestButton"
+                                    Click="OnJumpToLatestClick"
+                                    Content="↓ 最新へ" FontSize="12"
+                                    IsEnabled="False"/>
                         </StackPanel>
                     </Border>
                 </Grid>

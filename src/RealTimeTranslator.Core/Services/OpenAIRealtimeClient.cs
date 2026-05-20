@@ -46,6 +46,11 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
     private int _reconnectAttempts;
     private int _disposed;
     private int _reconnectInFlight; // 0 = idle, 1 = TryReconnectAsync 実行中（多重起動防止）
+    // OpenAI Realtime API の 1 セッション上限 (60 分) に到達する前に ~55 分でプロアクティブに
+    // 新セッションへ張り替えるタイマー。 これがないと 60 分で session_expired → サーバー主導クローズが
+    // 起きて翻訳が突然止まる。 5 分マージンを取って先回りする。
+    private readonly Timer _sessionRefreshTimer;
+    private static readonly TimeSpan SessionRefreshInterval = TimeSpan.FromMinutes(55);
     private long _totalDroppedAudioChunks;
     private volatile bool _shouldReconnect;
     private volatile ConnectionState _state = ConnectionState.Disconnected;
@@ -98,6 +103,7 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
         // ネットワーク復帰イベントで再接続カウンタをリセットする。モバイル NW 切替や
         // 一時切断（5〜30 秒）で MaxReconnectAttempts に達した後でも、復帰後に再試行できるようにする。
         NetworkChange.NetworkAvailabilityChanged += OnNetworkAvailabilityChanged;
+        _sessionRefreshTimer = new Timer(OnSessionRefreshTimerElapsed, null, Timeout.Infinite, Timeout.Infinite);
     }
 
     private void OnNetworkAvailabilityChanged(object? sender, NetworkAvailabilityEventArgs e)
@@ -209,6 +215,7 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
         NetworkChange.NetworkAvailabilityChanged -= OnNetworkAvailabilityChanged;
         DisconnectAsync().GetAwaiter().GetResult();
         _cts?.Dispose();
+        _sessionRefreshTimer.Dispose();
         _connectLock.Dispose();
     }
 
@@ -218,6 +225,7 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
         NetworkChange.NetworkAvailabilityChanged -= OnNetworkAvailabilityChanged;
         await DisconnectAsync().ConfigureAwait(false);
         _cts?.Dispose();
+        _sessionRefreshTimer.Dispose();
         _connectLock.Dispose();
     }
 
@@ -308,6 +316,8 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
         _cts = null;
         cts?.Cancel();
         _sendChannel?.Writer.TryComplete();
+        // セッション張り替えタイマーは一旦停止 (次に Connected になった時点で再武装される)。
+        _sessionRefreshTimer.Change(Timeout.Infinite, Timeout.Infinite);
 
         var tasks = new List<Task>(2);
         if (_receiveTask != null) tasks.Add(_receiveTask);
@@ -370,6 +380,8 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
             _reconnectAttempts = 0;
             SetState(ConnectionState.Connected);
             Logger.Info("OpenAI Realtime WebSocket 接続成功");
+            // 60 分のセッション上限に達する前 (~55 分) にプロアクティブ再接続するタイマーを武装する。
+            _sessionRefreshTimer.Change(SessionRefreshInterval, Timeout.InfiniteTimeSpan);
 
             await SendSessionUpdateAsync(ct).ConfigureAwait(false);
 
@@ -549,7 +561,14 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
         }
 
         if (!ct.IsCancellationRequested)
+        {
+            // ⭐ サーバー主導クローズ (session_expired = 60 分上限 等) では state が Connected のまま残るため、
+            // TryReconnectAsync の while ガード (_state != Connected) で再接続が空振りする (翻訳が止まったまま)。
+            // 明示的に Reconnecting に倒してから再接続ループを起動する。
+            if (_shouldReconnect && _state == ConnectionState.Connected)
+                SetState(ConnectionState.Reconnecting);
             _ = Task.Run(() => TryReconnectAsync(), CancellationToken.None);
+        }
     }
 
     // rere A2-006: 深ネスト JSON 攻撃を防ぐ MaxDepth 制限。
@@ -729,6 +748,23 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
         {
             Logger.Warn("JSON パースエラー", ex);
         }
+    }
+
+    /// <summary>
+    /// セッション張り替えタイマー発火 (~55 分): OpenAI の 60 分セッション上限で session_expired により
+    /// サーバーに切られる前に、 こちらから先回りして新セッションへ張り替える (プロアクティブ再接続)。
+    /// reactive 再接続と同じ TryReconnectAsync 経路を使うが、 state を Reconnecting に倒し、
+    /// 再接続カウンタを 0 に戻して最小遅延 (ReconnectDelayMs) で張り替える。
+    /// </summary>
+    private void OnSessionRefreshTimerElapsed(object? state)
+    {
+        // 既に切断 / 再接続中 / 停止指示済みなら何もしない (二重起動は _reconnectInFlight でも防がれる)。
+        if (!_shouldReconnect || _state != ConnectionState.Connected) return;
+
+        Logger.Info($"セッションが約 {SessionRefreshInterval.TotalMinutes:F0} 分に到達 — 60 分上限前にプロアクティブ再接続を実行");
+        Interlocked.Exchange(ref _reconnectAttempts, 0);
+        SetState(ConnectionState.Reconnecting);
+        _ = Task.Run(() => TryReconnectAsync(), CancellationToken.None);
     }
 
     private async Task TryReconnectAsync()
