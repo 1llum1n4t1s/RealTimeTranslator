@@ -82,6 +82,18 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     // _accumulatedText.Clear() 時は必ず -1 にリセットすること。
     private int _lastFallbackCommaPos = -1;
 
+    // ───────── 類似重複抑制 ─────────
+    // Translation API (intent=translation) は transcript.done を送らず delta のみで動作する
+    // ケースがある (2026-05-22 観測)。 サーバー VAD が重複する音声セグメントを別レスポンスとして
+    // 再翻訳し、 微妙に異なるテキストを生成するため、 近似重複が連続 emit される UX バグになる。
+    // 例: "手すりって、実は取り付けるものなんだな。" → 3秒後 "手すりって、取り付けるものなんだな。"
+    // Bigram Jaccard 類似度 > DuplicateSuppressionThreshold なら後発を抑制する。
+    private readonly Queue<string> _recentEmittedSentences = new();
+    private const int MaxRecentEmissions = 8;
+    // 0.7: 実運用の近似重複 (例: 「手すりって、実は取り付けるものなんだな。」↔「手すりって、取り付けるものなんだな。」= 0.8)
+    // を確実に抑制しつつ、 短い文のインデックス違い (0.55〜0.67) を誤検出しない閾値。
+    internal const double DuplicateSuppressionThreshold = 0.7;
+
     // ───────── VAD ゲート (Silence/InSpeech/Hangover 状態機) ─────────
     // BGM や効果音だけが鳴っているシーンで OpenAI 送信を抑制し token 浪費を防ぐ。
     // EnableVad=false の場合は素通し (旧挙動)。
@@ -190,6 +202,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
             _lastFinalizedTranscript.Clear();
             _accumulatedText.Clear();
             _lastFallbackCommaPos = -1;
+            _recentEmittedSentences.Clear();
             _currentSegmentId = Guid.NewGuid().ToString();
             _lastEmitTime = DateTime.MinValue;
             _hasPendingDelta = false;
@@ -464,7 +477,17 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                     var sentence = _accumulatedText.ToString(start, i + 1 - start);
                     if (!string.IsNullOrWhiteSpace(sentence))
                     {
-                        completedSentences.Add((_currentSegmentId, sentence));
+                        // 類似重複抑制: Translation API が重複音声セグメントを再翻訳した際の
+                        // 近似テキスト (例: "実は" が有無だけ異なる文) を抑制する。
+                        if (!IsSimilarToRecentEmission(sentence))
+                        {
+                            completedSentences.Add((_currentSegmentId, sentence));
+                            RecordEmission(sentence);
+                        }
+                        else
+                        {
+                            Logger.Info($"OnTranscriptDelta: 類似重複抑制 SegmentId={ShortSegmentId(_currentSegmentId)} 内容='{TruncateForLog(sentence)}'");
+                        }
                         _currentSegmentId = Guid.NewGuid().ToString();
                         _lastFinalizedTranscript.Append(sentence);
                     }
@@ -494,8 +517,16 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                     if (!string.IsNullOrWhiteSpace(sentence))
                     {
                         int trailingLength = totalLen - start;
-                        Logger.Info($"OnTranscriptDelta: 句読点 fallback 分割 (trailing={trailingLength}文字 句点なし) → '{TruncateForLog(sentence)}'");
-                        completedSentences.Add((_currentSegmentId, sentence));
+                        if (!IsSimilarToRecentEmission(sentence))
+                        {
+                            Logger.Info($"OnTranscriptDelta: 句読点 fallback 分割 (trailing={trailingLength}文字 句点なし) → '{TruncateForLog(sentence)}'");
+                            completedSentences.Add((_currentSegmentId, sentence));
+                            RecordEmission(sentence);
+                        }
+                        else
+                        {
+                            Logger.Info($"OnTranscriptDelta: 句読点 fallback 類似重複抑制 (trailing={trailingLength}文字) 内容='{TruncateForLog(sentence)}'");
+                        }
                         _currentSegmentId = Guid.NewGuid().ToString();
                         _lastFinalizedTranscript.Append(sentence);
                         start = splitAt + 1;
@@ -645,6 +676,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     {
         string sentence;
         string segmentId;
+        bool shouldEmit;
         lock (_textLock)
         {
             sentence = _accumulatedText.ToString();
@@ -655,6 +687,11 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
             }
 
             segmentId = _currentSegmentId;
+
+            // 類似重複抑制
+            shouldEmit = !IsSimilarToRecentEmission(sentence);
+            if (shouldEmit) RecordEmission(sentence);
+
             // 確定累積へ反映 (後続 done の prefix 一致を維持するため、 delta 経路の確定と同じ扱い)。
             _lastFinalizedTranscript.Append(sentence);
             _accumulatedText.Clear();
@@ -663,6 +700,12 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
             _hasPendingDelta = false;
             _idleFinalizeTimer.Change(Timeout.Infinite, Timeout.Infinite);
             _throttleTimer.Change(Timeout.Infinite, Timeout.Infinite);
+        }
+
+        if (!shouldEmit)
+        {
+            Logger.Info($"未確定文の類似重複抑制 ({reason}): SegmentId={ShortSegmentId(segmentId)} 長さ={sentence.Length} 内容='{TruncateForLog(sentence)}'");
+            return;
         }
 
         Logger.Info($"未確定文を確定 emit ({reason}): SegmentId={ShortSegmentId(segmentId)} 長さ={sentence.Length} 内容='{TruncateForLog(sentence)}'");
@@ -758,7 +801,15 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                     var sentence = newPortion[start..(i + 1)];
                     if (!string.IsNullOrWhiteSpace(sentence))
                     {
-                        emissions.Add((_currentSegmentId, sentence, true));
+                        if (!IsSimilarToRecentEmission(sentence))
+                        {
+                            emissions.Add((_currentSegmentId, sentence, true));
+                            RecordEmission(sentence);
+                        }
+                        else
+                        {
+                            Logger.Info($"OnTranscriptCompleted: 類似重複抑制 内容='{TruncateForLog(sentence)}'");
+                        }
                         _currentSegmentId = Guid.NewGuid().ToString();
                         // 確定累積を完結文ぶんだけ進める (trailing は次回更新時に再登場させる)
                         _lastFinalizedTranscript.Append(sentence);
@@ -864,6 +915,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                 _lastFinalizedTranscript.Clear();
                 _accumulatedText.Clear();
                 _lastFallbackCommaPos = -1;
+                _recentEmittedSentences.Clear();
                 _currentSegmentId = Guid.NewGuid().ToString();
                 _lastEmitTime = DateTime.MinValue;
                 _hasPendingDelta = false;
@@ -1023,6 +1075,57 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         if (!isFinalContext && prevIsDigit && i == length - 1) return false;
 
         return true;
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // 類似重複抑制 — Bigram Jaccard 類似度
+    // ═══════════════════════════════════════════════════════════════
+
+    /// <summary>
+    /// 2つの文字列間の Bigram Jaccard 類似度を計算する (0.0〜1.0)。
+    /// Bigram = 隣接2文字のペア。 Jaccard = |A∩B| / |A∪B|。
+    /// </summary>
+    internal static double BigramJaccardSimilarity(string a, string b)
+    {
+        if (a.Length < 2 || b.Length < 2) return a == b ? 1.0 : 0.0;
+
+        var bigramsA = new HashSet<long>();
+        for (int i = 0; i < a.Length - 1; i++)
+            bigramsA.Add(((long)a[i] << 16) | a[i + 1]);
+
+        var bigramsB = new HashSet<long>();
+        for (int i = 0; i < b.Length - 1; i++)
+            bigramsB.Add(((long)b[i] << 16) | b[i + 1]);
+
+        int intersection = 0;
+        foreach (var bg in bigramsA)
+            if (bigramsB.Contains(bg)) intersection++;
+
+        int union = bigramsA.Count + bigramsB.Count - intersection;
+        return union == 0 ? 0.0 : (double)intersection / union;
+    }
+
+    /// <summary>
+    /// 直近の完結文と類似度が高い場合 true を返す。 _textLock 内から呼ぶこと。
+    /// </summary>
+    private bool IsSimilarToRecentEmission(string sentence)
+    {
+        foreach (var recent in _recentEmittedSentences)
+        {
+            if (BigramJaccardSimilarity(sentence, recent) > DuplicateSuppressionThreshold)
+                return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// 完結文を直近バッファに記録する。 _textLock 内から呼ぶこと。
+    /// </summary>
+    private void RecordEmission(string sentence)
+    {
+        _recentEmittedSentences.Enqueue(sentence);
+        while (_recentEmittedSentences.Count > MaxRecentEmissions)
+            _recentEmittedSentences.Dequeue();
     }
 
     // ═══════════════════════════════════════════════════════════════

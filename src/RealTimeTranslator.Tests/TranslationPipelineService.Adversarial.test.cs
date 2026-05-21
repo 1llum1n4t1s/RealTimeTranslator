@@ -364,10 +364,13 @@ public sealed class TranslationPipelineServiceAdversarialTests
     public void OnTranscriptDelta_OnlyTerminators_EmitsEachAsSeparateFinal()
     {
         var (pipeline, transcriber, emitted) = CreatePipeline();
-        transcriber.RaiseDelta("。。。");
+        // 各文にユニークな内容を持たせて類似重複抑制を回避 (本テストの目的は句点分割の検証)
+        transcriber.RaiseDelta("あ。い。う。");
         var finals = emitted.Where(x => x.IsFinal).ToList();
-        Assert.AreEqual(3, finals.Count, "連続句点「。。。」は 1 文字ずつ 3 件の完結文に分割されるはず");
-        Assert.IsTrue(finals.All(f => f.TranslatedText == "。"), "各完結文は単一句点「。」のはず");
+        Assert.AreEqual(3, finals.Count, "「あ。い。う。」は 3 件の完結文に分割されるはず");
+        Assert.AreEqual("あ。", finals[0].TranslatedText);
+        Assert.AreEqual("い。", finals[1].TranslatedText);
+        Assert.AreEqual("う。", finals[2].TranslatedText);
         Assert.AreEqual(3, finals.Select(f => f.SegmentId).Distinct().Count(), "各完結文は別 SegmentId のはず");
     }
 
@@ -836,7 +839,8 @@ public sealed class TranslationPipelineServiceAdversarialTests
         {
             const int count = 10_000;
             var before = GC.GetTotalMemory(true);
-            for (int i = 0; i < count; i++) transcriber.RaiseDelta("短文。");
+            // インデックスを含めて各 delta をユニークにし、類似重複抑制を回避
+            for (int i = 0; i < count; i++) transcriber.RaiseDelta($"短文{i}。");
             var after = GC.GetTotalMemory(true);
             long retainedGrowth = after - before;
 
@@ -877,10 +881,12 @@ public sealed class TranslationPipelineServiceAdversarialTests
         try
         {
             const int sentences = 3_000;
-            const string unit = "これはテスト文です。";
-            var cumulative = new StringBuilder(sentences * unit.Length);
+            // 各文の bigram 集合を十分に異ならせて類似重複抑制の誤検出を回避。
+            // 固定テキスト部分が bigram を支配すると Jaccard が閾値を超えるため、
+            // ローテーションひらがな (46 種) をサフィックスに付けて多様性を保証する。
+            var cumulative = new StringBuilder(sentences * 16);
             var sw = Stopwatch.StartNew();
-            for (int i = 0; i < sentences; i++) { cumulative.Append(unit); transcriber.RaiseDone(cumulative.ToString()); }
+            for (int i = 0; i < sentences; i++) { cumulative.Append($"節{i}{(char)(0x3042 + i % 46)}。"); transcriber.RaiseDone(cumulative.ToString()); }
             sw.Stop();
 
             int finals = emitted.Count(x => x.IsFinal);
@@ -903,10 +909,12 @@ public sealed class TranslationPipelineServiceAdversarialTests
         try
         {
             const int sentences = 5_000;
-            const string unit = "長時間セッションの一文です。";
-            var cumulative = new StringBuilder(sentences * unit.Length);
+            // 各文の bigram 集合を十分に異ならせて類似重複抑制の誤検出を回避。
+            // 固定テキスト部分が bigram を支配すると Jaccard が閾値を超えるため、
+            // ローテーションひらがな (46 種) をサフィックスに付けて多様性を保証する。
+            var cumulative = new StringBuilder(sentences * 20);
             var before = GC.GetTotalMemory(true);
-            for (int i = 0; i < sentences; i++) { cumulative.Append(unit); transcriber.RaiseDone(cumulative.ToString()); }
+            for (int i = 0; i < sentences; i++) { cumulative.Append($"段{i}{(char)(0x3042 + i % 46)}。"); transcriber.RaiseDone(cumulative.ToString()); }
             var after = GC.GetTotalMemory(true);
             long retainedGrowth = after - before;
 
@@ -930,7 +938,10 @@ public sealed class TranslationPipelineServiceAdversarialTests
         {
             const int cycles = 20_000;
             var before = GC.GetTotalMemory(true);
-            for (int i = 0; i < cycles; i++) transcriber.RaiseDelta("はい。");
+            // 各 delta の bigram 集合を十分に異ならせて類似重複抑制の誤検出を回避。
+            // 数字のみだと trailing 0 の重複で bigram が衝突するため、
+            // ローテーションひらがな (46 種) をサフィックスに付けて多様性を保証する。
+            for (int i = 0; i < cycles; i++) transcriber.RaiseDelta($"話{i}{(char)(0x3042 + i % 46)}。");
             var after = GC.GetTotalMemory(true);
             long retainedGrowth = after - before;
 
