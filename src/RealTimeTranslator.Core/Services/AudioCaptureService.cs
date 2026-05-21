@@ -161,8 +161,9 @@ public class AudioCaptureService : IAudioCaptureService
                 }
                 else
                 {
-                    // Minimal で実音が取れた条件に合わせる（includeProcessTree: false）
-                    var capture = await WasapiCapture.CreateForProcessCaptureAsync(processId, false).ConfigureAwait(false);
+                    // 対象プロセス (とその子) の音声を取り込む (IncludeTargetProcessTree)。 ProcessLoopbackMode enum を
+                    // Windows 公式準拠 (INCLUDE=0/EXCLUDE=1) に修正したのに伴い includeProcessTree=true を指定 (ネイティブ動作は従来と不変)。
+                    var capture = await WasapiCapture.CreateForProcessCaptureAsync(processId, true).ConfigureAwait(false);
                     _capture = capture;
                     AttachCaptureEvents();
                     _capture.StartRecording();
@@ -243,8 +244,9 @@ public class AudioCaptureService : IAudioCaptureService
                 LoggerService.LogDebug($"[Capture] Post callback started: ThreadId={threadId}, SyncContextNull={syncCtxBefore == null}");
                 try
                 {
-                    // ConfigureAwait(true) で継続をこのスレッドに固定。ここで WasapiCapture が SyncContext をキャプチャする。includeProcessTree=false は Minimal で実音が取れた条件に合わせる。
-                    var capture = await WasapiCapture.CreateForProcessCaptureAsync(processId, false).ConfigureAwait(true);
+                    // ConfigureAwait(true) で継続をこのスレッドに固定。ここで WasapiCapture が SyncContext をキャプチャする。
+                    // includeProcessTree=true で対象プロセス (とその子) を取り込む (enum 公式準拠化に伴いネイティブ動作は不変の Include)。
+                    var capture = await WasapiCapture.CreateForProcessCaptureAsync(processId, true).ConfigureAwait(true);
                     var threadIdAfter = Thread.CurrentThread.ManagedThreadId;
                     var syncCtxAfter = SynchronizationContext.Current;
                     LoggerService.LogDebug($"[Capture] CreateForProcessCaptureAsync continuation: ThreadId={threadIdAfter}, SyncContextNull={syncCtxAfter == null}, sameThread={threadId == threadIdAfter}");

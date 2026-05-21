@@ -77,6 +77,11 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     private const int FallbackSplitThreshold = 100;
     private static readonly char[] FallbackSplitTerminators = ['、', ',', '・'];
 
+    // O(n²) 回避: _accumulatedText 内で最後に見つけた FallbackSplitTerminators の位置。
+    // 毎 delta で新規追加部分だけ走査すれば済むように、 delta 到着ごとに更新する。
+    // _accumulatedText.Clear() 時は必ず -1 にリセットすること。
+    private int _lastFallbackCommaPos = -1;
+
     // ───────── VAD ゲート (Silence/InSpeech/Hangover 状態機) ─────────
     // BGM や効果音だけが鳴っているシーンで OpenAI 送信を抑制し token 浪費を防ぐ。
     // EnableVad=false の場合は素通し (旧挙動)。
@@ -184,6 +189,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         {
             _lastFinalizedTranscript.Clear();
             _accumulatedText.Clear();
+            _lastFallbackCommaPos = -1;
             _currentSegmentId = Guid.NewGuid().ToString();
             _lastEmitTime = DateTime.MinValue;
             _hasPendingDelta = false;
@@ -431,7 +437,11 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
 
         lock (_textLock)
         {
+            // O(n²) → O(n) 最適化: 新規追加部分のみを走査する。
+            // appendStart = 追加前の累積長。 scanFrom = 走査開始位置 (直前文字がピリオド小数点保護に必要なため -1)。
+            int appendStart = _accumulatedText.Length;
             _accumulatedText.Append(delta);
+            int totalLen = _accumulatedText.Length;
 
             if (!_latencyStopwatch.IsRunning)
                 _latencyStopwatch.Restart();
@@ -441,14 +451,17 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
             // done を待つ設計だと SegmentId が永久に固定され「字幕が無限成長する」UX バグ
             // になるため、 delta 受信時にも _accumulatedText 内の句点を検出して
             // 完結文ごとに emit + SegmentId 切り替えを行う。
-            var text = _accumulatedText.ToString();
+            //
+            // 走査範囲: appendStart - 1 から totalLen まで (直前文字のピリオド小数点保護のため -1)。
+            // StringBuilder.indexer は O(1) なので ToString() 不要。
             int start = 0;
-            for (int i = 0; i < text.Length; i++)
+            int scanFrom = Math.Max(0, appendStart - 1);
+            for (int i = scanFrom; i < totalLen; i++)
             {
-                // delta 受信中は isFinalContext=false: 末尾ピリオド + 直前数字は次 delta を待つため保留する。
-                if (IsSentenceBoundaryAt(text, i, isFinalContext: false))
+                if (IsSentenceBoundaryAt(_accumulatedText, i, totalLen, isFinalContext: false))
                 {
-                    var sentence = text[start..(i + 1)];
+                    // StringBuilder から部分文字列を切り出す (完結文 1 件分のみなので小さい)
+                    var sentence = _accumulatedText.ToString(start, i + 1 - start);
                     if (!string.IsNullOrWhiteSpace(sentence))
                     {
                         completedSentences.Add((_currentSegmentId, sentence));
@@ -457,6 +470,13 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                     }
                     start = i + 1;
                 }
+
+                // D-7 fallback: 走査中に FallbackSplitTerminators を見つけたら位置を記録。
+                // 句点が見つかれば start が進むので自然にリセットされる。
+                if (Array.IndexOf(FallbackSplitTerminators, _accumulatedText[i]) >= 0 && i >= start)
+                {
+                    _lastFallbackCommaPos = i;
+                }
             }
 
             // ⭐ D-7 句読点 fallback: 句点 (SentenceTerminators) が来なくても _accumulatedText が
@@ -464,24 +484,21 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
             // 強制分割する。 永久未確定字幕 (partial 表示が伸び続ける UX バグ) を防止。
             // すでに完結文を切り出した直後 (completedSentences.Count > 0) は trailing が短いので
             // fallback 不要。 完結文ゼロかつ trailing が閾値超のケースのみ発動する。
-            if (completedSentences.Count == 0 && (text.Length - start) > FallbackSplitThreshold)
+            if (completedSentences.Count == 0 && (totalLen - start) > FallbackSplitThreshold)
             {
-                // 末尾から「、」を探す。 見つかった位置までを 1 文として fallback emit。
-                int trailingLength = text.Length - start;
-                for (int i = text.Length - 1; i > start; i--)
+                // _lastFallbackCommaPos が有効な範囲にあれば O(1) で分割。
+                if (_lastFallbackCommaPos > start)
                 {
-                    if (Array.IndexOf(FallbackSplitTerminators, text[i]) >= 0)
+                    int splitAt = _lastFallbackCommaPos;
+                    var sentence = _accumulatedText.ToString(start, splitAt + 1 - start);
+                    if (!string.IsNullOrWhiteSpace(sentence))
                     {
-                        var sentence = text[start..(i + 1)];
-                        if (!string.IsNullOrWhiteSpace(sentence))
-                        {
-                            Logger.Info($"OnTranscriptDelta: 句読点 fallback 分割 (trailing={trailingLength}文字 句点なし) → '{TruncateForLog(sentence)}'");
-                            completedSentences.Add((_currentSegmentId, sentence));
-                            _currentSegmentId = Guid.NewGuid().ToString();
-                            _lastFinalizedTranscript.Append(sentence);
-                            start = i + 1;
-                        }
-                        break;
+                        int trailingLength = totalLen - start;
+                        Logger.Info($"OnTranscriptDelta: 句読点 fallback 分割 (trailing={trailingLength}文字 句点なし) → '{TruncateForLog(sentence)}'");
+                        completedSentences.Add((_currentSegmentId, sentence));
+                        _currentSegmentId = Guid.NewGuid().ToString();
+                        _lastFinalizedTranscript.Append(sentence);
+                        start = splitAt + 1;
                     }
                 }
             }
@@ -489,13 +506,16 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
             if (completedSentences.Count > 0)
             {
                 // 完結文を切り出した → trailing だけ _accumulatedText に残す。
-                var trailing = text[start..];
-                _accumulatedText.Clear();
-                _accumulatedText.Append(trailing);
+                if (start > 0)
+                {
+                    _accumulatedText.Remove(0, start);
+                }
+                // _lastFallbackCommaPos を新しい offset 基準にシフト
+                _lastFallbackCommaPos = _lastFallbackCommaPos >= start ? _lastFallbackCommaPos - start : -1;
                 _lastEmitTime = DateTime.UtcNow;
                 _hasPendingDelta = false;
                 _throttleTimer.Change(Timeout.Infinite, Timeout.Infinite);
-                emitPartial = trailing.Length > 0;
+                emitPartial = _accumulatedText.Length > 0;
             }
             else
             {
@@ -601,7 +621,12 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
             {
                 // DisplayDuration は秒 (既定 5.0)。 「未確定が放置されたら確定扱いにする」しきい値に流用する。
                 // 0 や極端に小さい値で誤発火しないよう下限 1 秒でガードする。
-                var idle = TimeSpan.FromSeconds(Math.Max(1.0, _settingsMonitor.CurrentValue.Overlay.DisplayDuration));
+                // NaN / Infinity / 極大値 (double.MaxValue 等) は TimeSpan.FromSeconds が ArgumentException /
+                // OverflowException を投げてアイドルタイマー設定ごとクラッシュさせるため (stst 隊員7 告発)、
+                // 非有限値は既定 5 秒へ倒し、 有限値は [1秒, 3600秒] にクランプして防御する。
+                var rawDuration = _settingsMonitor.CurrentValue.Overlay.DisplayDuration;
+                var safeDuration = double.IsFinite(rawDuration) ? Math.Clamp(rawDuration, 1.0, 3600.0) : 5.0;
+                var idle = TimeSpan.FromSeconds(safeDuration);
                 _idleFinalizeTimer.Change(idle, Timeout.InfiniteTimeSpan);
             }
             else
@@ -633,6 +658,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
             // 確定累積へ反映 (後続 done の prefix 一致を維持するため、 delta 経路の確定と同じ扱い)。
             _lastFinalizedTranscript.Append(sentence);
             _accumulatedText.Clear();
+            _lastFallbackCommaPos = -1;
             _currentSegmentId = Guid.NewGuid().ToString();
             _hasPendingDelta = false;
             _idleFinalizeTimer.Change(Timeout.Infinite, Timeout.Infinite);
@@ -693,6 +719,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
             {
                 Logger.Warn($"OnTranscriptCompleted: prefix 不整合検出 — done 経路スキップ (finalized 長={_lastFinalizedTranscript.Length} effective 長={effective.Length} finalized 末尾='{TruncateForLog(TailOf(_lastFinalizedTranscript, 20), 20)}' effective 先頭='{TruncateForLog(effective, 30)}')");
                 _accumulatedText.Clear();
+                _lastFallbackCommaPos = -1;
                 _lastEmitTime = DateTime.MinValue;
                 _hasPendingDelta = false;
                 _throttleTimer.Change(Timeout.Infinite, Timeout.Infinite);
@@ -708,6 +735,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                 // 累積 done が来たが新規ぶんが無い (同 transcript を 2 回受信した等)
                 // → emit すべきものがない。 状態だけリセットして抜ける。
                 _accumulatedText.Clear();
+                _lastFallbackCommaPos = -1;
                 _lastEmitTime = DateTime.MinValue;
                 _hasPendingDelta = false;
                 _throttleTimer.Change(Timeout.Infinite, Timeout.Infinite);
@@ -750,6 +778,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
 
             // partial 表示用の delta 蓄積はクリア (次の done までの partial 用に再使用)
             _accumulatedText.Clear();
+            _lastFallbackCommaPos = -1;
             _lastEmitTime = DateTime.MinValue;
             _hasPendingDelta = false;
             _throttleTimer.Change(Timeout.Infinite, Timeout.Infinite);
@@ -834,6 +863,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                 Logger.Info($"OnConnectionStateChanged: 再接続成功 — 字幕状態をリセット (旧 finalized 長={_lastFinalizedTranscript.Length})");
                 _lastFinalizedTranscript.Clear();
                 _accumulatedText.Clear();
+                _lastFallbackCommaPos = -1;
                 _currentSegmentId = Guid.NewGuid().ToString();
                 _lastEmitTime = DateTime.MinValue;
                 _hasPendingDelta = false;
@@ -969,6 +999,28 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         // 続きが来る可能性 → 区切らず保留 (続きが来てから判定)。
         // done 確定時 (isFinalContext=true) は遠慮なく区切る。
         if (!isFinalContext && prevIsDigit && i == text.Length - 1) return false;
+
+        return true;
+    }
+
+    /// <summary>
+    /// StringBuilder 版オーバーロード。 OnTranscriptDelta の O(n²) → O(n) 最適化で
+    /// ToString() を回避して StringBuilder.indexer (O(1)) で直接判定するために追加。
+    /// ロジックは string 版と完全に同一。
+    /// </summary>
+    internal static bool IsSentenceBoundaryAt(StringBuilder sb, int i, int length, bool isFinalContext)
+    {
+        if (i < 0 || i >= length) return false;
+        char c = sb[i];
+        if (Array.IndexOf(SentenceTerminators, c) < 0) return false;
+
+        if (c != '.') return true;
+
+        bool prevIsDigit = i > 0 && sb[i - 1] >= '0' && sb[i - 1] <= '9';
+        bool nextIsDigit = i + 1 < length && sb[i + 1] >= '0' && sb[i + 1] <= '9';
+
+        if (prevIsDigit && nextIsDigit) return false;
+        if (!isFinalContext && prevIsDigit && i == length - 1) return false;
 
         return true;
     }

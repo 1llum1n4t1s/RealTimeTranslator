@@ -1,0 +1,979 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RealTimeTranslator — リアルタイム字幕翻訳 / Real-time subtitle translation for Windows</title>
+<meta name="description" content="ゲームも動画も配信も、指定したアプリの音声をリアルタイム字幕に翻訳する Windows 向け無料オープンソースアプリ。 / RealTimeTranslator: free, open-source Windows app that captures one app's audio and shows live translated subtitles in a transparent overlay. BYOK with the OpenAI Realtime API.">
+<meta name="keywords" content="RealTimeTranslator, リアルタイム翻訳, 字幕翻訳, real-time subtitle translation, OpenAI Realtime API, Windows, overlay subtitles, WASAPI, free software, open source">
+<meta name="author" content="1llum1n4t1s">
+<meta name="robots" content="index, follow">
+<meta name="theme-color" content="#06080c">
+<link rel="canonical" href="https://rtt.nephilim.jp/">
+
+<!-- Open Graph -->
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="RealTimeTranslator">
+<meta property="og:title" content="RealTimeTranslator — リアルタイム字幕翻訳 / Real-time subtitle translation for Windows">
+<meta property="og:description" content="ゲームも動画も、指定したアプリの音声をリアルタイム字幕に翻訳。無料・オープンソースの Windows アプリ。 / Free & open-source Windows app for real-time subtitle translation of any app's audio.">
+<meta property="og:url" content="https://rtt.nephilim.jp/">
+<meta property="og:locale" content="ja_JP">
+<meta property="og:locale:alternate" content="en_US">
+
+<!-- Twitter Card -->
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="RealTimeTranslator — リアルタイム字幕翻訳">
+<meta name="twitter:description" content="ゲームも動画も、リアルタイム字幕翻訳。無料・オープンソースの Windows アプリ。 / Real-time subtitle translation for any Windows app. Free & open-source.">
+
+<!-- Inline SVG favicon: glowing caption bracket on near-black -->
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%2306080c'/%3E%3Cg fill='none' stroke='%2300f0d4' stroke-width='4.5' stroke-linecap='round'%3E%3Cpath d='M20 18 L13 18 L13 46 L20 46'/%3E%3Cpath d='M44 18 L51 18 L51 46 L44 46'/%3E%3C/g%3E%3Crect x='24' y='28' width='16' height='3.5' rx='1.75' fill='%2300f0d4'/%3E%3Crect x='24' y='37' width='10' height='3.5' rx='1.75' fill='%2300f0d4' opacity='0.55'/%3E%3C/svg%3E">
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;800;900&family=Archivo+Expanded:wght@700;800;900&family=JetBrains+Mono:wght@400;500;700&family=Noto+Sans+JP:wght@400;500;700;900&display=swap" rel="stylesheet">
+
+<style>
+  :root{
+    --bg:#06080c;
+    --bg-2:#0a0e15;
+    --panel:#0d121b;
+    --panel-2:#111825;
+    --line:rgba(120,160,200,.10);
+    --line-bright:rgba(0,240,212,.28);
+    --ink:#eef4fb;
+    --ink-soft:#aebacb;
+    --ink-mute:#6c7a90;
+    --ink-faint:#48566b;
+    /* THE accent: electric cyan caption glow */
+    --cy:#00f0d4;
+    --cy-deep:#00b6ad;
+    --cy-glow:rgba(0,240,212,.55);
+    --cy-soft:rgba(0,240,212,.12);
+    --warn:#ffcf5c;
+    --display:"Archivo Expanded","Archivo","Noto Sans JP",sans-serif;
+    --sans:"Archivo","Noto Sans JP",system-ui,sans-serif;
+    --jp:"Noto Sans JP","Archivo",system-ui,sans-serif;
+    --mono:"JetBrains Mono",ui-monospace,"Cascadia Code",monospace;
+    --maxw:1140px;
+    --r:18px;
+  }
+
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth}
+  body{
+    background:var(--bg);
+    color:var(--ink);
+    font-family:var(--sans);
+    line-height:1.6;
+    -webkit-font-smoothing:antialiased;
+    text-rendering:optimizeLegibility;
+    overflow-x:hidden;
+    position:relative;
+  }
+
+  /* Atmospheric depth: layered radial glows + grain */
+  body::before{
+    content:"";
+    position:fixed;inset:0;z-index:-2;
+    background:
+      radial-gradient(900px 600px at 78% -8%, rgba(0,240,212,.10), transparent 60%),
+      radial-gradient(700px 520px at 8% 12%, rgba(0,120,200,.08), transparent 62%),
+      radial-gradient(1200px 800px at 50% 120%, rgba(0,240,212,.06), transparent 60%),
+      linear-gradient(180deg,#070a10 0%, var(--bg) 40%, #05070b 100%);
+  }
+  body::after{
+    content:"";
+    position:fixed;inset:0;z-index:-1;pointer-events:none;
+    opacity:.05;mix-blend-mode:overlay;
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+
+  a{color:inherit;text-decoration:none}
+  ::selection{background:var(--cy);color:#04110f}
+
+  .wrap{max-width:var(--maxw);margin:0 auto;padding:0 24px}
+
+  /* ---------- micro caption-style label ---------- */
+  .cap{
+    font-family:var(--mono);
+    font-size:.68rem;
+    letter-spacing:.32em;
+    text-transform:uppercase;
+    color:var(--cy);
+    display:inline-flex;align-items:center;gap:.6em;
+  }
+  .cap::before{
+    content:"";width:26px;height:1px;background:linear-gradient(90deg,transparent,var(--cy));
+  }
+
+  .en{
+    display:block;
+    font-family:var(--mono);
+    color:var(--ink-mute);
+    font-weight:400;
+    letter-spacing:.01em;
+  }
+
+  /* =========================================================
+     NAV
+  ========================================================= */
+  header.nav{
+    position:sticky;top:0;z-index:50;
+    backdrop-filter:blur(14px) saturate(140%);
+    -webkit-backdrop-filter:blur(14px) saturate(140%);
+    background:linear-gradient(180deg, rgba(6,8,12,.86), rgba(6,8,12,.5));
+    border-bottom:1px solid var(--line);
+  }
+  .nav-in{
+    max-width:var(--maxw);margin:0 auto;padding:14px 24px;
+    display:flex;align-items:center;justify-content:space-between;gap:18px;
+  }
+  .brand{display:flex;align-items:center;gap:11px;font-family:var(--display);font-weight:900;letter-spacing:.02em}
+  .brand .logo{
+    width:34px;height:34px;border-radius:9px;flex:none;
+    background:radial-gradient(circle at 30% 25%, #0c1622, #060a10);
+    border:1px solid var(--line-bright);
+    display:grid;place-items:center;
+    box-shadow:0 0 18px rgba(0,240,212,.25), inset 0 0 12px rgba(0,240,212,.08);
+  }
+  .brand .logo svg{width:20px;height:20px;display:block}
+  .brand b{font-size:1.02rem}
+  .brand small{display:block;font-family:var(--mono);font-weight:400;font-size:.6rem;letter-spacing:.2em;color:var(--ink-mute);text-transform:uppercase}
+  .nav-links{display:flex;align-items:center;gap:26px}
+  .nav-links a{font-family:var(--mono);font-size:.78rem;letter-spacing:.06em;color:var(--ink-soft);transition:color .2s}
+  .nav-links a:hover{color:var(--cy)}
+  .nav-links .ghost{display:none}
+  .nav-cta{
+    font-family:var(--mono);font-size:.78rem;font-weight:700;letter-spacing:.04em;
+    padding:9px 16px;border-radius:10px;color:#04110f;
+    background:linear-gradient(180deg,#34ffe6,var(--cy));
+    box-shadow:0 0 0 1px rgba(0,240,212,.4), 0 6px 20px rgba(0,240,212,.28);
+    transition:transform .18s, box-shadow .18s;
+    white-space:nowrap;
+  }
+  .nav-cta:hover{transform:translateY(-1px);box-shadow:0 0 0 1px rgba(0,240,212,.6), 0 10px 30px rgba(0,240,212,.45)}
+  @media(max-width:760px){
+    .nav-links a:not(.nav-cta){display:none}
+  }
+
+  /* =========================================================
+     HERO
+  ========================================================= */
+  .hero{position:relative;padding:clamp(56px,9vw,116px) 0 clamp(40px,6vw,72px);overflow:hidden}
+  .scanlines{
+    position:absolute;inset:0;z-index:0;pointer-events:none;opacity:.35;
+    background:repeating-linear-gradient(180deg, rgba(255,255,255,.025) 0 1px, transparent 1px 4px);
+    mask-image:radial-gradient(120% 80% at 50% 30%, #000 30%, transparent 75%);
+  }
+  .hero-grid{
+    position:relative;z-index:2;
+    display:grid;grid-template-columns:1.05fr .95fr;gap:clamp(28px,4vw,64px);align-items:center;
+  }
+  @media(max-width:920px){.hero-grid{grid-template-columns:1fr;gap:42px}}
+
+  .hero h1{
+    font-family:var(--display);
+    font-weight:900;
+    font-size:clamp(2.5rem,7.3vw,5.2rem);
+    line-height:.95;
+    letter-spacing:-.01em;
+    margin:22px 0 0;
+    text-wrap:balance;
+  }
+  .hero h1 .real{
+    background:linear-gradient(180deg,#ffffff 30%,#b9c6d6);
+    -webkit-background-clip:text;background-clip:text;color:transparent;
+  }
+  .hero h1 .time{
+    color:var(--cy);
+    text-shadow:0 0 28px rgba(0,240,212,.55), 0 0 4px rgba(0,240,212,.6);
+  }
+  .tagline{margin-top:26px;max-width:30ch}
+  .tagline .jp{font-family:var(--jp);font-weight:700;font-size:clamp(1.06rem,2.4vw,1.42rem);color:var(--ink);line-height:1.5}
+  .tagline .en{margin-top:7px;font-size:.95rem}
+
+  .hero-cta{display:flex;flex-wrap:wrap;gap:14px;margin-top:38px;align-items:center}
+  .btn{
+    display:inline-flex;align-items:center;gap:11px;
+    font-family:var(--mono);font-weight:700;letter-spacing:.02em;
+    border-radius:13px;padding:15px 24px;font-size:.92rem;
+    transition:transform .18s, box-shadow .2s, border-color .2s;
+    cursor:pointer;border:1px solid transparent;
+  }
+  .btn svg{width:19px;height:19px;flex:none}
+  .btn-primary{
+    color:#04110f;
+    background:linear-gradient(180deg,#3bffe7,var(--cy) 60%, var(--cy-deep));
+    box-shadow:0 0 0 1px rgba(0,240,212,.5), 0 10px 34px rgba(0,240,212,.36), inset 0 1px 0 rgba(255,255,255,.45);
+  }
+  .btn-primary:hover{transform:translateY(-2px);box-shadow:0 0 0 1px rgba(0,240,212,.75), 0 16px 48px rgba(0,240,212,.5), inset 0 1px 0 rgba(255,255,255,.55)}
+  .btn-primary .sub{font-weight:400;opacity:.72;font-size:.74rem;margin-left:2px}
+  .btn-ghost{
+    color:var(--ink);background:rgba(255,255,255,.02);
+    border-color:var(--line);
+    backdrop-filter:blur(6px);
+  }
+  .btn-ghost:hover{border-color:var(--line-bright);color:var(--cy);transform:translateY(-2px);box-shadow:0 0 24px rgba(0,240,212,.14)}
+  .hero-meta{margin-top:20px;font-family:var(--mono);font-size:.74rem;color:var(--ink-mute);letter-spacing:.04em;display:flex;flex-wrap:wrap;gap:8px 18px}
+  .hero-meta b{color:var(--ink-soft);font-weight:500}
+  .hero-meta .dot{color:var(--cy)}
+
+  /* ---- Hero overlay-window mockup (the signature element) ---- */
+  .screen{
+    position:relative;
+    border-radius:20px;
+    padding:clamp(20px,3vw,30px);
+    min-height:340px;
+    background:
+      radial-gradient(120% 90% at 70% 0%, #0f1a26, #080d14 70%),
+      linear-gradient(180deg,#0a0f17,#070b11);
+    border:1px solid var(--line);
+    box-shadow:0 40px 90px rgba(0,0,0,.6), inset 0 1px 0 rgba(255,255,255,.04);
+    overflow:hidden;
+    display:flex;flex-direction:column;justify-content:flex-end;
+  }
+  /* faux video glow behind captions */
+  .screen::before{
+    content:"";position:absolute;inset:0;z-index:0;
+    background:
+      radial-gradient(60% 45% at 30% 20%, rgba(0,120,200,.16), transparent 70%),
+      radial-gradient(50% 40% at 80% 30%, rgba(0,240,212,.10), transparent 70%);
+  }
+  .screen-bar{
+    position:absolute;top:0;left:0;right:0;z-index:3;
+    display:flex;align-items:center;gap:8px;
+    padding:13px 16px;
+    font-family:var(--mono);font-size:.66rem;letter-spacing:.14em;color:var(--ink-mute);text-transform:uppercase;
+    border-bottom:1px solid var(--line);
+    background:linear-gradient(180deg, rgba(6,9,14,.7), transparent);
+  }
+  .screen-bar .pip{width:8px;height:8px;border-radius:50%;background:#22303f}
+  .screen-bar .pip.live{background:var(--cy);box-shadow:0 0 10px var(--cy);animation:pulse 1.8s ease-in-out infinite}
+  .screen-bar .spacer{flex:1}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+
+  /* waveform strip */
+  .wavebar{position:relative;z-index:2;display:flex;align-items:flex-end;gap:3px;height:42px;margin-bottom:20px;opacity:.85}
+  .wavebar span{
+    flex:1;background:linear-gradient(180deg,var(--cy),rgba(0,240,212,.25));
+    border-radius:2px;height:18%;
+    animation:eq 1.1s ease-in-out infinite;
+  }
+  @keyframes eq{0%,100%{height:16%;opacity:.5}50%{height:92%;opacity:1}}
+
+  /* caption block */
+  .caption-box{position:relative;z-index:2}
+  .cc-track{font-family:var(--mono);font-size:.62rem;letter-spacing:.2em;text-transform:uppercase;color:var(--cy);margin-bottom:12px;display:flex;align-items:center;gap:8px}
+  .cc-line{
+    display:inline-block;
+    background:rgba(4,8,12,.72);
+    border:1px solid rgba(0,240,212,.22);
+    border-left:3px solid var(--cy);
+    border-radius:8px;
+    padding:10px 16px;
+    font-family:var(--jp);font-weight:700;
+    font-size:clamp(1.05rem,2.4vw,1.5rem);
+    line-height:1.45;
+    color:#fff;
+    text-shadow:0 1px 8px rgba(0,0,0,.8);
+    max-width:100%;
+    box-shadow:0 8px 30px rgba(0,0,0,.45), 0 0 0 1px rgba(0,0,0,.3);
+  }
+  .cc-en{margin-top:10px;font-family:var(--mono);font-size:.82rem;color:var(--ink-soft);min-height:1.2em}
+  .typed::after{content:"▋";color:var(--cy);margin-left:1px;animation:caret 1s steps(1) infinite}
+  @keyframes caret{50%{opacity:0}}
+
+  /* =========================================================
+     section frame
+  ========================================================= */
+  section{position:relative;padding:clamp(64px,9vw,108px) 0}
+  .sec-head{max-width:62ch;margin-bottom:clamp(34px,5vw,56px)}
+  .sec-head h2{
+    font-family:var(--display);font-weight:800;
+    font-size:clamp(1.7rem,4.3vw,2.9rem);line-height:1.04;letter-spacing:-.01em;margin:16px 0 0;
+    color:var(--ink);text-wrap:balance;
+  }
+  .sec-head h2 em{font-style:normal;color:var(--cy);text-shadow:0 0 22px rgba(0,240,212,.4)}
+  .sec-head .en{margin-top:10px;font-size:.96rem;max-width:54ch}
+  .divider{height:1px;background:linear-gradient(90deg,transparent,var(--line),transparent)}
+
+  /* =========================================================
+     PIPELINE / how it works
+  ========================================================= */
+  .pipe{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;position:relative}
+  @media(max-width:820px){.pipe{grid-template-columns:1fr}}
+  .step{
+    position:relative;
+    background:linear-gradient(180deg,var(--panel),var(--bg-2));
+    border:1px solid var(--line);
+    border-radius:var(--r);
+    padding:26px 24px 28px;
+    overflow:hidden;
+    transition:transform .25s, border-color .25s, box-shadow .25s;
+  }
+  .step:hover{transform:translateY(-4px);border-color:var(--line-bright);box-shadow:0 18px 50px rgba(0,0,0,.5), 0 0 30px rgba(0,240,212,.08)}
+  .step .num{
+    font-family:var(--mono);font-size:.72rem;letter-spacing:.2em;color:var(--cy);
+    display:flex;align-items:center;gap:10px;margin-bottom:18px;
+  }
+  .step .num .arrow{margin-left:auto;color:var(--ink-faint)}
+  .step .ic{
+    width:50px;height:50px;border-radius:13px;margin-bottom:18px;
+    display:grid;place-items:center;
+    background:radial-gradient(circle at 30% 25%, #11202e, #0a131c);
+    border:1px solid var(--line-bright);
+    box-shadow:inset 0 0 16px rgba(0,240,212,.10), 0 0 20px rgba(0,240,212,.10);
+  }
+  .step .ic svg{width:26px;height:26px;color:var(--cy)}
+  .step h3{font-family:var(--sans);font-weight:800;font-size:1.16rem;color:var(--ink);margin-bottom:4px}
+  .step h3 .en{font-size:.8rem;margin-top:4px;color:var(--ink-mute)}
+  .step p{font-family:var(--jp);color:var(--ink-soft);font-size:.92rem;margin-top:12px}
+  .step p .en{margin-top:8px;font-size:.82rem;color:var(--ink-mute);font-family:var(--mono);line-height:1.55}
+
+  /* =========================================================
+     FEATURE GRID
+  ========================================================= */
+  .features{display:grid;grid-template-columns:repeat(12,1fr);gap:18px}
+  .card{
+    grid-column:span 6;
+    position:relative;
+    background:
+      radial-gradient(120% 100% at 100% 0%, rgba(0,240,212,.05), transparent 55%),
+      linear-gradient(180deg,var(--panel-2),var(--bg-2));
+    border:1px solid var(--line);
+    border-radius:var(--r);
+    padding:28px 26px;
+    transition:transform .25s, border-color .25s, box-shadow .25s;
+    overflow:hidden;
+  }
+  .card.wide{grid-column:span 12}
+  @media(max-width:820px){.card,.card.wide{grid-column:1/-1}}
+  .card::after{
+    content:"";position:absolute;left:0;right:0;bottom:0;height:1px;
+    background:linear-gradient(90deg,var(--cy),transparent 60%);
+    transform:scaleX(0);transform-origin:left;transition:transform .35s ease;
+  }
+  .card:hover{transform:translateY(-4px);border-color:var(--line-bright);box-shadow:0 18px 50px rgba(0,0,0,.5)}
+  .card:hover::after{transform:scaleX(1)}
+  .card .ic{
+    width:46px;height:46px;border-radius:12px;margin-bottom:18px;display:grid;place-items:center;
+    background:radial-gradient(circle at 30% 25%,#11202e,#0a131c);
+    border:1px solid var(--line-bright);
+    color:var(--cy);
+    box-shadow:inset 0 0 14px rgba(0,240,212,.10);
+  }
+  .card .ic svg{width:24px;height:24px}
+  .card h3{font-family:var(--sans);font-weight:800;font-size:1.18rem;color:#fff}
+  .card h3 .en{font-size:.8rem;color:var(--ink-mute);margin-top:4px;font-family:var(--mono);letter-spacing:.02em}
+  .card p{font-family:var(--jp);color:var(--ink-soft);font-size:.92rem;margin-top:13px}
+  .card p .en{display:block;margin-top:9px;font-size:.82rem;color:var(--ink-mute);font-family:var(--mono);line-height:1.55}
+  .chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:18px}
+  .chip{
+    font-family:var(--mono);font-size:.7rem;letter-spacing:.04em;
+    padding:6px 11px;border-radius:8px;color:var(--cy);
+    background:var(--cy-soft);border:1px solid rgba(0,240,212,.2);
+  }
+  .chip.muted{color:var(--ink-soft);background:rgba(255,255,255,.03);border-color:var(--line)}
+
+  /* mini cost meter visual for the VAD card */
+  .meter{margin-top:20px;background:rgba(0,0,0,.35);border:1px solid var(--line);border-radius:12px;padding:16px;font-family:var(--mono)}
+  .meter .row{display:flex;justify-content:space-between;font-size:.72rem;color:var(--ink-mute);margin-bottom:9px;letter-spacing:.04em}
+  .meter .row b{color:var(--cy)}
+  .bar{height:8px;border-radius:6px;background:rgba(255,255,255,.06);overflow:hidden;position:relative}
+  .bar i{position:absolute;left:0;top:0;bottom:0;border-radius:6px;background:linear-gradient(90deg,var(--cy),var(--cy-deep));box-shadow:0 0 12px var(--cy-glow)}
+  .meter .save{margin-top:11px;font-size:.7rem;color:var(--cy)}
+
+  /* mini font-sample visual for fonts card */
+  .fontsamples{display:flex;flex-wrap:wrap;gap:9px;margin-top:18px}
+  .fontsamples span{
+    font-size:.95rem;padding:7px 13px;border-radius:9px;color:var(--ink);
+    background:rgba(255,255,255,.03);border:1px solid var(--line);transition:.2s;
+  }
+  .fontsamples span:hover{border-color:var(--line-bright);color:var(--cy);transform:translateY(-2px)}
+
+  /* swatch row */
+  .swatches{display:flex;gap:7px;margin-top:18px;flex-wrap:wrap}
+  .swatches i{width:24px;height:24px;border-radius:7px;border:1px solid rgba(255,255,255,.12);transition:.2s;cursor:default}
+  .swatches i:hover{transform:scale(1.15) translateY(-2px);box-shadow:0 0 14px rgba(0,240,212,.3)}
+
+  /* ADV-style log preview */
+  .logview{margin-top:18px;background:rgba(0,0,0,.35);border:1px solid var(--line);border-radius:12px;padding:6px;font-family:var(--mono);font-size:.74rem}
+  .logview .ln{display:grid;grid-template-columns:auto 1fr;gap:12px;padding:8px 12px;border-bottom:1px solid var(--line);color:var(--ink-soft)}
+  .logview .ln:last-child{border-bottom:0}
+  .logview .ln time{color:var(--ink-faint)}
+  .logview .ln .tx .o{color:var(--ink-mute);display:block;font-size:.7rem}
+  .logview .ln .tx .t{color:var(--ink)}
+
+  /* =========================================================
+     BYOK / PRIVACY note
+  ========================================================= */
+  .byok{
+    position:relative;
+    border-radius:22px;
+    padding:clamp(30px,4vw,52px);
+    background:
+      radial-gradient(120% 120% at 0% 0%, rgba(255,207,92,.06), transparent 55%),
+      linear-gradient(180deg,#0e1119,#0a0d14);
+    border:1px solid rgba(255,207,92,.22);
+    box-shadow:0 30px 70px rgba(0,0,0,.45);
+    overflow:hidden;
+  }
+  .byok .keytag{
+    display:inline-flex;align-items:center;gap:9px;
+    font-family:var(--mono);font-size:.7rem;letter-spacing:.2em;text-transform:uppercase;
+    color:var(--warn);border:1px solid rgba(255,207,92,.35);background:rgba(255,207,92,.08);
+    padding:7px 13px;border-radius:9px;
+  }
+  .byok h2{font-family:var(--display);font-weight:800;font-size:clamp(1.5rem,3.6vw,2.3rem);margin:20px 0 0;line-height:1.1;color:var(--ink)}
+  .byok h2 .en{margin-top:9px;font-size:.92rem;color:var(--ink-mute)}
+  .byok-grid{display:grid;grid-template-columns:1.3fr 1fr;gap:34px;margin-top:28px;align-items:start}
+  @media(max-width:820px){.byok-grid{grid-template-columns:1fr;gap:24px}}
+  .byok p{font-family:var(--jp);color:var(--ink-soft);font-size:.96rem;margin-bottom:16px}
+  .byok p .en{display:block;margin-top:8px;font-size:.84rem;color:var(--ink-mute);font-family:var(--mono);line-height:1.6}
+  .byok ul{list-style:none;display:flex;flex-direction:column;gap:14px}
+  .byok li{position:relative;padding-left:30px;font-family:var(--jp);color:var(--ink-soft);font-size:.9rem}
+  .byok li .en{display:block;font-family:var(--mono);font-size:.78rem;color:var(--ink-mute);margin-top:5px;line-height:1.5}
+  .byok li svg{position:absolute;left:0;top:3px;width:19px;height:19px;color:var(--warn)}
+  .byok li.ok svg{color:var(--cy)}
+
+  /* dataflow chips */
+  .flow{display:flex;align-items:center;flex-wrap:wrap;gap:10px;margin-top:8px;font-family:var(--mono);font-size:.78rem}
+  .flow .node{padding:9px 14px;border-radius:10px;background:rgba(255,255,255,.03);border:1px solid var(--line);color:var(--ink)}
+  .flow .node.you{border-color:var(--line-bright);color:var(--cy)}
+  .flow .arr{color:var(--ink-faint)}
+
+  /* =========================================================
+     REQUIREMENTS
+  ========================================================= */
+  .req-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:16px}
+  @media(max-width:820px){.req-grid{grid-template-columns:repeat(2,1fr)}}
+  @media(max-width:480px){.req-grid{grid-template-columns:1fr}}
+  .req{
+    background:linear-gradient(180deg,var(--panel),var(--bg-2));
+    border:1px solid var(--line);border-radius:var(--r);padding:24px 22px;
+    transition:.25s;
+  }
+  .req:hover{border-color:var(--line-bright);transform:translateY(-3px)}
+  .req .k{font-family:var(--mono);font-size:.68rem;letter-spacing:.16em;text-transform:uppercase;color:var(--cy);margin-bottom:12px}
+  .req .v{font-family:var(--sans);font-weight:800;font-size:1.18rem;color:#fff;line-height:1.25}
+  .req .v small{display:block;font-family:var(--mono);font-weight:400;font-size:.76rem;color:var(--ink-mute);margin-top:7px;letter-spacing:.02em}
+
+  /* =========================================================
+     DOWNLOAD
+  ========================================================= */
+  .dl-shell{
+    position:relative;border-radius:24px;overflow:hidden;
+    padding:clamp(40px,6vw,72px) clamp(28px,5vw,64px);
+    background:
+      radial-gradient(110% 130% at 50% -10%, rgba(0,240,212,.16), transparent 55%),
+      linear-gradient(180deg,#0b1019,#070b11);
+    border:1px solid var(--line-bright);
+    box-shadow:0 40px 100px rgba(0,0,0,.6), 0 0 60px rgba(0,240,212,.1) inset;
+    text-align:center;
+  }
+  .dl-shell .scan{position:absolute;inset:0;opacity:.3;background:repeating-linear-gradient(180deg,rgba(255,255,255,.02) 0 1px,transparent 1px 5px);mask-image:radial-gradient(80% 80% at 50% 30%,#000,transparent 75%)}
+  .dl-shell h2{position:relative;font-family:var(--display);font-weight:900;font-size:clamp(2rem,5.5vw,3.4rem);line-height:1;letter-spacing:-.01em}
+  .dl-shell h2 .time{color:var(--cy);text-shadow:0 0 30px rgba(0,240,212,.5)}
+  .dl-shell .lead{position:relative;margin:20px auto 0;max-width:44ch;font-family:var(--jp);color:var(--ink-soft)}
+  .dl-shell .lead .en{margin-top:8px;font-size:.86rem}
+  .dl-actions{position:relative;display:flex;flex-wrap:wrap;gap:16px;justify-content:center;margin-top:38px}
+  .btn-xl{padding:18px 30px;font-size:1rem}
+  .dl-foot{position:relative;margin-top:26px;font-family:var(--mono);font-size:.74rem;color:var(--ink-mute);letter-spacing:.04em;display:flex;flex-wrap:wrap;gap:8px 18px;justify-content:center}
+  .dl-foot .dot{color:var(--cy)}
+
+  /* =========================================================
+     FOOTER
+  ========================================================= */
+  footer{border-top:1px solid var(--line);padding:54px 0 60px;margin-top:20px}
+  .foot-grid{display:grid;grid-template-columns:1.4fr 1fr 1fr;gap:32px}
+  @media(max-width:760px){.foot-grid{grid-template-columns:1fr;gap:28px}}
+  .foot-brand{display:flex;align-items:center;gap:11px;margin-bottom:16px}
+  .foot-brand .logo{width:32px;height:32px;border-radius:9px;border:1px solid var(--line-bright);display:grid;place-items:center;background:radial-gradient(circle at 30% 25%,#0c1622,#060a10);box-shadow:0 0 16px rgba(0,240,212,.18)}
+  .foot-brand .logo svg{width:18px;height:18px}
+  .foot-brand b{font-family:var(--display);font-weight:900;font-size:1.05rem}
+  footer p{font-family:var(--jp);font-size:.86rem;color:var(--ink-mute);max-width:40ch}
+  footer p .en{display:block;font-family:var(--mono);font-size:.76rem;margin-top:6px;color:var(--ink-faint)}
+  .foot-col h4{font-family:var(--mono);font-size:.7rem;letter-spacing:.2em;text-transform:uppercase;color:var(--cy);margin-bottom:16px}
+  .foot-col a{display:block;font-family:var(--sans);font-size:.9rem;color:var(--ink-soft);padding:6px 0;transition:.2s}
+  .foot-col a:hover{color:var(--cy);transform:translateX(3px)}
+  .legit{
+    margin-top:40px;padding-top:26px;border-top:1px solid var(--line);
+    font-family:var(--mono);font-size:.76rem;color:var(--ink-mute);line-height:1.7;
+    display:flex;flex-direction:column;gap:6px;
+  }
+  .legit .badge{display:inline-flex;align-items:center;gap:8px;color:var(--cy)}
+  .legit .badge svg{width:16px;height:16px}
+  .legit .en{color:var(--ink-faint)}
+  .copy{margin-top:14px;color:var(--ink-faint);font-family:var(--mono);font-size:.74rem}
+
+  /* =========================================================
+     reveal animation (progressive enhancement)
+  ========================================================= */
+  .reveal{opacity:0;transform:translateY(26px)}
+  .show .reveal{animation:rise .8s cubic-bezier(.2,.7,.2,1) forwards}
+  .show .reveal:nth-child(2){animation-delay:.08s}
+  .show .reveal:nth-child(3){animation-delay:.16s}
+  .show .reveal:nth-child(4){animation-delay:.24s}
+  .show .reveal:nth-child(5){animation-delay:.32s}
+  .show .reveal:nth-child(6){animation-delay:.4s}
+  @keyframes rise{to{opacity:1;transform:none}}
+
+  /* hero entrance stagger */
+  .hero .anim{opacity:0;transform:translateY(22px);animation:rise .9s cubic-bezier(.2,.7,.2,1) forwards}
+  .hero .a1{animation-delay:.05s}
+  .hero .a2{animation-delay:.16s}
+  .hero .a3{animation-delay:.28s}
+  .hero .a4{animation-delay:.4s}
+  .hero .a5{animation-delay:.52s}
+  .hero .screen{opacity:0;transform:translateY(28px) scale(.985);animation:rise 1s cubic-bezier(.2,.7,.2,1) .3s forwards}
+
+  /* No-JS safety: everything visible */
+  .no-js .reveal{opacity:1;transform:none}
+
+  @media (prefers-reduced-motion: reduce){
+    *{animation:none !important;transition:none !important;scroll-behavior:auto !important}
+    .reveal,.hero .anim,.hero .screen{opacity:1 !important;transform:none !important}
+    .wavebar span,.screen-bar .pip.live{opacity:1 !important}
+  }
+</style>
+</head>
+<body class="no-js">
+
+<!-- ===================== NAV ===================== -->
+<header class="nav">
+  <div class="nav-in">
+    <a class="brand" href="#top" aria-label="RealTimeTranslator home">
+      <span class="logo" aria-hidden="true">
+        <svg viewBox="0 0 64 64" fill="none" stroke="#00f0d4" stroke-width="4.5" stroke-linecap="round">
+          <path d="M20 18 L13 18 L13 46 L20 46"/><path d="M44 18 L51 18 L51 46 L44 46"/>
+          <rect x="24" y="28" width="16" height="3.5" rx="1.75" fill="#00f0d4" stroke="none"/>
+          <rect x="24" y="37" width="10" height="3.5" rx="1.75" fill="#00f0d4" stroke="none" opacity="0.55"/>
+        </svg>
+      </span>
+      <span><b>RealTimeTranslator</b><small>Live caption translate</small></span>
+    </a>
+    <nav class="nav-links" aria-label="primary">
+      <a href="#how">仕組み</a>
+      <a href="#features">機能</a>
+      <a href="#byok">プライバシー</a>
+      <a href="#requirements">動作環境</a>
+      <a class="nav-cta" href="#download">ダウンロード / Download</a>
+    </nav>
+  </div>
+</header>
+
+<main id="top">
+
+<!-- ===================== HERO ===================== -->
+<section class="hero" aria-labelledby="hero-title">
+  <div class="scanlines" aria-hidden="true"></div>
+  <div class="wrap hero-grid">
+    <div class="hero-copy">
+      <span class="cap anim a1">Windows · Free &amp; Open Source</span>
+      <h1 id="hero-title" class="anim a2">
+        <span class="real">Real</span><span class="time">Time</span><span class="real">Translator</span>
+      </h1>
+      <div class="tagline anim a3">
+        <span class="jp">ゲームも動画も配信も、<br>リアルタイム字幕翻訳。</span>
+        <span class="en" lang="en">Real-time subtitle translation for any app on Windows.</span>
+      </div>
+      <div class="hero-cta anim a4">
+        <a class="btn btn-primary" href="https://rtt.nephilim.jp/RealTimeTranslator-win-x64-Setup.exe" download>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0l-4.5-4.5M12 15l4.5-4.5"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+          Windows をダウンロード <span class="sub" lang="en">(x64 ・ .exe)</span>
+        </a>
+        <a class="btn btn-ghost" href="https://github.com/1llum1n4t1s/RealTimeTranslator" target="_blank" rel="noopener">
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5C5.7.5.5 5.7.5 12c0 5.1 3.3 9.4 7.9 10.9.6.1.8-.2.8-.5v-2c-3.2.7-3.9-1.4-3.9-1.4-.5-1.3-1.3-1.7-1.3-1.7-1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1 1.8 2.7 1.3 3.4 1 .1-.8.4-1.3.7-1.6-2.6-.3-5.3-1.3-5.3-5.8 0-1.3.5-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.1 0 0 1-.3 3.3 1.2a11.5 11.5 0 0 1 6 0C17.3 4.7 18.3 5 18.3 5c.6 1.6.2 2.8.1 3.1.8.8 1.2 1.8 1.2 3.1 0 4.5-2.7 5.5-5.3 5.8.4.4.8 1.1.8 2.2v3.3c0 .3.2.6.8.5 4.6-1.5 7.9-5.8 7.9-10.9C23.5 5.7 18.3.5 12 .5z"/></svg>
+          GitHub でソースを見る
+        </a>
+      </div>
+      <div class="hero-meta anim a5">
+        <span><b>無料</b> &amp; オープンソース</span><span class="dot">•</span>
+        <span>MIT License</span><span class="dot">•</span>
+        <span lang="en">Auto-updates via Velopack</span>
+      </div>
+    </div>
+
+    <!-- signature element: live overlay window with typing caption -->
+    <div class="screen" role="img" aria-label="アプリの半透明字幕オーバーレイのイメージ。日本語に翻訳された字幕が表示されている。 / Preview of the transparent subtitle overlay showing a live translated caption.">
+      <div class="screen-bar" aria-hidden="true">
+        <span class="pip live"></span><span class="pip"></span><span class="pip"></span>
+        <span class="spacer"></span>
+        <span>OVERLAY · ALWAYS ON TOP · CLICK-THROUGH</span>
+      </div>
+      <div class="wavebar" aria-hidden="true">
+        <span style="animation-delay:0s"></span><span style="animation-delay:.1s"></span><span style="animation-delay:.22s"></span>
+        <span style="animation-delay:.05s"></span><span style="animation-delay:.3s"></span><span style="animation-delay:.15s"></span>
+        <span style="animation-delay:.4s"></span><span style="animation-delay:.25s"></span><span style="animation-delay:.12s"></span>
+        <span style="animation-delay:.35s"></span><span style="animation-delay:.18s"></span><span style="animation-delay:.28s"></span>
+        <span style="animation-delay:.08s"></span><span style="animation-delay:.33s"></span><span style="animation-delay:.2s"></span>
+        <span style="animation-delay:.42s"></span><span style="animation-delay:.14s"></span><span style="animation-delay:.26s"></span>
+      </div>
+      <div class="caption-box">
+        <div class="cc-track" aria-hidden="true">● LIVE CAPTION <span id="cc-src">EN → JA</span></div>
+        <div class="cc-line"><span id="typed" class="typed">ゲームの音声を、そのまま字幕に。</span></div>
+        <div class="cc-en" id="typed-en" lang="en">From your game's audio, straight to subtitles.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<div class="wrap"><div class="divider"></div></div>
+
+<!-- ===================== HOW IT WORKS ===================== -->
+<section id="how" aria-labelledby="how-title">
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="cap">How it works · 仕組み</span>
+      <h2 id="how-title">音声を<em>キャプチャ</em>し、訳して、<em>字幕</em>に。</h2>
+      <span class="en" lang="en">Capture one app's audio, stream it to the OpenAI Realtime API, and paint the translation back as live subtitles — end to end, in real time.</span>
+    </div>
+
+    <div class="pipe show">
+      <article class="step reveal">
+        <div class="num">STEP 01 <span class="arrow" aria-hidden="true">→</span></div>
+        <div class="ic" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M5 10v1a7 7 0 0 0 14 0v-1"/><path d="M12 18v3"/></svg>
+        </div>
+        <h3>プロセス音声をキャプチャ<span class="en" lang="en">Per-app audio capture</span></h3>
+        <p>WASAPI Process Loopback で、選んだアプリ（ゲーム / 動画 / 配信クライアント）の音声<b>だけ</b>を取り込みます。マイクもデスクトップ全体も巻き込みません。
+          <span class="en" lang="en">WASAPI Process Loopback grabs only the chosen process's audio — not your mic, not the whole desktop.</span>
+        </p>
+      </article>
+
+      <article class="step reveal">
+        <div class="num">STEP 02 <span class="arrow" aria-hidden="true">→</span></div>
+        <div class="ic" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12h2l2-6 4 14 3-9 2 3h3"/></svg>
+        </div>
+        <h3>Realtime API へストリーミング<span class="en" lang="en">Stream to OpenAI</span></h3>
+        <p>PCM16 / 24kHz の音声を WebSocket で OpenAI Realtime Translate API（<code>gpt-realtime-translate</code>）へ送り、翻訳テキストを逐次受信します。
+          <span class="en" lang="en">PCM16/24kHz audio streams over WebSocket to the Realtime Translate API, returning translated text token by token.</span>
+        </p>
+      </article>
+
+      <article class="step reveal">
+        <div class="num">STEP 03</div>
+        <div class="ic" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M7 21h10"/><path d="M6 9h7M6 13h5"/></svg>
+        </div>
+        <h3>オーバーレイ字幕に表示<span class="en" lang="en">Overlay subtitles</span></h3>
+        <p>透過・最前面・クリック透過のオーバーレイ窓に字幕を描画。フォント・色・表示時間・行数は自由に調整できます。
+          <span class="en" lang="en">Translations appear in a transparent, always-on-top, click-through overlay. Font, color, duration and line count are all configurable.</span>
+        </p>
+      </article>
+    </div>
+  </div>
+</section>
+
+<div class="wrap"><div class="divider"></div></div>
+
+<!-- ===================== FEATURES ===================== -->
+<section id="features" aria-labelledby="feat-title">
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="cap">Features · 機能</span>
+      <h2 id="feat-title">字幕を、<em>あなた好み</em>に。コストも<em>見える</em>。</h2>
+      <span class="en" lang="en">Built for long sessions: cut API cost with a VAD gate, style the captions, and keep a searchable translation log.</span>
+    </div>
+
+    <div class="features show">
+
+      <!-- VAD / cost (wide) -->
+      <article class="card wide reveal">
+        <div class="ic" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h3l2-7 3 16 3-12 2 5h5"/></svg>
+        </div>
+        <h3>VAD ゲートで API コストを節約<span class="en" lang="en">Silero VAD gate &amp; live cost meter</span></h3>
+        <p>Silero VAD（ONNX）が「人の声らしさ」を判定し、無音区間の送信を抑制。OpenAI Realtime API は送った音声をすべて課金するため、BGM の垂れ流しを止めるだけで大きく節約できます。プリセット（Balanced / 頭尻尾重視 / 節約重視 / Custom）を用意。経過時間・推定トークン・推定コスト・節約秒数をリアルタイム表示します。
+          <span class="en" lang="en">Silero VAD suppresses silence so you don't pay to stream dead air. Choose a preset (Balanced / edge-priority / savings / custom) and watch a live meter of elapsed time, tokens, estimated USD cost and seconds saved.</span>
+        </p>
+        <div class="meter" aria-hidden="true">
+          <div class="row"><span>SESSION COST (est.)</span><b>$0.41</b></div>
+          <div class="bar"><i style="width:34%"></i></div>
+          <div class="row" style="margin-top:11px"><span>VAD GATE</span><b>ACTIVE</b></div>
+          <div class="bar"><i style="width:62%"></i></div>
+          <div class="save">▸ silence suppressed · 採用節約 4m 12s</div>
+        </div>
+      </article>
+
+      <!-- overlay -->
+      <article class="card reveal">
+        <div class="ic" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 15h10M7 11h6"/></svg>
+        </div>
+        <h3>透過オーバーレイ字幕<span class="en" lang="en">Transparent overlay</span></h3>
+        <p>最前面・クリック透過の半透明窓。ゲームや動画の上に重ねても操作を邪魔しません。背景は12色から選べ、枠色は輝度から自動派生して常に視認性を保ちます。
+          <span class="en" lang="en">An always-on-top, click-through window that floats over your game or video. Pick from 12 background colors; the border tint auto-derives for legibility.</span>
+        </p>
+        <div class="swatches" aria-hidden="true">
+          <i style="background:#000"></i><i style="background:#1a1a1a"></i><i style="background:#333"></i>
+          <i style="background:#fff"></i><i style="background:#808080"></i><i style="background:#0d1b3e"></i>
+          <i style="background:#10301a"></i><i style="background:#3a0d0d"></i><i style="background:#3a2410"></i>
+          <i style="background:#2a1040"></i><i style="background:linear-gradient(45deg,#222 25%,transparent 25%,transparent 75%,#222 75%),#444;background-size:8px 8px"></i>
+        </div>
+      </article>
+
+      <!-- fonts -->
+      <article class="card reveal">
+        <div class="ic" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 7V5h14v2"/><path d="M12 5v14"/><path d="M9 19h6"/></svg>
+        </div>
+        <h3>日本語フォント5種同梱<span class="en" lang="en">5 bundled JP fonts (OFL)</span></h3>
+        <p>字幕に最適化した日本語フォント5種を OFL ライセンスで同梱。OS にフォントが無くても綺麗に表示できます。
+          <span class="en" lang="en">Five subtitle-tuned Japanese fonts ship under the SIL Open Font License — beautiful captions even without system fonts installed.</span>
+        </p>
+        <div class="fontsamples" aria-hidden="true">
+          <span>IBM Plex Sans JP</span><span>Noto Sans JP</span><span>LINE Seed JP</span><span>Zen Maru Gothic</span><span>M PLUS Rounded 1c</span>
+        </div>
+      </article>
+
+      <!-- translation log (wide) -->
+      <article class="card wide reveal">
+        <div class="ic" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8v4l3 2"/><circle cx="12" cy="12" r="9"/></svg>
+        </div>
+        <h3>翻訳ログ & 会話ログビューア<span class="en" lang="en">TSV translation log &amp; history viewer</span></h3>
+        <p>確定した字幕は TSV 形式で永続化され、ADV ゲーム風の会話ログ画面で読み返せます。保持期間（無制限 / 7 / 30 / 90 / 180 / 365 日）も設定可能。あとから「あのセリフ、なんて言ってた？」を追えます。
+          <span class="en" lang="en">Finalized subtitles are saved as TSV and replayable in an adventure-game-style history viewer, with configurable retention (unlimited / 7 / 30 / 90 / 180 / 365 days).</span>
+        </p>
+        <div class="logview" aria-hidden="true">
+          <div class="ln"><time>20:14:02</time><span class="tx"><span class="o" lang="en">Are you ready for the final boss?</span><span class="t">ラスボスの準備はいい？</span></span></div>
+          <div class="ln"><time>20:14:09</time><span class="tx"><span class="o" lang="en">Let's give it everything we've got.</span><span class="t">全力でいこう。</span></span></div>
+          <div class="ln"><time>20:14:15</time><span class="tx"><span class="o" lang="en">Watch out — it's charging up!</span><span class="t">気をつけて、チャージしてる！</span></span></div>
+        </div>
+      </article>
+
+    </div>
+  </div>
+</section>
+
+<div class="wrap"><div class="divider"></div></div>
+
+<!-- ===================== BYOK / PRIVACY ===================== -->
+<section id="byok" aria-labelledby="byok-title">
+  <div class="wrap">
+    <div class="byok">
+      <span class="keytag">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="15" r="4"/><path d="M10.85 12.15 19 4M18 5l2 2M15 8l2 2"/></svg>
+        BYOK · Bring Your Own Key
+      </span>
+      <h2 id="byok-title">透明性について。<span class="en" lang="en">Honest about your data &amp; billing.</span></h2>
+
+      <div class="byok-grid">
+        <div>
+          <p>本アプリは <b>BYOK（Bring Your Own Key）</b> モデルです。あなた自身の OpenAI API キーを使い、キャプチャした音声は<b>あなたの OpenAI アカウント</b>の Realtime API に送信されます。<b>課金もあなたのアカウントから発生</b>します。完全なローカル処理ではありません。
+            <span class="en" lang="en">RealTimeTranslator is BYOK. You supply your own OpenAI API key, audio is sent to YOUR OpenAI account's Realtime API, and billing happens on YOUR account. It is not fully local — we want to be clear about that.</span>
+          </p>
+          <div class="flow" aria-label="データの流れ / data flow">
+            <span class="node">アプリ音声 <small lang="en">App audio</small></span>
+            <span class="arr" aria-hidden="true">→</span>
+            <span class="node you">あなたの OpenAI アカウント <small lang="en">Your OpenAI account</small></span>
+            <span class="arr" aria-hidden="true">→</span>
+            <span class="node">翻訳字幕 <small lang="en">Subtitles</small></span>
+          </div>
+        </div>
+
+        <ul>
+          <li class="ok">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+            API キーは Windows DPAPI で暗号化して保存（別 PC では復号不可）。
+            <span class="en" lang="en">Your API key is encrypted with Windows DPAPI and can't be decrypted on another machine.</span>
+          </li>
+          <li class="ok">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+            トラッキングや解析の埋め込みなし。中央サーバーは経由しません。
+            <span class="en" lang="en">No analytics or tracking. Audio does not pass through any server of ours.</span>
+          </li>
+          <li>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
+            音声は OpenAI に送信されます。OpenAI の利用規約・データ方針が適用されます。
+            <span class="en" lang="en">Audio is sent to OpenAI; their terms and data policies apply to it.</span>
+          </li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<div class="wrap"><div class="divider"></div></div>
+
+<!-- ===================== REQUIREMENTS ===================== -->
+<section id="requirements" aria-labelledby="req-title">
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="cap">System requirements · 動作環境</span>
+      <h2 id="req-title">必要なもの。<em></em></h2>
+      <span class="en" lang="en">What you need to run it. Windows x64 only.</span>
+    </div>
+
+    <div class="req-grid show">
+      <div class="req reveal">
+        <div class="k">OS</div>
+        <div class="v">Windows 11<small lang="en">/ Windows Server 2022+ · Build 20348+ · WASAPI Process Loopback required</small></div>
+      </div>
+      <div class="req reveal">
+        <div class="k">Architecture</div>
+        <div class="v">x64<small lang="en">64-bit only · no x86 / ARM</small></div>
+      </div>
+      <div class="req reveal">
+        <div class="k">Runtime</div>
+        <div class="v">.NET 10<small lang="en">net10.0-windows · self-contained installer</small></div>
+      </div>
+      <div class="req reveal">
+        <div class="k">Required</div>
+        <div class="v">OpenAI API Key<small lang="en">with Realtime API access · billed to your account</small></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== DOWNLOAD ===================== -->
+<section id="download" aria-labelledby="dl-title">
+  <div class="wrap">
+    <div class="dl-shell">
+      <div class="scan" aria-hidden="true"></div>
+      <h2 id="dl-title">今すぐ <span class="time">字幕</span> を始める。</h2>
+      <p class="lead">無料・オープンソース。Windows x64 インストーラをダウンロードして、起動後に OpenAI API キーを入れるだけ。
+        <span class="en" lang="en">Free &amp; open source. Download the Windows x64 installer, launch it, and paste your OpenAI API key.</span>
+      </p>
+      <div class="dl-actions">
+        <a class="btn btn-primary btn-xl" href="https://rtt.nephilim.jp/RealTimeTranslator-win-x64-Setup.exe" download>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0l-4.5-4.5M12 15l4.5-4.5"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+          Windows x64 Setup.exe
+        </a>
+        <a class="btn btn-ghost btn-xl" href="https://github.com/1llum1n4t1s/RealTimeTranslator" target="_blank" rel="noopener">
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5C5.7.5.5 5.7.5 12c0 5.1 3.3 9.4 7.9 10.9.6.1.8-.2.8-.5v-2c-3.2.7-3.9-1.4-3.9-1.4-.5-1.3-1.3-1.7-1.3-1.7-1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1 1.8 2.7 1.3 3.4 1 .1-.8.4-1.3.7-1.6-2.6-.3-5.3-1.3-5.3-5.8 0-1.3.5-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.1 0 0 1-.3 3.3 1.2a11.5 11.5 0 0 1 6 0C17.3 4.7 18.3 5 18.3 5c.6 1.6.2 2.8.1 3.1.8.8 1.2 1.8 1.2 3.1 0 4.5-2.7 5.5-5.3 5.8.4.4.8 1.1.8 2.2v3.3c0 .3.2.6.8.5 4.6-1.5 7.9-5.8 7.9-10.9C23.5 5.7 18.3.5 12 .5z"/></svg>
+          View source on GitHub
+        </a>
+      </div>
+      <div class="dl-foot">
+        <span lang="en">Windows x64 only</span><span class="dot">•</span>
+        <span lang="en">Auto-updates via Velopack</span><span class="dot">•</span>
+        <span>MIT License</span><span class="dot">•</span>
+        <span lang="en">No tracking</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<!-- ===================== FOOTER ===================== -->
+<footer>
+  <div class="wrap">
+    <div class="foot-grid">
+      <div>
+        <div class="foot-brand">
+          <span class="logo" aria-hidden="true">
+            <svg viewBox="0 0 64 64" fill="none" stroke="#00f0d4" stroke-width="4.5" stroke-linecap="round">
+              <path d="M20 18 L13 18 L13 46 L20 46"/><path d="M44 18 L51 18 L51 46 L44 46"/>
+              <rect x="24" y="28" width="16" height="3.5" rx="1.75" fill="#00f0d4" stroke="none"/>
+              <rect x="24" y="37" width="10" height="3.5" rx="1.75" fill="#00f0d4" stroke="none" opacity="0.55"/>
+            </svg>
+          </span>
+          <b>RealTimeTranslator</b>
+        </div>
+        <p>指定アプリの音声をリアルタイムに翻訳字幕化する、Windows 向けの無料・オープンソースアプリ。
+          <span class="en" lang="en">A free, open-source Windows app that turns one app's audio into live translated subtitles.</span>
+        </p>
+      </div>
+
+      <nav class="foot-col" aria-label="product">
+        <h4>Product</h4>
+        <a href="#how">仕組み <span lang="en">/ How it works</span></a>
+        <a href="#features">機能 <span lang="en">/ Features</span></a>
+        <a href="#byok">プライバシー <span lang="en">/ Privacy</span></a>
+        <a href="#requirements">動作環境 <span lang="en">/ Requirements</span></a>
+      </nav>
+
+      <nav class="foot-col" aria-label="resources">
+        <h4>Resources</h4>
+        <a href="https://rtt.nephilim.jp/RealTimeTranslator-win-x64-Setup.exe" download>ダウンロード <span lang="en">/ Download (x64)</span></a>
+        <a href="https://github.com/1llum1n4t1s/RealTimeTranslator" target="_blank" rel="noopener">GitHub <span lang="en">/ Source code</span></a>
+        <a href="https://github.com/1llum1n4t1s/RealTimeTranslator/issues" target="_blank" rel="noopener">Issues <span lang="en">/ Bug reports</span></a>
+        <a href="https://platform.openai.com/" target="_blank" rel="noopener">OpenAI Platform <span lang="en">/ Get an API key</span></a>
+      </nav>
+    </div>
+
+    <div class="legit">
+      <span class="badge">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 4 5v6c0 5 3.4 9.3 8 11 4.6-1.7 8-6 8-11V5l-8-3z"/><path d="m9 12 2 2 4-4"/></svg>
+        正規の無料ソフトウェアです。マルウェア・アドウェア・トラッカーは含みません。
+      </span>
+      <span class="en" lang="en">RealTimeTranslator is legitimate, non-malicious free software. It contains no malware, adware, bundled offers, or trackers. Source code is publicly auditable on GitHub under the MIT License; the installer auto-updates via Velopack.</span>
+      <span class="copy">© 2026 1llum1n4t1s · MIT License · <span lang="en">Free &amp; Open Source Software</span></span>
+    </div>
+  </div>
+</footer>
+
+<script>
+  // Progressive enhancement only. Page is fully usable & visible without JS.
+  (function(){
+    var root = document.body;
+    root.classList.remove('no-js');
+
+    var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+    /* ---- Scroll reveal: add .show to sections that contain .reveal ---- */
+    var groups = document.querySelectorAll('.pipe, .features, .req-grid');
+    if (reduce || !('IntersectionObserver' in window)) {
+      groups.forEach(function(g){ g.classList.add('show'); });
+    } else {
+      var io = new IntersectionObserver(function(entries){
+        entries.forEach(function(e){
+          if (e.isIntersecting){ e.target.classList.add('show'); io.unobserve(e.target); }
+        });
+      }, {threshold:0.12, rootMargin:'0px 0px -8% 0px'});
+      groups.forEach(function(g){ g.classList.add('show-pending'); io.observe(g); });
+      // Fallback: ensure visible after load regardless
+      window.addEventListener('load', function(){
+        setTimeout(function(){ groups.forEach(function(g){ g.classList.add('show'); }); }, 1200);
+      });
+    }
+
+    /* ---- Signature: faux subtitle that "types" across languages ---- */
+    if (!reduce) {
+      var jpEl  = document.getElementById('typed');
+      var enEl  = document.getElementById('typed-en');
+      var srcEl = document.getElementById('cc-src');
+      if (jpEl && enEl) {
+        var lines = [
+          { src:'EN → JA', jp:'ゲームの音声を、そのまま字幕に。',      en:"From your game's audio, straight to subtitles." },
+          { src:'EN → JA', jp:'リアルタイムで翻訳しています…',          en:'Translating in real time…' },
+          { src:'JA → EN', jp:'動画も配信も、ぜんぶ字幕化。',          en:'Videos, streams — captioned, all of it.' },
+          { src:'KO → JA', jp:'声を聞きとって、すぐに表示。',          en:'It hears the voice and shows it instantly.' }
+        ];
+        var li = 0;
+        function typeLine(text, el, cb){
+          el.textContent = '';
+          var i = 0;
+          (function step(){
+            if (i <= text.length){
+              el.textContent = text.slice(0, i);
+              i++;
+              setTimeout(step, 42);
+            } else if (cb){ setTimeout(cb, 0); }
+          })();
+        }
+        function cycle(){
+          var L = lines[li];
+          if (srcEl) srcEl.textContent = L.src;
+          jpEl.classList.add('typed');
+          enEl.textContent = '';
+          typeLine(L.jp, jpEl, function(){
+            jpEl.classList.remove('typed');
+            enEl.textContent = L.en;
+            li = (li + 1) % lines.length;
+            setTimeout(cycle, 2600);
+          });
+        }
+        // Start after the hero entrance settles
+        setTimeout(cycle, 1100);
+      }
+    }
+  })();
+</script>
+
+</body>
+</html>
