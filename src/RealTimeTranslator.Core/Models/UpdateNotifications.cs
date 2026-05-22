@@ -1,5 +1,3 @@
-using System;
-
 namespace RealTimeTranslator.Core.Models;
 
 public enum UpdateStatus

@@ -38,6 +38,11 @@ public sealed class SileroVadDetector : IVoiceActivityDetector
     private static readonly long[] s_inputShape = [1, InputWithContextSize];
     private static readonly long[] s_stateShape = [2, 1, StateDim];
     private static readonly long[] s_srShape = []; // scalar (rank 0)
+    // VAD ホットパス (32ms ごと) の毎フレーム alloc を排除するため、 入力辞書と RunOptions を
+    // field で再利用する (_lock 内でのみ触るので単一スレッドアクセス)。 OrtValue の値は毎フレーム
+    // using で作り直して再代入する (CreateTensorValueFromMemory は参照保持だが破棄後の上書きで問題なし)。
+    private readonly Dictionary<string, OrtValue> _inputs = new(3);
+    private readonly RunOptions _runOptions = new();
     private readonly object _lock = new();
     private bool _disposed;
 
@@ -110,15 +115,12 @@ public sealed class SileroVadDetector : IVoiceActivityDetector
             using var stateOrt = OrtValue.CreateTensorValueFromMemory<float>(memInfo, _stateBuffer, s_stateShape);
             using var srOrt = OrtValue.CreateTensorValueFromMemory<long>(memInfo, _srBuffer, s_srShape);
 
-            var inputs = new Dictionary<string, OrtValue>
-            {
-                ["input"] = inputOrt,
-                ["state"] = stateOrt,
-                ["sr"] = srOrt,
-            };
+            // field の辞書に値だけ差し替える (毎フレームの Dictionary new を排除)。
+            _inputs["input"] = inputOrt;
+            _inputs["state"] = stateOrt;
+            _inputs["sr"] = srOrt;
 
-            using var runOptions = new RunOptions();
-            using var results = _session.Run(runOptions, inputs, s_outputNames);
+            using var results = _session.Run(_runOptions, _inputs, s_outputNames);
 
             // 出力順序は s_outputNames の指定順 (output, stateN) を InferenceSession.Run が保証する。
             // ElementAt を経由せず index 直アクセスで LINQ enumerator alloc を排除。
@@ -166,6 +168,7 @@ public sealed class SileroVadDetector : IVoiceActivityDetector
         {
             if (_disposed) return;
             _disposed = true;
+            _runOptions.Dispose();
             _session.Dispose();
         }
     }

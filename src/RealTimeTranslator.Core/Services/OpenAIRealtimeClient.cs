@@ -146,7 +146,10 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
             _settings = settings;
             _shouldReconnect = true;
             _cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            _sendChannel = Channel.CreateBounded<byte[]>(new BoundedChannelOptions(100)
+            // 容量 30: 1 chunk ≒ 80ms で約 2.4 秒分のバッファ。
+            // 旧 100 (≒8秒) だと DropOldest 発動まで時間がかかり追いつきが遅かった。
+            // 30 にすることでバックログ時の最大遅延を ~2.4 秒に短縮する。
+            _sendChannel = Channel.CreateBounded<byte[]>(new BoundedChannelOptions(30)
             {
                 FullMode = BoundedChannelFullMode.DropOldest,
                 SingleReader = true
@@ -465,12 +468,29 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
         //   string 中間表現と byte[] コピーを排除し、Base64 string のみが allocate される（こちらは後の最適化対象）。
         var bufferWriter = new ArrayBufferWriter<byte>(initialCapacity: 8192);
         var jsonWriter = new Utf8JsonWriter(bufferWriter, new JsonWriterOptions { SkipValidation = true });
+        // バッチ送信用: キューに溜まった複数チャンクの PCM16 を連結して 1 回の WebSocket send にまとめる。
+        // 遅延時の追いつきが高速化する (JSON + base64 オーバーヘッドが 1 回分で済む)。
+        // 正常時 (キューが空) は firstChunk のみ → 従来と同じ 1 チャンク 1 送信。
+        var audioBatch = new ArrayBufferWriter<byte>(initialCapacity: 16384);
 
         try
         {
-            await foreach (var audioData in _sendChannel!.Reader.ReadAllAsync(ct))
+            await foreach (var firstChunk in _sendChannel!.Reader.ReadAllAsync(ct))
             {
                 if (_ws is not { State: WebSocketState.Open }) continue;
+
+                // キューに溜まっている追加チャンクをドレインして連結 (バッチ送信)。
+                // TryRead は非ブロッキングなので、キューが空なら即 false で firstChunk のみ送信。
+                audioBatch.ResetWrittenCount();
+                var span = audioBatch.GetSpan(firstChunk.Length);
+                firstChunk.CopyTo(span);
+                audioBatch.Advance(firstChunk.Length);
+                while (_sendChannel.Reader.TryRead(out var extraChunk))
+                {
+                    span = audioBatch.GetSpan(extraChunk.Length);
+                    extraChunk.CopyTo(span);
+                    audioBatch.Advance(extraChunk.Length);
+                }
 
                 bufferWriter.ResetWrittenCount();
                 jsonWriter.Reset(bufferWriter);
@@ -481,14 +501,14 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
                 jsonWriter.WriteString("type", "session.input_audio_buffer.append");
                 // rere C1-P2-004 / I-4: Convert.ToBase64String の中間 string allocate を回避し、
                 // Utf8JsonWriter.WriteBase64String で UTF-8 byte に直接書き込む (zero-alloc)。
-                jsonWriter.WriteBase64String("audio"u8, audioData);
+                jsonWriter.WriteBase64String("audio"u8, audioBatch.WrittenSpan);
                 jsonWriter.WriteEndObject();
                 await jsonWriter.FlushAsync(ct).ConfigureAwait(false);
 
                 await _ws.SendAsync(bufferWriter.WrittenMemory, WebSocketMessageType.Text, true, ct).ConfigureAwait(false);
                 // 統計用: 送信した PCM16 (= 2 bytes/sample, 24kHz mono) のサンプル数を累積。
                 // server usage が拾えないモデル/イベントの fallback 推定に使う。
-                Interlocked.Add(ref _totalAudioInputSamples24kHz, audioData.Length / 2);
+                Interlocked.Add(ref _totalAudioInputSamples24kHz, audioBatch.WrittenCount / 2);
             }
         }
         catch (OperationCanceledException) { }
@@ -827,7 +847,7 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
                     await CleanupAsync().ConfigureAwait(false);
 
                     _cts = new CancellationTokenSource();
-                    _sendChannel = Channel.CreateBounded<byte[]>(new BoundedChannelOptions(100)
+                    _sendChannel = Channel.CreateBounded<byte[]>(new BoundedChannelOptions(30)
                     {
                         FullMode = BoundedChannelFullMode.DropOldest,
                         SingleReader = true

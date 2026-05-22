@@ -88,7 +88,8 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     // 再翻訳し、 微妙に異なるテキストを生成するため、 近似重複が連続 emit される UX バグになる。
     // 例: "手すりって、実は取り付けるものなんだな。" → 3秒後 "手すりって、取り付けるものなんだな。"
     // Bigram Jaccard 類似度 > DuplicateSuppressionThreshold なら後発を抑制する。
-    private readonly Queue<string> _recentEmittedSentences = new();
+    // (text, bigrams) で保持し、 IsSimilarToRecentEmission での recent 側 bigram 再計算を排除する。
+    private readonly Queue<(string text, HashSet<long> bigrams)> _recentEmittedSentences = new();
     private const int MaxRecentEmissions = 8;
     // 0.7: 実運用の近似重複 (例: 「手すりって、実は取り付けるものなんだな。」↔「手すりって、取り付けるものなんだな。」= 0.8)
     // を確実に抑制しつつ、 短い文のインデックス違い (0.55〜0.67) を誤検出しない閾値。
@@ -99,6 +100,11 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     // EnableVad=false の場合は素通し (旧挙動)。
     private enum VadState { Silence, InSpeech, Hangover }
     private readonly IVoiceActivityDetector _vad;
+    // 16kHz→24kHz ストリーミングリサンプラ。 セッション内で 1 個だけ保持し、 VADゲート/VAD無効の
+    // 両パスの送信音声をこれ経由でリサンプルする。 フレーム単位の個別リサンプル (旧実装) が起こす
+    // フレーム境界のクリックノイズ (2026-05-23 実証: 振幅最大 90% のスパイクが 32ms ごとに挿入され
+    // OpenAI の文境界検出を破壊) を排除するため、 フィルタ状態を引き継ぐ単一インスタンスを使う。
+    private readonly StreamingResampler _streamingResampler = new();
     // 16kHz / 32ms = 512 samples ごとに切り出すための accumulator (audio chunk 境界とフレーム
     // 境界がズレるため、 残ったサンプルを次 chunk と結合して使う)。
     private float[]? _frameAccumulator;
@@ -214,10 +220,10 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
 
         // WASAPI コールバックスレッドで重い変換を行うと audio glitch の原因になるため、
         // Channel に raw float[] を投入だけして変換は専用タスクで行う。
-        // 容量 25: ゆろさんの「遅れてる時の加速」要望で 50 → 25 に半減。
-        // 詰まり時の最大遅延が約 4 秒 → 約 2 秒に短縮され、DropOldest が早く走って追いつきが速くなる。
-        // 下げすぎると正常時にも音声欠落が起きるので 25 が穏当 (1 chunk ≒ 80ms 想定で 2 秒分のバッファ)。
-        _audioInputChannel = Channel.CreateBounded<float[]>(new BoundedChannelOptions(25)
+        // 容量 15: 1 chunk ≒ 80ms 想定で約 1.2 秒分のバッファ。
+        // 送信チャンネル (30) と合わせて合計 ~3.6 秒の最大パイプライン遅延に抑える。
+        // VAD 処理 (~1ms/frame) や GC pause (~10ms) に対して十分な余裕がある。
+        _audioInputChannel = Channel.CreateBounded<float[]>(new BoundedChannelOptions(15)
         {
             FullMode = BoundedChannelFullMode.DropOldest,
             SingleReader = true,
@@ -230,6 +236,8 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         // 旧セッションの hidden state / preroll が残っていると、 開始直後の判定が
         // ブレるので必ずここで初期化する。
         _vad.Reset();
+        // リサンプラのフィルタ状態 + 未消費入力を完全クリア (前セッションの残響を持ち越さない)。
+        _streamingResampler.Reset();
         _preRollBuffer.Clear();
         _vadState = VadState.Silence;
         _hangoverFramesRemaining = 0;
@@ -409,9 +417,13 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                     if (!audioCaptureSettings.EnableVad)
                     {
                         // VAD 無効: 旧パス (素通し送信)。 後方互換 & 緊急時の VAD バイパス用。
-                        var pcm16 = AudioFormatConverter.Float32ToPcm16(
-                            AudioFormatConverter.ResampleTo24kHz(audioData));
-                        _realtimeClient.SendAudio(pcm16);
+                        // VADゲートパスと同じストリーミングリサンプラ経由で chunk 間の連続性も保つ。
+                        var resampled = _streamingResampler.Resample(audioData);
+                        if (resampled.Length > 0)
+                        {
+                            var pcm16 = AudioFormatConverter.Float32ToPcm16(resampled);
+                            _realtimeClient.SendAudio(pcm16);
+                        }
                     }
                     else
                     {
@@ -445,7 +457,9 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         if (string.IsNullOrEmpty(delta)) return;
 
         // 完結文をロック外で emit するため、 ロック内ではプランだけ作って退出する。
-        List<(string segmentId, string sentence)> completedSentences = new();
+        // 完結文が出るのは句点到達時だけ (大多数の delta は空のまま)。 lazy 確保で
+        // 毎 delta の空 List alloc を排除する。
+        List<(string segmentId, string sentence)>? completedSentences = null;
         bool emitPartial = false;
 
         lock (_textLock)
@@ -481,7 +495,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                         // 近似テキスト (例: "実は" が有無だけ異なる文) を抑制する。
                         if (!IsSimilarToRecentEmission(sentence))
                         {
-                            completedSentences.Add((_currentSegmentId, sentence));
+                            (completedSentences ??= new()).Add((_currentSegmentId, sentence));
                             RecordEmission(sentence);
                         }
                         else
@@ -507,7 +521,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
             // 強制分割する。 永久未確定字幕 (partial 表示が伸び続ける UX バグ) を防止。
             // すでに完結文を切り出した直後 (completedSentences.Count > 0) は trailing が短いので
             // fallback 不要。 完結文ゼロかつ trailing が閾値超のケースのみ発動する。
-            if (completedSentences.Count == 0 && (totalLen - start) > FallbackSplitThreshold)
+            if (completedSentences is null && (totalLen - start) > FallbackSplitThreshold)
             {
                 // _lastFallbackCommaPos が有効な範囲にあれば O(1) で分割。
                 if (_lastFallbackCommaPos > start)
@@ -520,7 +534,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                         if (!IsSimilarToRecentEmission(sentence))
                         {
                             Logger.Info($"OnTranscriptDelta: 句読点 fallback 分割 (trailing={trailingLength}文字 句点なし) → '{TruncateForLog(sentence)}'");
-                            completedSentences.Add((_currentSegmentId, sentence));
+                            (completedSentences ??= new()).Add((_currentSegmentId, sentence));
                             RecordEmission(sentence);
                         }
                         else
@@ -534,7 +548,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                 }
             }
 
-            if (completedSentences.Count > 0)
+            if (completedSentences is { Count: > 0 })
             {
                 // 完結文を切り出した → trailing だけ _accumulatedText に残す。
                 if (start > 0)
@@ -565,19 +579,22 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         }
 
         // ロック外で完結文を emit。
-        foreach (var (segmentId, sentence) in completedSentences)
+        if (completedSentences is not null)
         {
-            var n = Interlocked.Increment(ref _completedEmitCount);
-            Logger.Info($"完結文 emit (delta経路) #{n}: SegmentId={ShortSegmentId(segmentId)} 長さ={sentence.Length} 内容='{TruncateForLog(sentence)}'");
-
-            var subtitle = new SubtitleItem
+            foreach (var (segmentId, sentence) in completedSentences)
             {
-                SegmentId = segmentId,
-                OriginalText = string.Empty,
-                TranslatedText = sentence,
-                IsFinal = true,
-            };
-            SubtitleGenerated?.Invoke(this, subtitle);
+                var n = Interlocked.Increment(ref _completedEmitCount);
+                Logger.Info($"完結文 emit (delta経路) #{n}: SegmentId={ShortSegmentId(segmentId)} 長さ={sentence.Length} 内容='{TruncateForLog(sentence)}'");
+
+                var subtitle = new SubtitleItem
+                {
+                    SegmentId = segmentId,
+                    OriginalText = string.Empty,
+                    TranslatedText = sentence,
+                    IsFinal = true,
+                };
+                SubtitleGenerated?.Invoke(this, subtitle);
+            }
         }
 
         if (emitPartial)
@@ -1088,20 +1105,26 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     internal static double BigramJaccardSimilarity(string a, string b)
     {
         if (a.Length < 2 || b.Length < 2) return a == b ? 1.0 : 0.0;
+        return JaccardOf(BuildBigrams(a), BuildBigrams(b));
+    }
 
-        var bigramsA = new HashSet<long>();
-        for (int i = 0; i < a.Length - 1; i++)
-            bigramsA.Add(((long)a[i] << 16) | a[i + 1]);
+    // bigram 集合を構築する。 容量を (長さ-1) で先行確保して rehash を抑える。
+    private static HashSet<long> BuildBigrams(string s)
+    {
+        var set = new HashSet<long>(s.Length - 1);
+        for (int i = 0; i < s.Length - 1; i++)
+            set.Add(((long)s[i] << 16) | s[i + 1]);
+        return set;
+    }
 
-        var bigramsB = new HashSet<long>();
-        for (int i = 0; i < b.Length - 1; i++)
-            bigramsB.Add(((long)b[i] << 16) | b[i + 1]);
-
+    // 2 つの bigram 集合の Jaccard 係数。 集合構築と分離して再利用可能にする。
+    private static double JaccardOf(HashSet<long> a, HashSet<long> b)
+    {
         int intersection = 0;
-        foreach (var bg in bigramsA)
-            if (bigramsB.Contains(bg)) intersection++;
+        foreach (var bg in a)
+            if (b.Contains(bg)) intersection++;
 
-        int union = bigramsA.Count + bigramsB.Count - intersection;
+        int union = a.Count + b.Count - intersection;
         return union == 0 ? 0.0 : (double)intersection / union;
     }
 
@@ -1110,9 +1133,17 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     /// </summary>
     private bool IsSimilarToRecentEmission(string sentence)
     {
-        foreach (var recent in _recentEmittedSentences)
+        if (_recentEmittedSentences.Count == 0) return false;
+
+        // sentence の bigram は 1 回だけ構築する (旧実装は recent 件数ぶん再構築していた)。
+        // 2 文字未満は bigram が作れないので文字列等価で判定 (BigramJaccardSimilarity と同挙動)。
+        var bigramsS = sentence.Length >= 2 ? BuildBigrams(sentence) : null;
+        foreach (var (text, bigrams) in _recentEmittedSentences)
         {
-            if (BigramJaccardSimilarity(sentence, recent) > DuplicateSuppressionThreshold)
+            double sim = (bigramsS is null || text.Length < 2)
+                ? (sentence == text ? 1.0 : 0.0)
+                : JaccardOf(bigramsS, bigrams);
+            if (sim > DuplicateSuppressionThreshold)
                 return true;
         }
         return false;
@@ -1123,7 +1154,9 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     /// </summary>
     private void RecordEmission(string sentence)
     {
-        _recentEmittedSentences.Enqueue(sentence);
+        // bigram も一緒に保持して IsSimilarToRecentEmission での再計算を排除する。
+        HashSet<long> bigrams = sentence.Length >= 2 ? BuildBigrams(sentence) : [];
+        _recentEmittedSentences.Enqueue((sentence, bigrams));
         while (_recentEmittedSentences.Count > MaxRecentEmissions)
             _recentEmittedSentences.Dequeue();
     }
@@ -1260,8 +1293,10 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     /// <summary>VAD ゲート通過分のフレームを 24kHz PCM16 に変換して OpenAI へ送信。</summary>
     private void SendFrameToClient(float[] frame16kHz)
     {
-        var pcm16 = AudioFormatConverter.Float32ToPcm16(
-            AudioFormatConverter.ResampleTo24kHz(frame16kHz));
+        // ストリーミングリサンプラ経由でフィルタ状態を引き継ぎ、 フレーム境界アーティファクトを回避。
+        var resampled = _streamingResampler.Resample(frame16kHz);
+        if (resampled.Length == 0) return; // warmup 等で出力が次回に持ち越されたケース
+        var pcm16 = AudioFormatConverter.Float32ToPcm16(resampled);
         _realtimeClient.SendAudio(pcm16);
     }
 

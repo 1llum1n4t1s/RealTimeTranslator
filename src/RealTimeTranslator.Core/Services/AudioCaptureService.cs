@@ -395,33 +395,41 @@ public class AudioCaptureService : IAudioCaptureService
                 var hex = BitConverter.ToString(bufferCopy, 0, len).Replace("-", " ");
                 LoggerService.LogDebug($"[Capture] #{callCount} bufferCopy (first {len} bytes): {hex}");
             }
-            // 16bit PCM のときは生値の範囲をログ用に取得（無音判定の切り分け用）
-            var (raw16Min, raw16Max) = GetRaw16BitRange(bufferCopy, e.BytesRecorded, sourceFormat);
-
             // NAudio の RawSourceWaveStream ＋ ToSampleProvider で float 変換（2ch の場合は StereoToMono 含む）
             var samples = ConvertToFloat(bufferCopy, e.BytesRecorded, sourceFormat);
-            var max = 0f;
-            for (var i = 0; i < samples.Length; i++)
+
+            // max スキャン・raw16 範囲・avg は「無音フラグ未確定時」または「診断ログ出力時」のみ計算する。
+            // フラグ確定後 (= 一度でも有音を受信後) の常時全サンプル走査 (約10回/秒) は
+            // コールバックスレッド (MMCSS) 上の無駄な負荷なので排除する。フラグは単調 true なので挙動同値。
+            var needLog = callCount <= 5 || callCount % 50 == 0;
+            if (!_hasReceivedNonSilentDataSinceStart || needLog)
             {
-                var abs = Math.Abs(samples[i]);
-                if (abs > max) max = abs;
-            }
-            if (max > NonSilentAmplitudeThreshold)
-                _hasReceivedNonSilentDataSinceStart = true;
-            if (callCount <= 5 || callCount % 50 == 0)
-            {
-                var sum = 0f;
+                var max = 0f;
                 for (var i = 0; i < samples.Length; i++)
-                    sum += Math.Abs(samples[i]);
-                var avg = samples.Length > 0 ? sum / samples.Length : 0f;
-                var raw16Str = raw16Min.HasValue ? $", raw16=[{raw16Min.Value},{raw16Max!.Value}]" : "";
-                LoggerService.LogDebug($"[Capture] OnDataAvailable #{callCount}: bytes={e.BytesRecorded}, samples={samples.Length}, max={max:F6}, avg={avg:F6}{raw16Str}");
-                // raw16 が -1～1 のみで再生の有無で変わらない場合は、実音ではなくドライバのプレースホルダーと判断
-                if (!_loggedPlaceholderWarning && raw16Min.HasValue && raw16Max.HasValue
-                    && raw16Min.Value >= -1 && raw16Max.Value <= 1 && (raw16Min.Value < 0 || raw16Max.Value > 0))
                 {
-                    _loggedPlaceholderWarning = true;
-                    LoggerService.LogWarning("[Capture] raw16 が [-1,1] のみです。再生停止時も同じ値なら Process Loopback が実音を返していません（ドライバ／WASAPI の挙動の可能性）。");
+                    var abs = Math.Abs(samples[i]);
+                    if (abs > max) max = abs;
+                }
+                if (max > NonSilentAmplitudeThreshold)
+                    _hasReceivedNonSilentDataSinceStart = true;
+
+                if (needLog)
+                {
+                    // 16bit PCM の生値範囲はログ出力時のみ取得（毎チャンクの全走査を排除）。
+                    var (raw16Min, raw16Max) = GetRaw16BitRange(bufferCopy, e.BytesRecorded, sourceFormat);
+                    var sum = 0f;
+                    for (var i = 0; i < samples.Length; i++)
+                        sum += Math.Abs(samples[i]);
+                    var avg = samples.Length > 0 ? sum / samples.Length : 0f;
+                    var raw16Str = raw16Min.HasValue ? $", raw16=[{raw16Min.Value},{raw16Max!.Value}]" : "";
+                    LoggerService.LogDebug($"[Capture] OnDataAvailable #{callCount}: bytes={e.BytesRecorded}, samples={samples.Length}, max={max:F6}, avg={avg:F6}{raw16Str}");
+                    // raw16 が -1～1 のみで再生の有無で変わらない場合は、実音ではなくドライバのプレースホルダーと判断
+                    if (!_loggedPlaceholderWarning && raw16Min.HasValue && raw16Max.HasValue
+                        && raw16Min.Value >= -1 && raw16Max.Value <= 1 && (raw16Min.Value < 0 || raw16Max.Value > 0))
+                    {
+                        _loggedPlaceholderWarning = true;
+                        LoggerService.LogWarning("[Capture] raw16 が [-1,1] のみです。再生停止時も同じ値なら Process Loopback が実音を返していません（ドライバ／WASAPI の挙動の可能性）。");
+                    }
                 }
             }
 
