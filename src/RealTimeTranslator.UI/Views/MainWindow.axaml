@@ -12,7 +12,7 @@
         Icon="avares://RealTimeTranslator.UI/Assets/app.ico"
         Width="750" Height="550"
         MinWidth="650" MinHeight="450"
-        CanResize="False"
+        CanResize="True"
         Background="Transparent"
         ExtendClientAreaTitleBarHeightHint="32"
         ExtendClientAreaToDecorationsHint="True"

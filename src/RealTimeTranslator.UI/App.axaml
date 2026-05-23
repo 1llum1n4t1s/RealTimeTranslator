@@ -42,10 +42,14 @@
                                 </ItemsPresenter.ItemsPanel>
                             </ItemsPresenter>
                         </Border>
+                        <!-- MaxWidth: ウィンドウ最大化・大幅リサイズ時にコンテンツが横へ間延びするのを防ぐ。
+                             通常サイズ (750px 窓) では制約に当たらず全幅、 広げたときだけ 960px で頭打ち + 中央寄せ。
+                             HorizontalAlignment は Stretch のままにして「Left 指定で幅が中身サイズに縮む」事故を回避する。 -->
                         <ContentPresenter
                             Name="PART_SelectedContentHost"
                             Grid.Column="1"
                             Margin="0"
+                            MaxWidth="960"
                             HorizontalContentAlignment="{TemplateBinding HorizontalContentAlignment}"
                             VerticalContentAlignment="{TemplateBinding VerticalContentAlignment}"
                             Content="{TemplateBinding SelectedContent}"

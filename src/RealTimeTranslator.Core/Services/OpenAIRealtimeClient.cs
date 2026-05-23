@@ -438,6 +438,14 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
 
         Logger.Info($"OpenAI Realtime session.update: output.language='{outputLanguage}' (settings='{_settings.OutputLanguage ?? "<null>"}')");
 
+        // audio.input.noise_reduction は意図的に送らない:
+        //   旧: noise_reduction = { type = "far_field" } を送っていた。
+        //   これは「遠距離マイク向けの強いノイズ抑制」で、 WASAPI ループバック
+        //   (デジタル直結でノイズ皆無の経路) の音楽信号に対しては、 連続的な広帯域音を
+        //   ノイズと誤判定して削ってしまう。 結果「音楽が全く認識されない」事象が出る
+        //   (2026-05-23 検証: 日本語/英語の歌どちらも翻訳不可。 言語非依存で再現)。
+        //   loopback は元々録音環境ノイズが無いので noise_reduction 自体が不要 (むしろ有害)。
+        //   input オブジェクトごと省略して API デフォルト (ノイズ抑制なし) に任せる。
         var sessionUpdate = new
         {
             type = "session.update",
@@ -445,10 +453,6 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
             {
                 audio = new
                 {
-                    input = new
-                    {
-                        noise_reduction = new { type = "far_field" }
-                    },
                     output = new { language = outputLanguage }
                 }
             }

@@ -27,8 +27,8 @@
       },
       "1llum1n4t1s.NAudio": {
         "type": "Transitive",
-        "resolved": "1.0.44",
-        "contentHash": "9yCeCKefdDPWI4MwEuRAKSneyhRtauagCor/A1583yVM7drNIB0wU/GNZYqN8YcBjSGmeAjpZgSURLHBSSgYWA=="
+        "resolved": "1.0.45",
+        "contentHash": "j2zmRmUxt9E7qKsz3gngeXmwA/RovWDPmHuk2pvsElV/qbidGgRDuaZg9NdryOGxmV5viPiCODrNFo5IpiZA7w=="
       },
       "Avalonia": {
         "type": "Transitive",
@@ -521,7 +521,7 @@
       "realtimetranslator.core": {
         "type": "Project",
         "dependencies": {
-          "1llum1n4t1s.NAudio": "[1.0.44, )",
+          "1llum1n4t1s.NAudio": "[1.0.45, )",
           "Microsoft.ML.OnnxRuntime": "[1.26.0, )",
           "SuperLightLogger": "[1.0.7, )",
           "System.Security.Cryptography.ProtectedData": "[10.0.8, )"
@@ -538,7 +538,7 @@
           "Microsoft.Extensions.DependencyInjection": "[10.0.8, )",
           "Microsoft.Extensions.Options": "[10.0.8, )",
           "Microsoft.Extensions.Options.ConfigurationExtensions": "[10.0.8, )",
-          "RealTimeTranslator.Core": "[1.0.18, )",
+          "RealTimeTranslator.Core": "[1.0.21, )",
           "Velopack": "[0.0.1298, )",
           "VelopackUpdateDialog.Avalonia": "[1.0.3, )"
         }

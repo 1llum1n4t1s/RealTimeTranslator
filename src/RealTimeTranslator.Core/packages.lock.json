@@ -4,9 +4,9 @@
     "net10.0-windows10.0.20348": {
       "1llum1n4t1s.NAudio": {
         "type": "Direct",
-        "requested": "[1.0.44, )",
-        "resolved": "1.0.44",
-        "contentHash": "9yCeCKefdDPWI4MwEuRAKSneyhRtauagCor/A1583yVM7drNIB0wU/GNZYqN8YcBjSGmeAjpZgSURLHBSSgYWA=="
+        "requested": "[1.0.45, )",
+        "resolved": "1.0.45",
+        "contentHash": "j2zmRmUxt9E7qKsz3gngeXmwA/RovWDPmHuk2pvsElV/qbidGgRDuaZg9NdryOGxmV5viPiCODrNFo5IpiZA7w=="
       },
       "Microsoft.ML.OnnxRuntime": {
         "type": "Direct",
