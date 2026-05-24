@@ -140,6 +140,17 @@ public class OpenAIRealtimeSettings
     public int ReconnectDelayMs { get; set; } = 3000;
     // モバイル / Wi-Fi の一時切断（数十秒オーダー）でも諦めず、NetworkChange 復帰でもカウンタリセットされる。
     public int MaxReconnectAttempts { get; set; } = 30;
+
+    // ⭐ partial 連結方式の暴走防止安全弁 (v1.0.24 追加)。
+    // OpenAI Realtime Translate API は server-side で「発話終端」を検出できない場合、
+    // delta 配信が 30〜45 秒以上途絶した後に突然続きを送ってくることがある (2026-05-24 観測)。
+    // 旧設計は Overlay.DisplayDuration (5秒) 経過で強制確定していたが、 これだと
+    // 「ARC Raiders 等のゲーム音声で文中の自然な間で字幕が途中で切れる」UX バグになっていた。
+    // 新設計: delta が来ない無音 = 強制確定しない (同 SegmentId のまま partial 連結を継続)。
+    // ただし「真の発話終端 + done が来ない」病的ケースで字幕が永久未確定になるのを防ぐため、
+    // 発話開始からこの値 (秒) を超えたら強制確定する。 デフォルト 45 秒は「人間の一発話の現実的上限」。
+    // 隠し設定 — UI には出さず settings.json 直編集または DI override で調整する想定。
+    public double MaxSegmentLifetimeSec { get; set; } = 45.0;
 }
 
 // GameProfile / GameProfiles は旧 Whisper+LLM ローカル翻訳時代の設定。

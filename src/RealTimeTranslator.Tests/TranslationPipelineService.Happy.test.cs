@@ -70,8 +70,10 @@ public sealed class TranslationPipelineServiceHappyTests
         return (pipeline, transcriber, emitted);
     }
 
-    // アイドル確定テスト用: Overlay.DisplayDuration を短く設定して待ち時間を最小化する (下限 1 秒)。
-    private static (TranslationPipelineService pipeline, TestRealtimeTranscriber transcriber, List<SubtitleItem> emitted) CreatePipelineWithDisplayDuration(double displayDurationSeconds)
+    // 最大寿命確定テスト用 (v1.0.24 partial 連結方式): OpenAIRealtime.MaxSegmentLifetimeSec を
+    // 短く設定して待ち時間を最小化する (下限 1 秒、 Math.Clamp で防御)。
+    // 旧 Overlay.DisplayDuration ベースのアイドル確定は廃止 → MaxSegmentLifetimeSec ベースの最大寿命確定に置換。
+    private static (TranslationPipelineService pipeline, TestRealtimeTranscriber transcriber, List<SubtitleItem> emitted) CreatePipelineWithMaxSegmentLifetime(double maxSegmentLifetimeSec)
     {
         var transcriber = new TestRealtimeTranscriber();
         var audio = new TestAudioCaptureService();
@@ -82,9 +84,10 @@ public sealed class TranslationPipelineServiceHappyTests
                 ApiKey = "test-key",
                 Endpoint = "wss://api.openai.com/v1/realtime/translations",
                 Model = "gpt-realtime-translate",
-                OutputLanguage = "ja"
+                OutputLanguage = "ja",
+                MaxSegmentLifetimeSec = maxSegmentLifetimeSec,
             },
-            Overlay = new OverlaySettings { DisplayDuration = displayDurationSeconds }
+            Overlay = new OverlaySettings { DisplayDuration = 5.0 } // overlay 表示時間は最大寿命と無関係
         };
         var monitor = new StubOptionsMonitor(settings);
         var settingsService = new TestSettingsService();
@@ -198,52 +201,53 @@ public sealed class TranslationPipelineServiceHappyTests
         Assert.AreEqual("追加文。", finals[0].TranslatedText, "delta確定済み2文を除いた差分のみ");
     }
 
-    /// <happypath category="idle-finalize" description="句点なしpartialがDisplayDuration放置で確定emit" expected="待機後IsFinal『やあ』が1件" />
+    /// <happypath category="max-segment-lifetime" description="句点なしpartialが最大寿命到達でIsFinal確定emit" expected="待機後IsFinal『やあ』が1件" />
     [TestMethod]
     [TestCategory("Happy")]
-    public async Task OnTranscriptDelta_句点なし短文をアイドル放置でIsFinal確定emitすること()
+    public async Task OnTranscriptDelta_句点なし短文を最大寿命到達でIsFinal確定emitすること()
     {
-        var (pipeline, transcriber, emitted) = CreatePipelineWithDisplayDuration(1);
+        // v1.0.24 partial 連結方式: 旧アイドル確定 (DisplayDuration) → 最大寿命確定 (MaxSegmentLifetimeSec)。
+        var (pipeline, transcriber, emitted) = CreatePipelineWithMaxSegmentLifetime(1.0);
 
-        // Act: 句点なしdelta(完結文emitなし、アイドルタイマー起動)
+        // Act: 句点なしdelta(完結文emitなし、 最大寿命タイマー起動)
         transcriber.RaiseDelta("やあ");
         Assert.AreEqual(0, emitted.Count(x => x.IsFinal), "delta直後は確定emitなし");
 
-        // Act: DisplayDuration(下限1秒)を超えて放置 → アイドル確定タイマー発火
+        // Act: MaxSegmentLifetimeSec(下限1秒)を超えて放置 → 最大寿命タイマー発火
         await Task.Delay(1300);
 
-        // Assert: アイドル確定で「やあ」がIsFinal=trueで1件emit
+        // Assert: 最大寿命確定で「やあ」がIsFinal=trueで1件emit
         var finals = emitted.Where(x => x.IsFinal).ToList();
-        Assert.AreEqual(1, finals.Count, "アイドル確定でIsFinal=true 1件emitされるはず");
+        Assert.AreEqual(1, finals.Count, "最大寿命確定でIsFinal=true 1件emitされるはず");
         Assert.AreEqual("やあ", finals[0].TranslatedText);
-        Assert.IsTrue(finals[0].IsFinal, "アイドル確定はIsFinal=true");
+        Assert.IsTrue(finals[0].IsFinal, "最大寿命確定はIsFinal=true");
     }
 
-    /// <happypath category="arc-raiders-split" description="アイドル確定した断片が後続doneのprefixとして扱われ差分のみemit" expected="アイドルで『何』、done差分で『であれ。』、合計IsFinal2件で重複なし" />
+    /// <happypath category="arc-raiders-split" description="最大寿命確定した断片が後続doneのprefixとして扱われ差分のみemit" expected="最大寿命で『何』、done差分で『であれ。』、合計IsFinal2件で重複なし" />
     [TestMethod]
     [TestCategory("Happy")]
-    public async Task ARC_Raiders分断_何をアイドル確定後にdone何であれで差分であれだけemitすること()
+    public async Task ARC_Raiders分断_何を最大寿命確定後にdone何であれで差分であれだけemitすること()
     {
-        var (pipeline, transcriber, emitted) = CreatePipelineWithDisplayDuration(1);
+        var (pipeline, transcriber, emitted) = CreatePipelineWithMaxSegmentLifetime(1.0);
 
         // Act 1: 「何」だけがdeltaで届く(句点なし → partial蓄積)
         transcriber.RaiseDelta("何");
         Assert.AreEqual(0, emitted.Count(x => x.IsFinal), "delta直後は確定emitなし");
 
-        // Act 2: DisplayDuration放置でアイドル確定 → 「何」がIsFinal emit + _lastFinalizedTranscriptへ取り込み
+        // Act 2: MaxSegmentLifetimeSec 放置で最大寿命確定 → 「何」がIsFinal emit + _lastFinalizedTranscriptへ取り込み
         await Task.Delay(1300);
         var afterIdle = emitted.Where(x => x.IsFinal).ToList();
-        Assert.AreEqual(1, afterIdle.Count, "アイドル確定で『何』が1件emit");
+        Assert.AreEqual(1, afterIdle.Count, "最大寿命確定で『何』が1件emit");
         Assert.AreEqual("何", afterIdle[0].TranslatedText);
 
-        // Act 3: doneでセッション累積全文「何であれ。」が届く(『何』は既にアイドル確定済み)
+        // Act 3: doneでセッション累積全文「何であれ。」が届く(『何』は既に最大寿命確定済み)
         emitted.Clear();
         transcriber.RaiseDone("何であれ。");
 
         // Assert: 差分「であれ。」だけemit、「何」は重複しない
         var afterDone = emitted.Where(x => x.IsFinal).ToList();
         Assert.AreEqual(1, afterDone.Count, "done経路は差分1件のみ(『何』重複なし)");
-        Assert.AreEqual("であれ。", afterDone[0].TranslatedText, "アイドル確定済み『何』を除いた差分のみ");
+        Assert.AreEqual("であれ。", afterDone[0].TranslatedText, "最大寿命確定済み『何』を除いた差分のみ");
     }
 
     /// <happypath category="done-no-terminator-trailing" description="句点なしdoneは差分全体をtrailing確定としてemit" expected="IsFinal『まいど』が1件" />

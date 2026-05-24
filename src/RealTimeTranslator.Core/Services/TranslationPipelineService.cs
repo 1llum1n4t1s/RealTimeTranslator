@@ -30,10 +30,17 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     private DateTime _lastEmitTime = DateTime.MinValue;
     private bool _hasPendingDelta;
     private readonly Timer _throttleTimer;
-    // 未確定の trailing が「確定字幕の表示時間」(Overlay.DisplayDuration) を過ぎても句点/done で確定しないとき、
-    // その trailing を確定 (IsFinal=true) として emit + ログ記録するためのアイドルタイマー。
-    // done が来ない発話 (2026-05-17 観測) や句点なしで終わる短い発話の取りこぼしを防ぐ。
+    // ⭐ partial 連結方式 (v1.0.24) の最大寿命タイマー。
+    // 旧設計は「無音 DisplayDuration 経過で trailing を強制確定」だったが、 OpenAI Realtime Translate API が
+    // 発話途中で delta を 30〜45 秒以上 silence する挙動 (2026-05-24 ARC Raiders 観測) で
+    // 「文の途中で字幕が確定 → 続きが別 SegmentId で表示」される UX バグを起こしていた。
+    // 新設計: 無音タイムアウトでは確定しない。 発話開始 (_segmentStartUtc) からの経過が
+    // OpenAIRealtime.MaxSegmentLifetimeSec (default 45 秒) を超えた場合のみ強制確定する安全弁。
     private readonly Timer _idleFinalizeTimer;
+    // 現セグメント (= _currentSegmentId) で最初の delta を受信した UTC 時刻。
+    // 「partial 連結が始まった時刻」を意味し、 最大寿命の起点になる。
+    // 未開始 (累積空) は DateTime.MinValue で表現。 完結文 emit や新セグメント発行時に MinValue にリセット。
+    private DateTime _segmentStartUtc = DateTime.MinValue;
     private readonly Stopwatch _latencyStopwatch = new();
     private volatile bool _isRunning;
     // rere B1-006: Dispose / DisposeAsync の二重実行を防ぐ Interlocked 占有マーク。
@@ -218,6 +225,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
             _lastFallbackCommaPos = -1;
             _recentEmittedSentences.Clear();
             _currentSegmentId = Guid.NewGuid().ToString();
+            _segmentStartUtc = DateTime.MinValue;
             _lastEmitTime = DateTime.MinValue;
             _hasPendingDelta = false;
             _idleFinalizeTimer.Change(Timeout.Infinite, Timeout.Infinite);
@@ -482,6 +490,14 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
             _accumulatedText.Append(delta);
             int totalLen = _accumulatedText.Length;
 
+            // ⭐ partial 連結方式 (v1.0.24): 新セグメントの最初の delta を受信した瞬間を「発話開始」として記録。
+            // これが最大寿命タイマー (MaxSegmentLifetimeSec) の起点になる。
+            // 同セグメント内の 2 件目以降の delta は appendStart > 0 になるので _segmentStartUtc は維持される。
+            if (appendStart == 0 && totalLen > 0 && _segmentStartUtc == DateTime.MinValue)
+            {
+                _segmentStartUtc = DateTime.UtcNow;
+            }
+
             if (!_latencyStopwatch.IsRunning)
                 _latencyStopwatch.Restart();
 
@@ -515,6 +531,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                             Logger.Info($"OnTranscriptDelta: 類似重複抑制 SegmentId={ShortSegmentId(_currentSegmentId)} 内容='{TruncateForLog(sentence)}'");
                         }
                         _currentSegmentId = Guid.NewGuid().ToString();
+                        _segmentStartUtc = DateTime.MinValue; // partial 連結方式: 完結 → 次セグメントの最初の delta で再計時
                         _lastFinalizedTranscript.Append(sentence);
                     }
                     start = i + 1;
@@ -554,6 +571,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                             Logger.Info($"OnTranscriptDelta: 句読点 fallback 類似重複抑制 (trailing={trailingLength}文字) 内容='{TruncateForLog(sentence)}'");
                         }
                         _currentSegmentId = Guid.NewGuid().ToString();
+                        _segmentStartUtc = DateTime.MinValue; // partial 連結方式: 完結 → 次セグメントの最初の delta で再計時
                         _lastFinalizedTranscript.Append(sentence);
                         start = splitAt + 1;
                     }
@@ -659,41 +677,75 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     }
 
     /// <summary>
-    /// アイドル確定タイマー発火: 未確定の trailing が「確定字幕の表示時間」(Overlay.DisplayDuration) を過ぎても
-    /// 句点・done で確定しなかった場合に、 その trailing を確定 (IsFinal=true) として emit + ログ記録する。
-    /// done が来ない発話や、 句点なしで終わる短い発話の取りこぼしを防ぐ救済経路。
+    /// 最大寿命タイマー発火 (旧アイドル確定タイマーの後継、 v1.0.24 改名):
+    /// 発話開始 (_segmentStartUtc) から OpenAIRealtime.MaxSegmentLifetimeSec を超過したら trailing を強制確定する。
+    /// タイマー誤発火 (設定変更で寿命が延長されたケース等) もあり得るので、 発火時に再度残時間を確認し、
+    /// まだ寿命内ならリスケジュールするセルフヒーリングを入れる。
     /// </summary>
     private void OnIdleFinalizeTimerElapsed(object? state)
     {
-        FinalizePendingPartial("無音タイムアウト");
+        double lifetimeSec;
+        double elapsed;
+        bool shouldFinalize;
+        lock (_textLock)
+        {
+            if (_accumulatedText.Length == 0 || _segmentStartUtc == DateTime.MinValue)
+            {
+                // 既に確定済み / セグメント開始時刻がリセット済み → 何もしない。
+                return;
+            }
+            lifetimeSec = GetSafeMaxSegmentLifetimeSec();
+            elapsed = (DateTime.UtcNow - _segmentStartUtc).TotalSeconds;
+            shouldFinalize = elapsed >= lifetimeSec;
+        }
+
+        if (shouldFinalize)
+        {
+            FinalizePendingPartial($"最大寿命超過 ({lifetimeSec:F0}秒)");
+        }
+        else
+        {
+            // 寿命が伸びたケース (設定 hot reload 等) → 残時間でリスケジュール
+            SyncIdleFinalizeTimer();
+        }
     }
 
     /// <summary>
-    /// 未確定 trailing (_accumulatedText) の有無に応じてアイドル確定タイマーを再設定する。
-    /// trailing が残っていれば DisplayDuration 後に発火するようリスケジュール (毎 delta/done で呼ばれ、
-    /// 無活動が DisplayDuration 継続して初めて発火する)、 trailing が空なら停止する。
+    /// 未確定 trailing (_accumulatedText) の有無に応じて最大寿命タイマーを再設定する。
+    /// trailing が残っていれば「発話開始 + MaxSegmentLifetimeSec - 現在経過」後に発火するようスケジュール。
+    /// trailing が空 or 発話開始未記録なら停止する。
+    /// 関数名は callsite 互換性のため SyncIdleFinalizeTimer のまま維持 (旧アイドル確定の意味は廃止)。
     /// </summary>
     private void SyncIdleFinalizeTimer()
     {
         lock (_textLock)
         {
-            if (_accumulatedText.Length > 0)
-            {
-                // DisplayDuration は秒 (既定 5.0)。 「未確定が放置されたら確定扱いにする」しきい値に流用する。
-                // 0 や極端に小さい値で誤発火しないよう下限 1 秒でガードする。
-                // NaN / Infinity / 極大値 (double.MaxValue 等) は TimeSpan.FromSeconds が ArgumentException /
-                // OverflowException を投げてアイドルタイマー設定ごとクラッシュさせるため (stst 隊員7 告発)、
-                // 非有限値は既定 5 秒へ倒し、 有限値は [1秒, 3600秒] にクランプして防御する。
-                var rawDuration = _settingsMonitor.CurrentValue.Overlay.DisplayDuration;
-                var safeDuration = double.IsFinite(rawDuration) ? Math.Clamp(rawDuration, 1.0, 3600.0) : 5.0;
-                var idle = TimeSpan.FromSeconds(safeDuration);
-                _idleFinalizeTimer.Change(idle, Timeout.InfiniteTimeSpan);
-            }
-            else
+            if (_accumulatedText.Length == 0 || _segmentStartUtc == DateTime.MinValue)
             {
                 _idleFinalizeTimer.Change(Timeout.Infinite, Timeout.Infinite);
+                return;
             }
+
+            var lifetimeSec = GetSafeMaxSegmentLifetimeSec();
+            var elapsed = (DateTime.UtcNow - _segmentStartUtc).TotalSeconds;
+            var remainingSec = Math.Max(0.0, lifetimeSec - elapsed);
+            // TimeSpan.FromSeconds(0) でもタイマーは即発火するので問題ない。
+            // 上限 1 時間でクランプ (寿命設定が極端でも Timer.Change が OverflowException にならないよう保護)。
+            var remainingClamped = Math.Min(remainingSec, 3600.0);
+            _idleFinalizeTimer.Change(TimeSpan.FromSeconds(remainingClamped), Timeout.InfiniteTimeSpan);
         }
+    }
+
+    /// <summary>
+    /// OpenAIRealtime.MaxSegmentLifetimeSec を安全範囲 [1.0, 600.0] にクランプして返す。
+    /// NaN / Infinity / 極端値はデフォルト 45 秒にフォールバック。
+    /// (旧 SyncIdleFinalizeTimer の Overlay.DisplayDuration 防御と同じガード思想)
+    /// </summary>
+    private double GetSafeMaxSegmentLifetimeSec()
+    {
+        var raw = _settingsMonitor.CurrentValue.OpenAIRealtime.MaxSegmentLifetimeSec;
+        if (!double.IsFinite(raw)) return 45.0;
+        return Math.Clamp(raw, 1.0, 600.0);
     }
 
     /// <summary>
@@ -726,6 +778,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
             _accumulatedText.Clear();
             _lastFallbackCommaPos = -1;
             _currentSegmentId = Guid.NewGuid().ToString();
+            _segmentStartUtc = DateTime.MinValue; // partial 連結方式: 強制確定 → 次セグメントの最初の delta で再計時
             _hasPendingDelta = false;
             _idleFinalizeTimer.Change(Timeout.Infinite, Timeout.Infinite);
             _throttleTimer.Change(Timeout.Infinite, Timeout.Infinite);
@@ -840,6 +893,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                             Logger.Info($"OnTranscriptCompleted: 類似重複抑制 内容='{TruncateForLog(sentence)}'");
                         }
                         _currentSegmentId = Guid.NewGuid().ToString();
+                        _segmentStartUtc = DateTime.MinValue; // partial 連結方式: 完結 → 次セグメントの最初の delta で再計時
                         // 確定累積を完結文ぶんだけ進める (trailing は次回更新時に再登場させる)
                         _lastFinalizedTranscript.Append(sentence);
                     }
@@ -946,6 +1000,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                 _lastFallbackCommaPos = -1;
                 _recentEmittedSentences.Clear();
                 _currentSegmentId = Guid.NewGuid().ToString();
+                _segmentStartUtc = DateTime.MinValue; // partial 連結方式: 再接続でセグメント状態もクリア
                 _lastEmitTime = DateTime.MinValue;
                 _hasPendingDelta = false;
                 _throttleTimer.Change(Timeout.Infinite, Timeout.Infinite);

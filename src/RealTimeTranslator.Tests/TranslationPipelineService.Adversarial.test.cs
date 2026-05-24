@@ -79,7 +79,9 @@ public sealed class TranslationPipelineServiceAdversarialTests
     }
 
     // ════════ 隊員3 (並行性) 専用ヘルパー (lock 集計) ════════
-    private static (TranslationPipelineService pipeline, TestRealtimeTranscriber transcriber, List<SubtitleItem> emitted, object sync) CreateConcurrentPipeline(double displayDuration = 5.0)
+    // displayDuration: overlay 字幕表示秒数 (v1.0.24 以降は最大寿命と無関係)
+    // maxSegmentLifetimeSec: partial 連結方式の最大寿命 (v1.0.24 追加)
+    private static (TranslationPipelineService pipeline, TestRealtimeTranscriber transcriber, List<SubtitleItem> emitted, object sync) CreateConcurrentPipeline(double displayDuration = 5.0, double maxSegmentLifetimeSec = 45.0)
     {
         var transcriber = new TestRealtimeTranscriber();
         var audio = new TestAudioCaptureService();
@@ -90,7 +92,8 @@ public sealed class TranslationPipelineServiceAdversarialTests
                 ApiKey = "test-key",
                 Endpoint = "wss://api.openai.com/v1/realtime/translations",
                 Model = "gpt-realtime-translate",
-                OutputLanguage = "ja"
+                OutputLanguage = "ja",
+                MaxSegmentLifetimeSec = maxSegmentLifetimeSec,
             },
             Overlay = new OverlaySettings { DisplayDuration = displayDuration },
             AudioCapture = new AudioCaptureSettings { EnableVad = false, AutoPauseOnSilenceSec = 0 }
@@ -116,8 +119,10 @@ public sealed class TranslationPipelineServiceAdversarialTests
         return string.Join(" | ", exceptions.Take(5).Select(e => $"{e.GetType().Name}: {e.Message}"));
     }
 
-    // ════════ 隊員5 (状態遷移) 専用ヘルパー (lock 集計 + DisplayDuration) ════════
-    private static (TranslationPipelineService pipeline, TestRealtimeTranscriber transcriber, List<SubtitleItem> emitted, object gate) CreateStatePipeline(double displayDuration = 5.0)
+    // ════════ 隊員5 (状態遷移) 専用ヘルパー (lock 集計 + 最大寿命) ════════
+    // displayDuration: overlay の字幕表示秒数 (v1.0.24 以降は最大寿命と無関係)
+    // maxSegmentLifetimeSec: partial 連結方式の最大寿命 (v1.0.24 追加、 旧アイドル確定の代替)
+    private static (TranslationPipelineService pipeline, TestRealtimeTranscriber transcriber, List<SubtitleItem> emitted, object gate) CreateStatePipeline(double displayDuration = 5.0, double maxSegmentLifetimeSec = 45.0)
     {
         var transcriber = new TestRealtimeTranscriber();
         var audio = new TestAudioCaptureService();
@@ -128,7 +133,8 @@ public sealed class TranslationPipelineServiceAdversarialTests
                 ApiKey = "test-key",
                 Endpoint = "wss://api.openai.com/v1/realtime/translations",
                 Model = "gpt-realtime-translate",
-                OutputLanguage = "ja"
+                OutputLanguage = "ja",
+                MaxSegmentLifetimeSec = maxSegmentLifetimeSec,
             },
             Overlay = new OverlaySettings { DisplayDuration = displayDuration }
         };
@@ -279,7 +285,9 @@ public sealed class TranslationPipelineServiceAdversarialTests
         public void RaiseDone(string transcript) => TranscriptCompleted?.Invoke(transcript);
     }
 
-    private static AppSettings BuildChaosSettings(double displayDuration)
+    // displayDuration: overlay の字幕表示秒数 (v1.0.24 以降は最大寿命と無関係)
+    // maxSegmentLifetimeSec: partial 連結方式の最大寿命 (v1.0.24 追加、 旧アイドル確定の代替)
+    private static AppSettings BuildChaosSettings(double displayDuration, double maxSegmentLifetimeSec = 45.0)
     {
         return new AppSettings
         {
@@ -288,17 +296,18 @@ public sealed class TranslationPipelineServiceAdversarialTests
                 ApiKey = "test-key",
                 Endpoint = "wss://api.openai.com/v1/realtime/translations",
                 Model = "gpt-realtime-translate",
-                OutputLanguage = "ja"
+                OutputLanguage = "ja",
+                MaxSegmentLifetimeSec = maxSegmentLifetimeSec,
             },
             Overlay = new OverlaySettings { DisplayDuration = displayDuration }
         };
     }
 
-    private static (TranslationPipelineService pipeline, ChaosTranscriber transcriber, List<SubtitleItem> emitted) CreateChaosPipeline(double displayDuration)
+    private static (TranslationPipelineService pipeline, ChaosTranscriber transcriber, List<SubtitleItem> emitted) CreateChaosPipeline(double displayDuration, double maxSegmentLifetimeSec = 45.0)
     {
         var transcriber = new ChaosTranscriber();
         var audio = new TestAudioCaptureService();
-        var monitor = new MutableOptionsMonitor(BuildChaosSettings(displayDuration));
+        var monitor = new MutableOptionsMonitor(BuildChaosSettings(displayDuration, maxSegmentLifetimeSec));
         var settingsService = new TestSettingsService();
         var vad = new ChaosNoopVad();
         var pipeline = new TranslationPipelineService(audio, transcriber, monitor, settingsService, vad);
@@ -307,11 +316,11 @@ public sealed class TranslationPipelineServiceAdversarialTests
         return (pipeline, transcriber, emitted);
     }
 
-    private static (TranslationPipelineService pipeline, ChaosTranscriber transcriber, List<SubtitleItem> emitted, MutableOptionsMonitor monitor) CreateMutableChaosPipeline(double initialDisplayDuration)
+    private static (TranslationPipelineService pipeline, ChaosTranscriber transcriber, List<SubtitleItem> emitted, MutableOptionsMonitor monitor) CreateMutableChaosPipeline(double initialDisplayDuration, double initialMaxSegmentLifetimeSec = 45.0)
     {
         var transcriber = new ChaosTranscriber();
         var audio = new TestAudioCaptureService();
-        var monitor = new MutableOptionsMonitor(BuildChaosSettings(initialDisplayDuration));
+        var monitor = new MutableOptionsMonitor(BuildChaosSettings(initialDisplayDuration, initialMaxSegmentLifetimeSec));
         var settingsService = new TestSettingsService();
         var vad = new ChaosNoopVad();
         var pipeline = new TranslationPipelineService(audio, transcriber, monitor, settingsService, vad);
@@ -675,7 +684,8 @@ public sealed class TranslationPipelineServiceAdversarialTests
     [Timeout(30000)]
     public void OnIdleFinalizeTimer_RacingWithRaiseDoneAndDelta_NoCrash()
     {
-        var (pipeline, transcriber, emitted, sync) = CreateConcurrentPipeline(displayDuration: 1.0);
+        // 短い最大寿命を渡すことで「最大寿命タイマー発火と RaiseDone/Delta の競合」が確実に起きる状況を作る。
+        var (pipeline, transcriber, emitted, sync) = CreateConcurrentPipeline(maxSegmentLifetimeSec: 1.0);
         const int rounds = 40;
         var exceptions = new ConcurrentBag<Exception>();
 
@@ -958,22 +968,23 @@ public sealed class TranslationPipelineServiceAdversarialTests
     /// <adversarial category="state" severity="high" />
     [TestMethod]
     [TestCategory("StateMachine")]
-    public async Task OnTranscriptCompleted_DoneAfterIdleFinalize_EmitsOnlyDiff()
+    public async Task OnTranscriptCompleted_DoneAfterMaxSegmentLifetimeFinalize_EmitsOnlyDiff()
     {
-        var (pipeline, transcriber, emitted, gate) = CreateStatePipeline(displayDuration: 1.0);
+        // v1.0.24 partial 連結方式: 旧アイドル確定 → 最大寿命確定 (MaxSegmentLifetimeSec) に置換。
+        var (pipeline, transcriber, emitted, gate) = CreateStatePipeline(maxSegmentLifetimeSec: 1.0);
         transcriber.RaiseDelta("何");
         // テスト並列実行時は ThreadPool 飽和で Timer 遅延が大きくなる → ポーリングで待機
         await WaitForConditionAsync(() => SnapshotFinals(emitted, gate).Count >= 1, TimeSpan.FromSeconds(10));
 
         var afterIdle = SnapshotFinals(emitted, gate);
-        Assert.AreEqual(1, afterIdle.Count, "アイドルタイムアウトで未確定 trailing が IsFinal=true として 1 件確定するはず");
+        Assert.AreEqual(1, afterIdle.Count, "最大寿命タイムアウトで未確定 trailing が IsFinal=true として 1 件確定するはず");
         Assert.AreEqual("何", afterIdle[0].TranslatedText);
 
         transcriber.RaiseDone("何であれ。");
         var afterDone = SnapshotFinals(emitted, gate);
         Assert.AreEqual(2, afterDone.Count, "done では差分 newPortion=\"であれ。\" のみ emit され、 重複しないはず");
-        Assert.AreEqual("であれ。", afterDone[1].TranslatedText, "アイドル確定済み prefix を除いた差分だけが emit されるはず");
-        Assert.AreNotEqual(afterIdle[0].SegmentId, afterDone[1].SegmentId, "アイドル確定後の新 SegmentId で done 差分が emit されるはず");
+        Assert.AreEqual("であれ。", afterDone[1].TranslatedText, "最大寿命確定済み prefix を除いた差分だけが emit されるはず");
+        Assert.AreNotEqual(afterIdle[0].SegmentId, afterDone[1].SegmentId, "最大寿命確定後の新 SegmentId で done 差分が emit されるはず");
     }
 
     /// <adversarial category="state" severity="high" />
@@ -1041,9 +1052,11 @@ public sealed class TranslationPipelineServiceAdversarialTests
     /// <adversarial category="state" severity="high" />
     [TestMethod]
     [TestCategory("StateMachine")]
-    public async Task OnIdleFinalizeTimer_MultipleConsecutiveIdleFinalizes_EmitDistinctSegmentIds()
+    public async Task OnMaxSegmentLifetimeTimer_MultipleConsecutiveFinalizes_EmitDistinctSegmentIds()
     {
-        var (pipeline, transcriber, emitted, gate) = CreateStatePipeline(displayDuration: 1.0);
+        // v1.0.24 partial 連結方式: 旧アイドル確定 → 最大寿命確定 (MaxSegmentLifetimeSec) に置換。
+        // 連続する最大寿命確定で SegmentId が別になることを検証 (タイマー再起動の正常動作)。
+        var (pipeline, transcriber, emitted, gate) = CreateStatePipeline(maxSegmentLifetimeSec: 1.0);
         transcriber.RaiseDelta("ねえ");
         // テスト並列実行時は ThreadPool 飽和で Timer 遅延が大きくなる → ポーリングで待機
         await WaitForConditionAsync(() => SnapshotFinals(emitted, gate).Count >= 1, TimeSpan.FromSeconds(10));
@@ -1051,10 +1064,10 @@ public sealed class TranslationPipelineServiceAdversarialTests
         await WaitForConditionAsync(() => SnapshotFinals(emitted, gate).Count >= 2, TimeSpan.FromSeconds(10));
 
         var finals = SnapshotFinals(emitted, gate);
-        Assert.AreEqual(2, finals.Count, "連続するアイドル確定で IsFinal=true が 2 件 emit されるはず");
+        Assert.AreEqual(2, finals.Count, "連続する最大寿命確定で IsFinal=true が 2 件 emit されるはず");
         Assert.AreEqual("ねえ", finals[0].TranslatedText);
         Assert.AreEqual("うん", finals[1].TranslatedText);
-        Assert.AreNotEqual(finals[0].SegmentId, finals[1].SegmentId, "各アイドル確定は別 SegmentId で emit されるはず");
+        Assert.AreNotEqual(finals[0].SegmentId, finals[1].SegmentId, "各最大寿命確定は別 SegmentId で emit されるはず");
     }
 
     /// <adversarial category="state" severity="medium" />
@@ -1076,15 +1089,16 @@ public sealed class TranslationPipelineServiceAdversarialTests
     /// <adversarial category="state" severity="high" />
     [TestMethod]
     [TestCategory("StateMachine")]
-    public async Task OnIdleFinalizeTimer_AfterDeltaFullyTerminated_NoExtraEmit()
+    public async Task OnMaxSegmentLifetimeTimer_AfterDeltaFullyTerminated_NoExtraEmit()
     {
-        var (pipeline, transcriber, emitted, gate) = CreateStatePipeline(displayDuration: 1.0);
+        // 短い最大寿命でも完結文 emit 後は trailing 空 → タイマー停止 → 追加 emit ゼロを検証。
+        var (pipeline, transcriber, emitted, gate) = CreateStatePipeline(maxSegmentLifetimeSec: 1.0);
         transcriber.RaiseDelta("完結。");
         // trailing が空なのでタイマーは発火しないはず。 十分な待機で検証。
         await Task.Delay(2000);
 
         var finals = SnapshotFinals(emitted, gate);
-        Assert.AreEqual(1, finals.Count, "trailing が空なのでアイドル確定は早期 return し、 delta 経路の 1 件以外に追加 emit されないはず");
+        Assert.AreEqual(1, finals.Count, "trailing が空なので最大寿命確定は早期 return し、 delta 経路の 1 件以外に追加 emit されないはず");
         Assert.AreEqual("完結。", finals[0].TranslatedText);
     }
 
@@ -1224,12 +1238,17 @@ public sealed class TranslationPipelineServiceAdversarialTests
     // 🌪️ 隊員7: 環境異常・カオステスト (Environmental Chaos)
     // ═══════════════════════════════════════════════════════════════
 
+    // ⚠️ v1.0.24 partial 連結方式: 旧アイドル確定 (Overlay.DisplayDuration 経由) は廃止。
+    // 「無音タイムアウト」は最大寿命 (OpenAIRealtime.MaxSegmentLifetimeSec) に置換。
+    // ARC Raiders 等で OpenAI server-side delta が 30〜45 秒 silence する挙動への対策として、
+    // 通常の無音では確定せず同 SegmentId のまま partial 連結を継続する設計。
+
     /// <adversarial category="chaos" severity="high" />
     [TestMethod]
     [TestCategory("Chaos")]
-    public async Task OnTranscriptDelta_DisplayDurationZero_ClampsToOneSecondAndFinalizes()
+    public async Task OnTranscriptDelta_MaxSegmentLifetimeZero_ClampsToOneSecondAndFinalizes()
     {
-        var (pipeline, transcriber, emitted) = CreateChaosPipeline(displayDuration: 0.0);
+        var (pipeline, transcriber, emitted) = CreateChaosPipeline(displayDuration: 5.0, maxSegmentLifetimeSec: 0.0);
         transcriber.RaiseDelta("句点なし放置文");
         Assert.AreEqual(0, emitted.Count(x => x.IsFinal), "delta 直後は句点なしなので IsFinal はまだゼロ");
 
@@ -1238,78 +1257,80 @@ public sealed class TranslationPipelineServiceAdversarialTests
 
         List<SubtitleItem> finals;
         lock (emitted) { finals = emitted.Where(x => x.IsFinal).ToList(); }
-        Assert.AreEqual(1, finals.Count, "DisplayDuration=0 でも下限 1 秒でアイドル確定が 1 回 emit されるはず (Math.Max クランプ)");
+        Assert.AreEqual(1, finals.Count, "MaxSegmentLifetimeSec=0 でも下限 1 秒で最大寿命確定が 1 回 emit されるはず (Math.Clamp)");
         Assert.AreEqual("句点なし放置文", finals[0].TranslatedText, "未確定 trailing がそのまま確定字幕として救済されるはず");
     }
 
     /// <adversarial category="chaos" severity="high" />
     [TestMethod]
     [TestCategory("Chaos")]
-    public async Task OnTranscriptDelta_DisplayDurationNegative_ClampsToOneSecondAndFinalizes()
+    public async Task OnTranscriptDelta_MaxSegmentLifetimeNegative_ClampsToOneSecondAndFinalizes()
     {
-        var (pipeline, transcriber, emitted) = CreateChaosPipeline(displayDuration: -5.0);
+        var (pipeline, transcriber, emitted) = CreateChaosPipeline(displayDuration: 5.0, maxSegmentLifetimeSec: -5.0);
         transcriber.RaiseDelta("負値設定の放置文");
 
         await WaitForConditionAsync(() => { lock (emitted) { return emitted.Count(x => x.IsFinal) >= 1; } }, TimeSpan.FromSeconds(10));
 
         List<SubtitleItem> finals;
         lock (emitted) { finals = emitted.Where(x => x.IsFinal).ToList(); }
-        Assert.AreEqual(1, finals.Count, "DisplayDuration が負でも下限 1 秒でアイドル確定が発火するはず (例外を投げず救済)");
+        Assert.AreEqual(1, finals.Count, "MaxSegmentLifetimeSec が負でも下限 1 秒で最大寿命確定が発火するはず (例外を投げず救済)");
         Assert.AreEqual("負値設定の放置文", finals[0].TranslatedText);
     }
 
     /// <adversarial category="chaos" severity="medium" />
     [TestMethod]
     [TestCategory("Chaos")]
-    public async Task OnTranscriptDelta_DisplayDurationHuge_DoesNotFinalizeWithinShortWait()
+    public async Task OnTranscriptDelta_MaxSegmentLifetimeHuge_DoesNotFinalizeWithinShortWait()
     {
-        var (pipeline, transcriber, emitted) = CreateChaosPipeline(displayDuration: 3600.0);
+        var (pipeline, transcriber, emitted) = CreateChaosPipeline(displayDuration: 5.0, maxSegmentLifetimeSec: 600.0);
         transcriber.RaiseDelta("極大設定の未確定文");
 
         await Task.Delay(1300);
 
-        Assert.AreEqual(0, emitted.Count(x => x.IsFinal), "DisplayDuration が極大ならアイドル確定は短時間では発火しないはず");
+        Assert.AreEqual(0, emitted.Count(x => x.IsFinal), "MaxSegmentLifetimeSec が極大なら最大寿命確定は短時間では発火しないはず");
     }
 
     /// <adversarial category="chaos" severity="high" />
     [TestMethod]
     [TestCategory("Chaos")]
-    public async Task SyncIdleFinalizeTimer_DisplayDurationDoubleNaN_DoesNotThrowAndNoSpuriousFinalize()
+    public async Task SyncIdleFinalizeTimer_MaxSegmentLifetimeDoubleNaN_DoesNotThrowAndNoSpuriousFinalize()
     {
         foreach (var extreme in new[] { double.NaN, double.PositiveInfinity, double.MaxValue })
         {
-            var (pipeline, transcriber, emitted) = CreateChaosPipeline(displayDuration: extreme);
+            // NaN / Infinity / 極端値はデフォルト 45 秒にフォールバック (GetSafeMaxSegmentLifetimeSec 防御)。
+            var (pipeline, transcriber, emitted) = CreateChaosPipeline(displayDuration: 5.0, maxSegmentLifetimeSec: extreme);
             Exception? captured = null;
             try { transcriber.RaiseDelta($"極端値 {extreme} の文"); }
             catch (Exception ex) { captured = ex; }
 
-            Assert.IsNull(captured, $"DisplayDuration={extreme} でも delta 受信 (SyncIdleFinalizeTimer) は例外を投げないはず。 実際: {captured?.GetType().Name} {captured?.Message}");
+            Assert.IsNull(captured, $"MaxSegmentLifetimeSec={extreme} でも delta 受信 (SyncIdleFinalizeTimer) は例外を投げないはず。 実際: {captured?.GetType().Name} {captured?.Message}");
 
             await Task.Delay(200);
-            Assert.AreEqual(0, emitted.Count(x => x.IsFinal), $"DisplayDuration={extreme} は実質無限大相当なので短時間では確定 emit されないはず");
+            Assert.AreEqual(0, emitted.Count(x => x.IsFinal), $"MaxSegmentLifetimeSec={extreme} はデフォルト 45 秒フォールバックなので短時間では確定 emit されないはず");
         }
     }
 
     /// <adversarial category="chaos" severity="high" />
     [TestMethod]
     [TestCategory("Chaos")]
-    public async Task OnTranscriptDelta_DisplayDurationChangedMidSession_IdleTimerUsesNewValue()
+    public async Task OnTranscriptDelta_MaxSegmentLifetimeChangedMidSession_TimerUsesNewValue()
     {
-        var (pipeline, transcriber, emitted, monitor) = CreateMutableChaosPipeline(initialDisplayDuration: 3600.0);
+        var (pipeline, transcriber, emitted, monitor) = CreateMutableChaosPipeline(initialDisplayDuration: 5.0, initialMaxSegmentLifetimeSec: 600.0);
 
         transcriber.RaiseDelta("最初の未確定文");
         await Task.Delay(300);
-        Assert.AreEqual(0, emitted.Count(x => x.IsFinal), "極大値の間はアイドル確定が来ないはず");
+        Assert.AreEqual(0, emitted.Count(x => x.IsFinal), "極大値の間は最大寿命確定が来ないはず");
 
-        monitor.CurrentValue.Overlay.DisplayDuration = 1.0;
+        monitor.CurrentValue.OpenAIRealtime.MaxSegmentLifetimeSec = 1.0;
 
+        // 設定変更後の delta で SyncIdleFinalizeTimer が呼ばれ、 新値 (1 秒) でタイマー再計算 + 即時発火する。
         transcriber.RaiseDelta("追記文");
         await WaitForConditionAsync(() => { lock (emitted) { return emitted.Count(x => x.IsFinal) >= 1; } }, TimeSpan.FromSeconds(10));
 
         List<SubtitleItem> finals;
         lock (emitted) { finals = emitted.Where(x => x.IsFinal).ToList(); }
-        Assert.AreEqual(1, finals.Count, "設定途中変更後の DisplayDuration=1 でアイドル確定が新値で発火するはず");
-        Assert.AreEqual("最初の未確定文追記文", finals[0].TranslatedText, "trailing は累積されて 1 文として確定されるはず");
+        Assert.AreEqual(1, finals.Count, "設定途中変更後の MaxSegmentLifetimeSec=1 で最大寿命確定が新値で発火するはず");
+        Assert.AreEqual("最初の未確定文追記文", finals[0].TranslatedText, "trailing は累積されて 1 文として確定されるはず (partial 連結方式)");
     }
 
     /// <adversarial category="chaos" severity="high" />
@@ -1325,14 +1346,14 @@ public sealed class TranslationPipelineServiceAdversarialTests
             CultureInfo.CurrentCulture = german;
             CultureInfo.CurrentUICulture = german;
 
-            var (pipeline, transcriber, emitted) = CreateChaosPipeline(displayDuration: 1.0);
+            var (pipeline, transcriber, emitted) = CreateChaosPipeline(displayDuration: 5.0, maxSegmentLifetimeSec: 1.0);
             transcriber.RaiseDelta("ドイツロケールの未確定文");
 
             await WaitForConditionAsync(() => { lock (emitted) { return emitted.Count(x => x.IsFinal) >= 1; } }, TimeSpan.FromSeconds(10));
 
             List<SubtitleItem> finals;
             lock (emitted) { finals = emitted.Where(x => x.IsFinal).ToList(); }
-            Assert.AreEqual(1, finals.Count, "de-DE カルチャでもアイドル確定が正常発火するはず (数値処理はカルチャ非依存)");
+            Assert.AreEqual(1, finals.Count, "de-DE カルチャでも最大寿命確定が正常発火するはず (数値処理はカルチャ非依存)");
             Assert.AreEqual("ドイツロケールの未確定文", finals[0].TranslatedText);
         }
         finally
@@ -1386,19 +1407,104 @@ public sealed class TranslationPipelineServiceAdversarialTests
     /// <adversarial category="chaos" severity="high" />
     [TestMethod]
     [TestCategory("Chaos")]
-    public async Task OnTranscriptDelta_DisplayDurationOne_MinimumBoundary_FinalizesExactlyOnce()
+    public async Task OnTranscriptDelta_MaxSegmentLifetimeOne_MinimumBoundary_FinalizesExactlyOnce()
     {
-        var (pipeline, transcriber, emitted) = CreateChaosPipeline(displayDuration: 1.0);
+        var (pipeline, transcriber, emitted) = CreateChaosPipeline(displayDuration: 5.0, maxSegmentLifetimeSec: 1.0);
         transcriber.RaiseDelta("最小境界の未確定文");
 
         await WaitForConditionAsync(() => { lock (emitted) { return emitted.Count(x => x.IsFinal) >= 1; } }, TimeSpan.FromSeconds(10));
 
         List<SubtitleItem> finals;
         lock (emitted) { finals = emitted.Where(x => x.IsFinal).ToList(); }
-        Assert.AreEqual(1, finals.Count, "DisplayDuration=1 の境界でアイドル確定はちょうど 1 回 emit されるはず");
+        Assert.AreEqual(1, finals.Count, "MaxSegmentLifetimeSec=1 の境界で最大寿命確定はちょうど 1 回 emit されるはず");
         Assert.AreEqual("最小境界の未確定文", finals[0].TranslatedText);
 
         await Task.Delay(2000);
         lock (emitted) { Assert.AreEqual(1, emitted.Count(x => x.IsFinal), "確定後はタイマー停止し、 追加待機でも二重 emit されないはず"); }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // 🌱 partial 連結方式 (v1.0.24) の核心動作検証
+    // ─ 旧設計: 1〜5 秒の無音で trailing 強制確定 → ARC Raiders 等で「文の途中で字幕が切れる」UX バグ
+    // ─ 新設計: 無音では確定せず同 SegmentId のまま partial 連結を継続 → 句点 or 最大寿命のみで確定
+    // ═══════════════════════════════════════════════════════════════
+
+    /// <adversarial category="state" severity="high" />
+    [TestMethod]
+    [TestCategory("Chaos")]
+    public async Task OnTranscriptDelta_SilenceBetweenDeltas_DoesNotForceFinalizeAndConcatenates()
+    {
+        // デフォルト 45 秒寿命 + DisplayDuration 5 秒。 旧設計だと 5 秒沈黙でアイドル確定して
+        // 「発話の途中」が単独 1 文として確定 → 「で再開。」が別 SegmentId で表示されるバグだった。
+        var (pipeline, transcriber, emitted) = CreateChaosPipeline(displayDuration: 5.0, maxSegmentLifetimeSec: 45.0);
+
+        transcriber.RaiseDelta("発話の途中");
+        // 1.5 秒沈黙 — 旧 DisplayDuration=1 ベースのアイドル確定タイミングを意図的に超える長さ。
+        await Task.Delay(1500);
+
+        Assert.AreEqual(0, emitted.Count(x => x.IsFinal),
+            "1.5 秒沈黙では強制確定されないはず (partial 連結方式 — 旧アイドル確定の廃止検証)");
+
+        transcriber.RaiseDelta("で再開。");
+        await WaitForConditionAsync(() => { lock (emitted) { return emitted.Count(x => x.IsFinal) >= 1; } }, TimeSpan.FromSeconds(5));
+
+        List<SubtitleItem> finals;
+        lock (emitted) { finals = emitted.Where(x => x.IsFinal).ToList(); }
+        Assert.AreEqual(1, finals.Count, "再開後の句点で 1 件確定されるはず");
+        Assert.AreEqual("発話の途中で再開。", finals[0].TranslatedText,
+            "沈黙を挟んでも累積されて 1 文として確定されるはず (partial 連結方式)");
+    }
+
+    /// <adversarial category="state" severity="high" />
+    [TestMethod]
+    [TestCategory("Chaos")]
+    public async Task OnTranscriptDelta_SilenceBetweenDeltas_PartialKeepsSameSegmentId()
+    {
+        var (pipeline, transcriber, emitted) = CreateChaosPipeline(displayDuration: 5.0, maxSegmentLifetimeSec: 45.0);
+
+        transcriber.RaiseDelta("最初の");
+        await Task.Delay(100); // partial スロットル (30ms) を確実に超えて emit が発火するまで待機
+        transcriber.RaiseDelta("partial");
+        await Task.Delay(1500); // 旧設計でアイドル確定が走ったタイミングを意図的に超える
+        transcriber.RaiseDelta("追記");
+        await Task.Delay(100);
+
+        List<SubtitleItem> partials;
+        lock (emitted) { partials = emitted.Where(x => !x.IsFinal).ToList(); }
+        Assert.IsTrue(partials.Count >= 2, $"partial emit は複数回発生するはず (実際: {partials.Count} 件)");
+
+        var segmentIds = partials.Select(p => p.SegmentId).Distinct().ToList();
+        Assert.AreEqual(1, segmentIds.Count,
+            $"沈黙を挟んでも partial の SegmentId は同一のはず (partial 連結方式)。 実際の SegmentId 数: {segmentIds.Count}");
+
+        lock (emitted)
+        {
+            Assert.AreEqual(0, emitted.Count(x => x.IsFinal),
+                "句点なしの沈黙中は確定 emit ゼロのはず (partial 連結方式 — 強制確定しない)");
+        }
+    }
+
+    /// <adversarial category="state" severity="med" />
+    [TestMethod]
+    [TestCategory("Chaos")]
+    public async Task OnTranscriptDelta_MaxSegmentLifetimeAfterFinalize_NewSegmentRestartsTimer()
+    {
+        // 完結文 emit 後、 次セグメントは MaxSegmentLifetimeSec=1 秒で測り直されることを検証。
+        var (pipeline, transcriber, emitted) = CreateChaosPipeline(displayDuration: 5.0, maxSegmentLifetimeSec: 1.0);
+
+        // 1 文目: 句点で即確定 → SegmentId 切替 + _segmentStartUtc リセット
+        transcriber.RaiseDelta("1文目。");
+        await Task.Delay(100);
+        lock (emitted) { Assert.AreEqual(1, emitted.Count(x => x.IsFinal), "句点で即確定するはず"); }
+
+        // 2 文目開始 → 1 秒後に最大寿命確定
+        transcriber.RaiseDelta("2文目の続き");
+        await WaitForConditionAsync(() => { lock (emitted) { return emitted.Count(x => x.IsFinal) >= 2; } }, TimeSpan.FromSeconds(10));
+
+        List<SubtitleItem> finals;
+        lock (emitted) { finals = emitted.Where(x => x.IsFinal).ToList(); }
+        Assert.AreEqual(2, finals.Count, "2 文目も最大寿命で確定するはず (タイマー再起動の検証)");
+        Assert.AreEqual("1文目。", finals[0].TranslatedText);
+        Assert.AreEqual("2文目の続き", finals[1].TranslatedText, "2 文目は句点なしの最大寿命確定なので '。' を含まない");
     }
 }
