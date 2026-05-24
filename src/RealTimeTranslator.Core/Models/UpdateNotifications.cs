@@ -3,7 +3,6 @@ namespace RealTimeTranslator.Core.Models;
 public enum UpdateStatus
 {
     Idle,
-    Disabled,
     Checking,
     UpdateAvailable,
     Failed

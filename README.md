@@ -99,7 +99,7 @@ rtk dotnet publish src/RealTimeTranslator.UI -c Release -r win-x64 --self-contai
 | `OpenAIRealtime` | `ApiKey`（BYOK）、`OutputLanguage`（`ja`/`en`/`zh`/`ko` 等 15 言語）、`Model`（既定: `gpt-realtime-translate`）、`Endpoint`、`ReconnectDelayMs`、`MaxReconnectAttempts` |
 | `Overlay` | `FontFamily`（既定 `IBM Plex Sans JP` / システム 4 種 + 同梱 5 種選択可）、`FontSize`、`PartialTextColor` / `FinalTextColor`（7 色）、`BackgroundColor`（12 色）、`DisplayDuration`、`FadeOutDuration`、`BottomMarginPercent`、`MaxLines` |
 | `AudioCapture` | `SampleRate`（既定 16000）、`EnableVad`（既定 true）、`VadPreset`（`Balanced` / `PrioritizeEdges` / `AggressiveSavings` / `Custom`）、`VadThreshold` / `VadPreRollMs` / `VadHangoverMs`（Custom 時の詳細値）、`AutoPauseOnSilenceSec`（無音継続で自動 Pause、 既定 0=無効） |
-| `Update` | `Enabled`（既定 true）、`IgnoredTagName`（「このバージョンを無視」で押されたタグを永続化、 次回起動時の自動チェックでスキップ）。**配信元 URL はセキュリティ上ハードコード固定**（`UpdateBaseUrl`、 `settings.json` からは変更不可） |
+| `Update` | `IgnoredTagName`（「このバージョンを無視」で押されたタグを永続化、 次回起動時の自動チェックでスキップ。 手動チェックでは無視タグも適用されない）。**配信元 URL はセキュリティ上ハードコード固定**（`UpdateBaseUrl`、 `settings.json` からは変更不可）。 **自動更新は常時有効** (2026-05-25 で `Enabled` 切替廃止、 旧 settings.json の `"Enabled": false` は黙殺) |
 | `TranslationLog` | `RetentionDays`（翻訳ログ保持日数、 既定 0=無制限 / 7 / 30 / 90 / 180 / 365 から選択） |
 
 > ⚠️ **API キーの取り扱い**: `ApiKey` は Windows DPAPI（CurrentUser scope）で暗号化されたうえで `settings.json` に `dpapi:` プレフィックス付き base64 として保存されます。別ユーザー / 別 PC では復号できないため、他環境への持ち出しはできません。

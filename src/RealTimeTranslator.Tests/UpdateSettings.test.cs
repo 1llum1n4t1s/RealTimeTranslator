@@ -32,13 +32,24 @@ public class UpdateSettingsTests
     public void UpdateBaseUrl_JsonInjection_IgnoredByJsonIgnore()
     {
         // settings.json に悪意ある配信元 URL を仕込んでも [JsonIgnore] で無視され、ハードコード値が維持される。
-        const string json = """{"Enabled": true, "UpdateBaseUrl": "https://evil-attacker.example.com"}""";
+        // 2026-05-25 で Enabled プロパティ廃止のため、 unknown property として黙殺されることも検証 (互換性)。
+        const string json = """{"Enabled": false, "UpdateBaseUrl": "https://evil-attacker.example.com", "IgnoredTagName": "v1.0.13"}""";
 
         var s = JsonSerializer.Deserialize<UpdateSettings>(json);
 
         Assert.IsNotNull(s);
         Assert.AreEqual(ExpectedBaseUrl, s!.UpdateBaseUrl);
-        Assert.IsTrue(s.Enabled, "Enabled は通常通り JSON から読める");
+        Assert.AreEqual("v1.0.13", s.IgnoredTagName, "IgnoredTagName は通常通り JSON から読める");
+        // Enabled プロパティは存在しない (System.Text.Json は unknown property を黙殺) → 旧環境 settings.json も読み込み可
+    }
+
+    [TestMethod]
+    public void Enabled_PropertyRemoved_NoCompileSurface()
+    {
+        // Enabled プロパティが完全削除されたことをリフレクションで検証 (2026-05-25)。
+        // 旧コードへの参照が残っていればコンパイル時にエラーになるが、 念のため定数的なテストとして残す。
+        var prop = typeof(UpdateSettings).GetProperty("Enabled");
+        Assert.IsNull(prop, "UpdateSettings.Enabled は廃止されたため存在してはならない");
     }
 
     [TestMethod]

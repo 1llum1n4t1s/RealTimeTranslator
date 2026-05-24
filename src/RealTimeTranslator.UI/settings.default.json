@@ -21,8 +21,5 @@
     "ReconnectDelayMs": 3000,
     "MaxReconnectAttempts": 30
   },
-  "LastSelectedProcessName": "",
-  "Update": {
-    "Enabled": true
-  }
+  "LastSelectedProcessName": ""
 }

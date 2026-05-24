@@ -52,16 +52,12 @@ public class UpdateService : IUpdateService
         {
             _settings = new UpdateSettings
             {
-                Enabled = settings.Enabled,
                 IgnoredTagName = settings.IgnoredTagName
             };
         }
-
-        // UpdateBaseUrl は [JsonIgnore] ハードコード固定なので常に非空。実質 Enabled だけで無効判定する。
-        if (!_settings.Enabled || string.IsNullOrWhiteSpace(_settings.UpdateBaseUrl))
-        {
-            OnStatusChanged(UpdateStatus.Disabled, "更新チェックは無効です。");
-        }
+        // UpdateBaseUrl は [JsonIgnore] ハードコード固定で常に非空、 Enabled 切替は廃止 (2026-05-25)。
+        // 自動更新は常時有効。 ユーザーが「このバージョンを無視」した場合だけ起動時自動チェックがスキップされる
+        // (IgnoredTagName 経由、 手動チェックでは無視タグも適用されない)。
     }
 
     /// <summary>
@@ -97,15 +93,8 @@ public class UpdateService : IUpdateService
         {
             snapshot = new UpdateSettings
             {
-                Enabled = _settings.Enabled,
                 IgnoredTagName = _settings.IgnoredTagName
             };
-        }
-
-        if (!snapshot.Enabled || string.IsNullOrWhiteSpace(snapshot.UpdateBaseUrl))
-        {
-            OnStatusChanged(UpdateStatus.Disabled, "更新チェックは無効です。");
-            return;
         }
 
         if (!TryGetValidFeedUri(snapshot.UpdateBaseUrl, out var feedUri, out var validationReason))

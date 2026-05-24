@@ -5,8 +5,8 @@ namespace RealTimeTranslator.Core.Interfaces;
 public interface IUpdateService
 {
     /// <summary>
-    /// 更新状態の変化を通知する (Idle / Disabled / Checking / UpdateAvailable / Failed)。
-    /// UI 側の StatusText 表示に使う。
+    /// 更新状態の変化を通知する (Idle / Checking / UpdateAvailable / Failed)。
+    /// UI 側の StatusText 表示に使う。 Enabled 切替は 2026-05-25 で廃止、 自動更新は常時有効。
     /// </summary>
     event EventHandler<UpdateStatusChangedEventArgs>? StatusChanged;
 

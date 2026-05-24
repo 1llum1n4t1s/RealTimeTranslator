@@ -40,8 +40,10 @@ public class UpdateSettings
     /// </summary>
     internal const string CanonicalUpdateBaseUrl = "https://rtt.nephilim.jp";
 
-    // デフォルトで有効: UpdateBaseUrl は [JsonIgnore] ハードコード固定で外部誘導を防止済み。
-    public bool Enabled { get; set; } = true;
+    // 自動更新は常時有効 (2026-05-25 で Enabled 切替廃止)。
+    // 過去 settings.json に残った "Enabled": false は System.Text.Json の unknown property として無視されるため、
+    // 旧環境からマイグレートしても自動的に有効化される (別 PC で誤って無効化されていた事例の構造的解消)。
+    // ユーザーが「このバージョンを無視」した場合だけ起動時自動チェックがスキップされる (IgnoredTagName 経由)。
 
     /// <summary>
     /// 自動更新の配信元 base URL（Cloudflare R2 でホスティング）。
