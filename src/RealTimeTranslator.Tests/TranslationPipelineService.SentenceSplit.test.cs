@@ -249,22 +249,8 @@ public sealed class TranslationPipelineServiceSentenceSplitTests
         Assert.AreEqual("新セッションの文。", emitted.First(x => x.IsFinal).TranslatedText);
     }
 
-    /// <test rere="D-7 句読点 fallback" />
-    [TestMethod]
-    [TestCategory("SentenceSplit")]
-    public void OnTranscriptDelta_LongMachineGunTalk_FallbackSplitOnComma()
-    {
-        var (pipeline, transcriber, emitted) = CreatePipeline();
-        // 句点なし 100 文字超で「、」を含む長文
-        var longText = new string('あ', 50) + "、" + new string('い', 60);
-        transcriber.RaiseDelta(longText);
-
-        var finals = emitted.Where(x => x.IsFinal).ToList();
-        Assert.IsTrue(finals.Count >= 1,
-            "100 文字超で「、」 fallback 分割が走り完結文 emit されるはず (rere D-7)");
-        // 1 文目に「、」が含まれることを確認
-        StringAssert.EndsWith(finals[0].TranslatedText, "、");
-    }
+    // v1.0.27 棚卸し削除: OnTranscriptDelta_LongMachineGunTalk_FallbackSplitOnComma
+    // (D-7 句読点 fallback 廃止のため該当機能なし)
 
     /// <test rere="B3-010" />
     [TestMethod]

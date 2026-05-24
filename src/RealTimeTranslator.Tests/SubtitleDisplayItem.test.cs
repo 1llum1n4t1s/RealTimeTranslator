@@ -41,95 +41,47 @@ public class SubtitleDisplayItemTests
     }
 
     /// <summary>
-    /// partial (IsFinal=false) は DisplayDuration 経過後も画面に残る (永続表示)。
-    /// これが v1.0.24 partial 連結方式の核心: server-side delta gap 中も partial が消えない。
+    /// partial (IsFinal=false) も final (IsFinal=true) も DisplayDuration 経過で削除対象になる (v1.0.27 旧挙動復活)。
+    /// v1.0.24-26 では partial 連結方式の前提で partial を永続表示してたが、 v1.0.27 で連結方式廃止 + 無音 PCM 送信に置換 →
+    /// partial は次の delta or 句点完結まで数秒以内に置換される前提なので、 DisplayDuration で消える挙動に戻った。
     /// </summary>
     [TestMethod]
-    public void Update_PartialSubtitle_PersistsBeyondDisplayDuration()
-    {
-        var settings = BuildSettings(displayDurationSec: 5.0);
-        var item = BuildItem("seg-1", "そ", isFinal: false);
-        var display = new SubtitleDisplayItem(item, settings);
-
-        // 10 秒後 (DisplayDuration 5 秒を超過) でも ShouldRemove は false
-        var farFuture = DateTime.Now.AddSeconds(10.0);
-        Assert.IsFalse(display.ShouldRemove(farFuture),
-            "partial 字幕は DisplayDuration を超えても画面に残るはず (永続表示)");
-
-        // さらに極端な未来 (1 時間後) でも残る
-        var veryFarFuture = DateTime.Now.AddHours(1.0);
-        Assert.IsFalse(display.ShouldRemove(veryFarFuture),
-            "partial 字幕は 1 時間後でも画面に残るはず (DateTime.MaxValue 相当)");
-    }
-
-    /// <summary>
-    /// final (IsFinal=true) は DisplayDuration 経過後に ShouldRemove=true で削除対象になる。
-    /// 従来通りの確定字幕の挙動。
-    /// </summary>
-    [TestMethod]
-    public void Update_FinalSubtitle_RemovesAfterDisplayDuration()
+    public void Update_PartialAndFinal_BothRemovedAfterDisplayDuration()
     {
         var settings = BuildSettings(displayDurationSec: 1.0, fadeOutSec: 0.5);
-        var item = BuildItem("seg-1", "あれは一生忘れません。", isFinal: true);
-        var display = new SubtitleDisplayItem(item, settings);
 
-        // DisplayDuration 中は残る
-        var withinDuration = DateTime.Now.AddSeconds(0.5);
-        Assert.IsFalse(display.ShouldRemove(withinDuration),
-            "DisplayDuration 中は残るはず");
+        foreach (var isFinal in new[] { false, true })
+        {
+            var item = BuildItem("seg-1", "テスト", isFinal: isFinal);
+            var display = new SubtitleDisplayItem(item, settings);
 
-        // DisplayDuration 終了直後は fadeOut 中なので False (Opacity が下がる)
-        var justAfterDuration = DateTime.Now.AddSeconds(1.1);
-        Assert.IsFalse(display.ShouldRemove(justAfterDuration),
-            "DisplayDuration 直後は fadeOut 中で残るはず");
+            // DisplayDuration 中は残る
+            Assert.IsFalse(display.ShouldRemove(DateTime.Now.AddSeconds(0.5)),
+                $"IsFinal={isFinal}: DisplayDuration 中は残るはず");
 
-        // fadeOut 完了後は削除対象
-        var afterFadeOut = DateTime.Now.AddSeconds(2.0);
-        Assert.IsTrue(display.ShouldRemove(afterFadeOut),
-            "DisplayDuration + FadeOutDuration を超えたら削除されるはず");
+            // DisplayDuration + FadeOutDuration 経過後は削除対象
+            Assert.IsTrue(display.ShouldRemove(DateTime.Now.AddSeconds(2.0)),
+                $"IsFinal={isFinal}: DisplayDuration + FadeOutDuration 経過で削除されるはず (v1.0.27 旧挙動復活)");
+        }
     }
 
     /// <summary>
-    /// partial → final 遷移時に DisplayDuration カウントダウン開始する。
-    /// 句点で確定したり、 最大寿命で強制確定したりした字幕が、 適切に画面から消える経路を検証。
+    /// partial 連続 Update で _displayEndTime が毎回リセットされ、 同じ字幕が画面に残り続けることを検証。
+    /// (短時間で次の delta が来る通常ケース)
     /// </summary>
     [TestMethod]
-    public void Update_PartialThenFinal_StartsDisplayDurationCountdown()
+    public void Update_MultiplePartialUpdates_ExtendsDisplayEnd()
     {
-        var settings = BuildSettings(displayDurationSec: 1.0, fadeOutSec: 0.5);
-        var partial = BuildItem("seg-1", "あれは一生忘れません", isFinal: false);
-        var display = new SubtitleDisplayItem(partial, settings);
-
-        // partial 状態で 10 秒後でも残る
-        Assert.IsFalse(display.ShouldRemove(DateTime.Now.AddSeconds(10.0)),
-            "partial 状態では永続表示のはず");
-
-        // final に遷移
-        var final = BuildItem("seg-1", "あれは一生忘れません。", isFinal: true);
-        display.Update(final, settings);
-
-        // final 遷移後、 DisplayDuration + FadeOutDuration を超えると削除対象
-        var afterFadeOut = DateTime.Now.AddSeconds(2.0);
-        Assert.IsTrue(display.ShouldRemove(afterFadeOut),
-            "final に遷移した字幕は DisplayDuration + FadeOutDuration 経過で削除されるはず");
-    }
-
-    /// <summary>
-    /// partial の連続 Update でも常に永続表示が維持される。
-    /// 「そ → そし → そして → そして、血液検査には...」のように成長する partial の挙動を検証。
-    /// </summary>
-    [TestMethod]
-    public void Update_MultiplePartialUpdates_AlwaysPersists()
-    {
-        var settings = BuildSettings(displayDurationSec: 5.0);
+        var settings = BuildSettings(displayDurationSec: 1.0);
         var display = new SubtitleDisplayItem(BuildItem("seg-1", "そ", isFinal: false), settings);
 
-        // 複数回 Update (連結方式で成長していく partial)
-        foreach (var text in new[] { "そし", "そして", "そして、血液", "そして、血液検査にはESR" })
+        // 500ms 待機相当で Update → _displayEndTime がリセットされる
+        foreach (var text in new[] { "そし", "そして", "そして、血液" })
         {
             display.Update(BuildItem("seg-1", text, isFinal: false), settings);
-            Assert.IsFalse(display.ShouldRemove(DateTime.Now.AddSeconds(10.0)),
-                $"partial 連続 Update 中 ('{text}') でも永続表示のはず");
+            // Update 直後は DisplayDuration 中
+            Assert.IsFalse(display.ShouldRemove(DateTime.Now.AddSeconds(0.5)),
+                $"Update 直後 ('{text}') は DisplayDuration 中で残るはず");
         }
     }
 }

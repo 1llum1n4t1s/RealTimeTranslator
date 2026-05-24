@@ -141,26 +141,26 @@ public class OpenAIRealtimeSettings
     // モバイル / Wi-Fi の一時切断（数十秒オーダー）でも諦めず、NetworkChange 復帰でもカウンタリセットされる。
     public int MaxReconnectAttempts { get; set; } = 30;
 
-    // ⭐ partial 連結方式の暴走防止安全弁 (v1.0.24 追加)。
-    // OpenAI Realtime Translate API は server-side で「発話終端」を検出できない場合、
-    // delta 配信が 30〜45 秒以上途絶した後に突然続きを送ってくることがある (2026-05-24 観測)。
-    // 旧設計は Overlay.DisplayDuration (5秒) 経過で強制確定していたが、 これだと
-    // 「ARC Raiders 等のゲーム音声で文中の自然な間で字幕が途中で切れる」UX バグになっていた。
-    // 新設計: delta が来ない無音 = 強制確定しない (同 SegmentId のまま partial 連結を継続)。
-    // ただし「真の発話終端 + done が来ない」病的ケースで字幕が永久未確定になるのを防ぐため、
-    // 発話開始からこの値 (秒) を超えたら強制確定する。 デフォルト 45 秒は「人間の一発話の現実的上限」。
-    // 隠し設定 — UI には出さず settings.json 直編集または DI override で調整する想定。
-    public double MaxSegmentLifetimeSec { get; set; } = 45.0;
-
-    // ⭐ VAD Silence 連続時間ベースの「能動的区切り」(v1.0.26 追加)。
-    // OpenAI Realtime Translate API は continuous streaming model 前提で、 server-side の
-    // 発話終端検知が ARC Raiders 等のゲーム音声で 30〜40 秒 silence する挙動 (2026-05-24 確証)。
-    // 公式に「ここで区切って」と要求する API は存在しない (response.create も使うなと明示)。
-    // ─ ローカル VAD (Silero v5) が Hangover → Silence 遷移し、 この時間 (ミリ秒) 継続したら:
-    //   1. input_audio_buffer.commit を試験送信 (server が応答すれば残り delta を即吐く可能性)
-    //   2. partial を強制確定 (client 側完結 — server 応答に依存しない fallback)
-    // 値が 0 以下なら機能を無効化する。 VAD 無効時 (素通し) も機能しない (Silence 状態が無い)。
-    public int SilenceFinalizeMs { get; set; } = 2000;
+    // ⭐ VAD Silence 中の「無音 PCM 継続送信」最大時間 (v1.0.27 設計)。
+    //
+    // 背景 (v1.0.26 ログから事実確証):
+    //   OpenAI Realtime Translate API は continuous streaming model 前提で、 入力音声が来ない区間は
+    //   「次の音声が続きか別発話か」を判断できず、 **続きの音声が来るまで delta 出力を保留する**。
+    //   ARC Raiders で 2 分間の delta gap → 次の音声入力で「続き」を吐き出す挙動を観測
+    //   (2026-05-24 「繰...」「り返す、10分」分断事件)。
+    //   ゆろさん仮説: VAD OFF で BGM が押し出してるから途切れない = 無音 PCM 送信で同じ効果が得られる。
+    //
+    // v1.0.26 戦略 (VAD Silence で client 強制確定 + commit 送信) は失敗:
+    //   - 戦略 A: 分断を引き起こした (server 保留中の続き delta が別 SegmentId で出てくる)
+    //   - 戦略 B: `session.input_audio_buffer.commit` が API に拒否された (BadRequest 大量発生)
+    //
+    // v1.0.27 戦略:
+    //   - VAD Hangover → Silence 遷移後、 この時間 (ミリ秒) 内は **無音 PCM (ゼロ埋め PCM16)** を継続送信
+    //   - server に「入力継続中」をアピール → 保留してた delta を吐かせる
+    //   - 時間超過したら送信停止 (token 節約、 Silero VAD が次の発話を検知するまで完全停止)
+    //   - Silence → InSpeech 再遷移でカウントリセット
+    // 値が 0 以下なら機能を無効化する (= VAD Silence 中は完全に送信停止、 v1.0.25 以前と同じ)。
+    public int SilencePaddingMs { get; set; } = 5000;
 }
 
 // GameProfile / GameProfiles は旧 Whisper+LLM ローカル翻訳時代の設定。

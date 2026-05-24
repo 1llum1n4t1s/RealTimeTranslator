@@ -30,17 +30,6 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     private DateTime _lastEmitTime = DateTime.MinValue;
     private bool _hasPendingDelta;
     private readonly Timer _throttleTimer;
-    // ⭐ partial 連結方式 (v1.0.24) の最大寿命タイマー。
-    // 旧設計は「無音 DisplayDuration 経過で trailing を強制確定」だったが、 OpenAI Realtime Translate API が
-    // 発話途中で delta を 30〜45 秒以上 silence する挙動 (2026-05-24 ARC Raiders 観測) で
-    // 「文の途中で字幕が確定 → 続きが別 SegmentId で表示」される UX バグを起こしていた。
-    // 新設計: 無音タイムアウトでは確定しない。 発話開始 (_segmentStartUtc) からの経過が
-    // OpenAIRealtime.MaxSegmentLifetimeSec (default 45 秒) を超えた場合のみ強制確定する安全弁。
-    private readonly Timer _idleFinalizeTimer;
-    // 現セグメント (= _currentSegmentId) で最初の delta を受信した UTC 時刻。
-    // 「partial 連結が始まった時刻」を意味し、 最大寿命の起点になる。
-    // 未開始 (累積空) は DateTime.MinValue で表現。 完結文 emit や新セグメント発行時に MinValue にリセット。
-    private DateTime _segmentStartUtc = DateTime.MinValue;
     private readonly Stopwatch _latencyStopwatch = new();
     private volatile bool _isRunning;
     // rere B1-006: Dispose / DisposeAsync の二重実行を防ぐ Interlocked 占有マーク。
@@ -83,16 +72,6 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     // 字幕状態 (_lastFinalizedTranscript / _currentSegmentId) をリセットするため (rere P0 #1)。
     private ConnectionState _lastConnectionState = ConnectionState.Disconnected;
 
-    // D-7 句読点 fallback の閾値: _accumulatedText がこれを超えても句点が来ない場合、
-    // 末尾の読点で強制分割する (永久未確定字幕を防止)。
-    private const int FallbackSplitThreshold = 100;
-    private static readonly char[] FallbackSplitTerminators = ['、', ',', '・'];
-
-    // O(n²) 回避: _accumulatedText 内で最後に見つけた FallbackSplitTerminators の位置。
-    // 毎 delta で新規追加部分だけ走査すれば済むように、 delta 到着ごとに更新する。
-    // _accumulatedText.Clear() 時は必ず -1 にリセットすること。
-    private int _lastFallbackCommaPos = -1;
-
     // ───────── 類似重複抑制 ─────────
     // Translation API (intent=translation) は transcript.done を送らず delta のみで動作する
     // ケースがある (2026-05-22 観測)。 サーバー VAD が重複する音声セグメントを別レスポンスとして
@@ -111,16 +90,22 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     // EnableVad=false の場合は素通し (旧挙動)。
     private enum VadState { Silence, InSpeech, Hangover }
     private readonly IVoiceActivityDetector _vad;
-    // ⭐ 2 系統ストリーミングリサンプラ:
-    //   _vadResampler  (48k→16k): VAD (Silero v5 16kHz/512sample 固定仕様) の判定用
-    //   _sendResampler (48k→24k): OpenAI 送信用 (24kHz/mono PCM16)
-    // 旧設計は AudioCaptureService 内で 48k→16k リサンプルしてから TranslationPipelineService 側で
-    // 16k→24k と二段ダウンサンプル/アップサンプルしており、 高域情報を一度 16k まで削ってから
-    // 24k に水増しする情報損失があった。 入力 48k から 24k に直結することで音質劣化を最小化する。
+    // ⭐ 1 系統二段ストリーミングリサンプラ (v1.0.27 設計):
+    //   _vadResampler  (48k→16k): VAD (Silero v5 16kHz/512sample 固定仕様) の判定用 + 送信パスの入口
+    //   _sendResampler (16k→24k): OpenAI 送信用 (24kHz/mono PCM16) — 16k を入力に取り直列接続
+    //
+    // 経緯:
+    //   v1.0.23 で「48k→16k と 48k→24k の 2 系統並列」を採用した (二段の情報損失を避ける目的)。
+    //   ところが v1.0.26 ログから「OpenAI server gap」問題への対策として
+    //   VAD Silence 中も無音 PCM を送信する設計 (v1.0.27) を導入した結果、 もはや
+    //   「speech 区間のみ送信して node を節約する」設計優位性が薄れた。
+    //   そこで ゆろさん提案 (2026-05-24): 「常時/準常時送信なら 2 系統分岐は無駄、 1 系統二段で簡素化」。
+    //   音質は 48k→16k→24k 二段で高域少し削れるが、 server reactivity 優先で受容。
+    //
     // 両リサンプラは LatencyMargin を時間ベース (4ms) に揃えてあり、 16k 512sample = 24k 768sample
-    // = 同じ 32ms フレームとして時間同期できる (2026-05-24 改修)。
+    // = 同じ 32ms フレームとして時間同期できる。
     private readonly StreamingResampler _vadResampler = new(48000, 16000);
-    private readonly StreamingResampler _sendResampler = new(48000, 24000);
+    private readonly StreamingResampler _sendResampler = new(16000, 24000);
     // 16kHz / 32ms = 512 samples ごとに切り出すための VAD用 accumulator。
     // 24kHz / 32ms = 768 samples ごとに切り出すための送信用 accumulator (同じ時間区間に対応)。
     private float[]? _frameAccumulator;
@@ -132,12 +117,15 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     private readonly Queue<float[]> _preRollBuffer = new();
     private VadState _vadState = VadState.Silence;
     private int _hangoverFramesRemaining;
-    // v1.0.26 追加: VAD Silence 状態に遷移した時刻。 「VAD Silence が SilenceFinalizeMs 継続したら
-    // input_audio_buffer.commit 送信 + partial 強制確定」する能動的区切りロジックの起点。
-    // Silence → InSpeech 遷移でリセット (DateTime.MinValue)。 1 回発火で _silenceCommitFired=true にして連発抑制。
-    // ARC Raiders 等で OpenAI server が delta を 30〜45 秒送ってこない問題への client 側対策 (2026-05-24)。
+    // v1.0.27 改修: VAD Silence 状態に遷移した時刻。 「VAD Silence 中、 SilencePaddingMs 以内は
+    // 無音 PCM (ゼロ埋め PCM16) を継続送信して server に入力継続をアピール」するロジックの起点。
+    // 旧 v1.0.26 戦略 (commit 送信 + 強制確定) は分断問題で削除。
+    // Silence → InSpeech 遷移でリセット (DateTime.MinValue)。
+    // ARC Raiders 等で OpenAI server が delta を保留する問題への client 側対策 (2026-05-24)。
     private DateTime _silenceStartUtc = DateTime.MinValue;
-    private bool _silenceCommitFired;
+    // 無音 PCM 送信に使い回すフレームバッファ (24kHz/mono PCM16、 768 sample = 1536 bytes)。
+    // 毎フレーム new するのを避けるため _silencePaddingPcm16 でキャッシュ。 中身はずっとゼロ。
+    private byte[]? _silencePaddingPcm16;
     // 自動 Pause 判定用 (最後に speech と判定された時刻)。
     private DateTime _lastSpeechUtc = DateTime.UtcNow;
     private DateTime _sessionStartUtc = DateTime.UtcNow;
@@ -178,7 +166,6 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         _vad = vad;
         _cachedRealtimeSettings = settingsMonitor.CurrentValue.OpenAIRealtime;
         _throttleTimer = new Timer(OnThrottleTimerElapsed, null, Timeout.Infinite, Timeout.Infinite);
-        _idleFinalizeTimer = new Timer(OnIdleFinalizeTimerElapsed, null, Timeout.Infinite, Timeout.Infinite);
 
         _realtimeClient.TranscriptDeltaReceived += OnTranscriptDelta;
         _realtimeClient.TranscriptCompleted += OnTranscriptCompleted;
@@ -232,13 +219,10 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         {
             _lastFinalizedTranscript.Clear();
             _accumulatedText.Clear();
-            _lastFallbackCommaPos = -1;
             _recentEmittedSentences.Clear();
             _currentSegmentId = Guid.NewGuid().ToString();
-            _segmentStartUtc = DateTime.MinValue;
             _lastEmitTime = DateTime.MinValue;
             _hasPendingDelta = false;
-            _idleFinalizeTimer.Change(Timeout.Infinite, Timeout.Infinite);
         }
 
         // rere B1-011: Core layer 統一で ConfigureAwait(false) 付与。
@@ -269,7 +253,6 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         _vadState = VadState.Silence;
         _hangoverFramesRemaining = 0;
         _silenceStartUtc = DateTime.MinValue;
-        _silenceCommitFired = false;
         _frameAccumulator = null;
         _frameAccumulatorLen = 0;
         _frameAccumulator24k = null;
@@ -447,12 +430,14 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                     var audioCaptureSettings = _settingsMonitor.CurrentValue.AudioCapture;
                     if (!audioCaptureSettings.EnableVad)
                     {
-                        // VAD 無効: 素通し送信。 入力 48kHz/mono を 24kHz にステートフルリサンプル
-                        // (48→24 は 2:1 関係でリサンプル品質良好、 旧 48→16→24 二段の情報損失を回避)。
-                        var resampled = _sendResampler.Resample(audioData);
-                        if (resampled.Length > 0)
+                        // VAD 無効: 素通し送信。 v1.0.27 から 48k→16k→24k 二段経路 (VAD パスと同一)。
+                        // 旧 v1.0.23〜v1.0.26 は 48k→24k 直の別系統だったが、 ゆろさん提案でパイプライン 1 系統化。
+                        // 高域少し削れるが、 VAD 無効 = 「BGM 含めて全部翻訳」用途なので音質よりも整合性優先。
+                        var resampled16k = _vadResampler.Resample(audioData);
+                        var resampled24k = _sendResampler.Resample(resampled16k);
+                        if (resampled24k.Length > 0)
                         {
-                            var pcm16 = AudioFormatConverter.Float32ToPcm16(resampled);
+                            var pcm16 = AudioFormatConverter.Float32ToPcm16(resampled24k);
                             _realtimeClient.SendAudio(pcm16);
                         }
                     }
@@ -502,16 +487,13 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
             _accumulatedText.Append(delta);
             int totalLen = _accumulatedText.Length;
 
-            // ⭐ partial 連結方式 (v1.0.24): 新セグメントの最初の delta を受信した瞬間を「発話開始」として記録。
-            // これが最大寿命タイマー (MaxSegmentLifetimeSec) の起点になる。
-            // 同セグメント内の 2 件目以降の delta は appendStart > 0 になるので _segmentStartUtc は維持される。
-            if (appendStart == 0 && totalLen > 0 && _segmentStartUtc == DateTime.MinValue)
+            // v1.0.27: 新セグメントの最初の delta を受信した瞬間を明示ログ (デバッグ用)。
+            // 旧 v1.0.24-26 の partial 連結方式 (_segmentStartUtc + 最大寿命タイマー) は server gap 対応の
+            // 副作用 (分断) があり削除。 v1.0.27 では「無音 PCM 送信で server を起こす」根本対策に置換。
+            if (appendStart == 0 && totalLen > 0)
             {
-                _segmentStartUtc = DateTime.UtcNow;
-                // v1.0.25 デバッグ用: 新セグメント開始 (= 連結ウィンドウ開始) を明示ログ。
-                // これと「完結文 emit」「最大寿命タイマー発火」を組み合わせれば 1 セグメントのライフサイクルが全部追える。
                 _lastLoggedPartialLength = -1; // 新セグメントで partial ログをリセット
-                Logger.Info($"新セグメント開始: SegmentId={ShortSegmentId(_currentSegmentId)} 最大寿命={GetSafeMaxSegmentLifetimeSec():F0}秒");
+                Logger.Info($"新セグメント開始: SegmentId={ShortSegmentId(_currentSegmentId)}");
             }
 
             if (!_latencyStopwatch.IsRunning)
@@ -547,50 +529,9 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                             Logger.Info($"OnTranscriptDelta: 類似重複抑制 SegmentId={ShortSegmentId(_currentSegmentId)} 内容='{TruncateForLog(sentence)}'");
                         }
                         _currentSegmentId = Guid.NewGuid().ToString();
-                        _segmentStartUtc = DateTime.MinValue; // partial 連結方式: 完結 → 次セグメントの最初の delta で再計時
                         _lastFinalizedTranscript.Append(sentence);
                     }
                     start = i + 1;
-                }
-
-                // D-7 fallback: 走査中に FallbackSplitTerminators を見つけたら位置を記録。
-                // 句点が見つかれば start が進むので自然にリセットされる。
-                if (Array.IndexOf(FallbackSplitTerminators, _accumulatedText[i]) >= 0 && i >= start)
-                {
-                    _lastFallbackCommaPos = i;
-                }
-            }
-
-            // ⭐ D-7 句読点 fallback: 句点 (SentenceTerminators) が来なくても _accumulatedText が
-            // FallbackSplitThreshold (100文字) を超えた場合、 末尾の読点 (「、」「,」「・」) で
-            // 強制分割する。 永久未確定字幕 (partial 表示が伸び続ける UX バグ) を防止。
-            // すでに完結文を切り出した直後 (completedSentences.Count > 0) は trailing が短いので
-            // fallback 不要。 完結文ゼロかつ trailing が閾値超のケースのみ発動する。
-            if (completedSentences is null && (totalLen - start) > FallbackSplitThreshold)
-            {
-                // _lastFallbackCommaPos が有効な範囲にあれば O(1) で分割。
-                if (_lastFallbackCommaPos > start)
-                {
-                    int splitAt = _lastFallbackCommaPos;
-                    var sentence = _accumulatedText.ToString(start, splitAt + 1 - start);
-                    if (!string.IsNullOrWhiteSpace(sentence))
-                    {
-                        int trailingLength = totalLen - start;
-                        if (!IsSimilarToRecentEmission(sentence))
-                        {
-                            Logger.Info($"OnTranscriptDelta: 句読点 fallback 分割 (trailing={trailingLength}文字 句点なし) → '{TruncateForLog(sentence)}'");
-                            (completedSentences ??= new()).Add((_currentSegmentId, sentence));
-                            RecordEmission(sentence);
-                        }
-                        else
-                        {
-                            Logger.Info($"OnTranscriptDelta: 句読点 fallback 類似重複抑制 (trailing={trailingLength}文字) 内容='{TruncateForLog(sentence)}'");
-                        }
-                        _currentSegmentId = Guid.NewGuid().ToString();
-                        _segmentStartUtc = DateTime.MinValue; // partial 連結方式: 完結 → 次セグメントの最初の delta で再計時
-                        _lastFinalizedTranscript.Append(sentence);
-                        start = splitAt + 1;
-                    }
                 }
             }
 
@@ -601,8 +542,6 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                 {
                     _accumulatedText.Remove(0, start);
                 }
-                // _lastFallbackCommaPos を新しい offset 基準にシフト
-                _lastFallbackCommaPos = _lastFallbackCommaPos >= start ? _lastFallbackCommaPos - start : -1;
                 _lastEmitTime = DateTime.UtcNow;
                 _hasPendingDelta = false;
                 _throttleTimer.Change(Timeout.Infinite, Timeout.Infinite);
@@ -650,10 +589,6 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                 EmitPartialSubtitle();
             }
         }
-
-        // 未確定 trailing が残っていれば DisplayDuration 後のアイドル確定をリスケジュール
-        // (毎 delta でリスケされるため、 無活動が DisplayDuration 継続して初めて発火する)。
-        SyncIdleFinalizeTimer();
     }
 
     private void OnThrottleTimerElapsed(object? state)
@@ -696,92 +631,8 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     }
 
     /// <summary>
-    /// 最大寿命タイマー発火 (旧アイドル確定タイマーの後継、 v1.0.24 改名):
-    /// 発話開始 (_segmentStartUtc) から OpenAIRealtime.MaxSegmentLifetimeSec を超過したら trailing を強制確定する。
-    /// タイマー誤発火 (設定変更で寿命が延長されたケース等) もあり得るので、 発火時に再度残時間を確認し、
-    /// まだ寿命内ならリスケジュールするセルフヒーリングを入れる。
-    /// </summary>
-    private void OnIdleFinalizeTimerElapsed(object? state)
-    {
-        double lifetimeSec;
-        double elapsed;
-        bool shouldFinalize;
-        string segmentIdSnapshot;
-        int trailingLen;
-        lock (_textLock)
-        {
-            if (_accumulatedText.Length == 0 || _segmentStartUtc == DateTime.MinValue)
-            {
-                // 既に確定済み / セグメント開始時刻がリセット済み → 何もしない。
-                Logger.Info("最大寿命タイマー発火: 早期 return (trailing 空 or セグメント未開始)");
-                return;
-            }
-            lifetimeSec = GetSafeMaxSegmentLifetimeSec();
-            elapsed = (DateTime.UtcNow - _segmentStartUtc).TotalSeconds;
-            // v1.0.26: double 精度問題で `elapsed = 44.9999... < 45.0` で false になり、
-            // SyncIdleFinalizeTimer が remaining=0.0001 秒で再スケジュール → 即発火 → 再判定で false → ... と
-            // 同 ms 内に 17 回連続発火するバグ (2026-05-24 ログで観測) を回避するため 10ms 余裕を持たせる。
-            shouldFinalize = elapsed >= lifetimeSec - 0.01;
-            segmentIdSnapshot = _currentSegmentId;
-            trailingLen = _accumulatedText.Length;
-        }
-
-        if (shouldFinalize)
-        {
-            Logger.Info($"最大寿命タイマー発火: 寿命超過 → 強制確定 SegmentId={ShortSegmentId(segmentIdSnapshot)} 経過={elapsed:F1}秒 / 寿命={lifetimeSec:F0}秒 trailing長={trailingLen}");
-            FinalizePendingPartial($"最大寿命超過 ({lifetimeSec:F0}秒)");
-        }
-        else
-        {
-            // 寿命が伸びたケース (設定 hot reload 等) → 残時間でリスケジュール
-            Logger.Info($"最大寿命タイマー発火: 寿命未到達 → リスケ SegmentId={ShortSegmentId(segmentIdSnapshot)} 経過={elapsed:F1}秒 / 寿命={lifetimeSec:F0}秒 残り={lifetimeSec - elapsed:F1}秒");
-            SyncIdleFinalizeTimer();
-        }
-    }
-
-    /// <summary>
-    /// 未確定 trailing (_accumulatedText) の有無に応じて最大寿命タイマーを再設定する。
-    /// trailing が残っていれば「発話開始 + MaxSegmentLifetimeSec - 現在経過」後に発火するようスケジュール。
-    /// trailing が空 or 発話開始未記録なら停止する。
-    /// 関数名は callsite 互換性のため SyncIdleFinalizeTimer のまま維持 (旧アイドル確定の意味は廃止)。
-    /// </summary>
-    private void SyncIdleFinalizeTimer()
-    {
-        lock (_textLock)
-        {
-            if (_accumulatedText.Length == 0 || _segmentStartUtc == DateTime.MinValue)
-            {
-                _idleFinalizeTimer.Change(Timeout.Infinite, Timeout.Infinite);
-                return;
-            }
-
-            var lifetimeSec = GetSafeMaxSegmentLifetimeSec();
-            var elapsed = (DateTime.UtcNow - _segmentStartUtc).TotalSeconds;
-            var remainingSec = Math.Max(0.0, lifetimeSec - elapsed);
-            // v1.0.26: 最小待機 100ms を強制 (連続発火防止)。 旧実装は remaining=0.0001 秒等の極小値で
-            // 即発火 → リスケ → 即発火 のループに陥り、 同 ms 内に十数回タイマー発火する CPU + ログ汚染バグがあった。
-            // 上限 1 時間でクランプ (寿命設定が極端でも Timer.Change が OverflowException にならないよう保護)。
-            var remainingClamped = Math.Min(remainingSec, 3600.0);
-            remainingClamped = Math.Max(remainingClamped, 0.1);
-            _idleFinalizeTimer.Change(TimeSpan.FromSeconds(remainingClamped), Timeout.InfiniteTimeSpan);
-        }
-    }
-
-    /// <summary>
-    /// OpenAIRealtime.MaxSegmentLifetimeSec を安全範囲 [1.0, 600.0] にクランプして返す。
-    /// NaN / Infinity / 極端値はデフォルト 45 秒にフォールバック。
-    /// (旧 SyncIdleFinalizeTimer の Overlay.DisplayDuration 防御と同じガード思想)
-    /// </summary>
-    private double GetSafeMaxSegmentLifetimeSec()
-    {
-        var raw = _settingsMonitor.CurrentValue.OpenAIRealtime.MaxSegmentLifetimeSec;
-        if (!double.IsFinite(raw)) return 45.0;
-        return Math.Clamp(raw, 1.0, 600.0);
-    }
-
-    /// <summary>
     /// 未確定の trailing (_accumulatedText) を確定字幕 (IsFinal=true) として emit + ログ記録し、 状態を進める。
-    /// 停止時 (StopCoreAsync) とアイドルタイムアウト (OnIdleFinalizeTimerElapsed) から呼ばれる。
+    /// v1.0.27 から 停止時 (StopCoreAsync) のみから呼ばれる (旧 v1.0.18 アイドル確定 / v1.0.24 最大寿命タイマーは削除済み)。
     /// 空 / 空白のみのときは何もしない。 SegmentId は partial 表示時と同一にして overlay 側の partial を確定表示に置換させる。
     /// </summary>
     private void FinalizePendingPartial(string reason)
@@ -792,11 +643,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         lock (_textLock)
         {
             sentence = _accumulatedText.ToString();
-            if (string.IsNullOrWhiteSpace(sentence))
-            {
-                _idleFinalizeTimer.Change(Timeout.Infinite, Timeout.Infinite);
-                return;
-            }
+            if (string.IsNullOrWhiteSpace(sentence)) return;
 
             segmentId = _currentSegmentId;
 
@@ -807,11 +654,8 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
             // 確定累積へ反映 (後続 done の prefix 一致を維持するため、 delta 経路の確定と同じ扱い)。
             _lastFinalizedTranscript.Append(sentence);
             _accumulatedText.Clear();
-            _lastFallbackCommaPos = -1;
             _currentSegmentId = Guid.NewGuid().ToString();
-            _segmentStartUtc = DateTime.MinValue; // partial 連結方式: 強制確定 → 次セグメントの最初の delta で再計時
             _hasPendingDelta = false;
-            _idleFinalizeTimer.Change(Timeout.Infinite, Timeout.Infinite);
             _throttleTimer.Change(Timeout.Infinite, Timeout.Infinite);
         }
 
@@ -875,7 +719,6 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
             {
                 Logger.Warn($"OnTranscriptCompleted: prefix 不整合検出 — done 経路スキップ (finalized 長={_lastFinalizedTranscript.Length} effective 長={effective.Length} finalized 末尾='{TruncateForLog(TailOf(_lastFinalizedTranscript, 20), 20)}' effective 先頭='{TruncateForLog(effective, 30)}')");
                 _accumulatedText.Clear();
-                _lastFallbackCommaPos = -1;
                 _lastEmitTime = DateTime.MinValue;
                 _hasPendingDelta = false;
                 _throttleTimer.Change(Timeout.Infinite, Timeout.Infinite);
@@ -891,7 +734,6 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                 // 累積 done が来たが新規ぶんが無い (同 transcript を 2 回受信した等)
                 // → emit すべきものがない。 状態だけリセットして抜ける。
                 _accumulatedText.Clear();
-                _lastFallbackCommaPos = -1;
                 _lastEmitTime = DateTime.MinValue;
                 _hasPendingDelta = false;
                 _throttleTimer.Change(Timeout.Infinite, Timeout.Infinite);
@@ -924,7 +766,6 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                             Logger.Info($"OnTranscriptCompleted: 類似重複抑制 内容='{TruncateForLog(sentence)}'");
                         }
                         _currentSegmentId = Guid.NewGuid().ToString();
-                        _segmentStartUtc = DateTime.MinValue; // partial 連結方式: 完結 → 次セグメントの最初の delta で再計時
                         // 確定累積を完結文ぶんだけ進める (trailing は次回更新時に再登場させる)
                         _lastFinalizedTranscript.Append(sentence);
                     }
@@ -943,7 +784,6 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
 
             // partial 表示用の delta 蓄積はクリア (次の done までの partial 用に再使用)
             _accumulatedText.Clear();
-            _lastFallbackCommaPos = -1;
             _lastEmitTime = DateTime.MinValue;
             _hasPendingDelta = false;
             _throttleTimer.Change(Timeout.Infinite, Timeout.Infinite);
@@ -979,9 +819,6 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         doneStats.ProcessingLatency = latencyMs;
         doneStats.TranslationLatency = latencyMs;
         StatsUpdated?.Invoke(this, doneStats);
-
-        // done 後も未完結 trailing が残るケース (partial 表示中) のため、 アイドル確定タイマーを同期する。
-        SyncIdleFinalizeTimer();
     }
 
     private void OnClientError(Exception ex)
@@ -1028,14 +865,11 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                 Logger.Info($"OnConnectionStateChanged: 再接続成功 — 字幕状態をリセット (旧 finalized 長={_lastFinalizedTranscript.Length})");
                 _lastFinalizedTranscript.Clear();
                 _accumulatedText.Clear();
-                _lastFallbackCommaPos = -1;
                 _recentEmittedSentences.Clear();
                 _currentSegmentId = Guid.NewGuid().ToString();
-                _segmentStartUtc = DateTime.MinValue; // partial 連結方式: 再接続でセグメント状態もクリア
                 _lastEmitTime = DateTime.MinValue;
                 _hasPendingDelta = false;
                 _throttleTimer.Change(Timeout.Infinite, Timeout.Infinite);
-                _idleFinalizeTimer.Change(Timeout.Infinite, Timeout.Infinite);
             }
         }
 
@@ -1069,7 +903,6 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         }
 
         _throttleTimer.Dispose();
-        _idleFinalizeTimer.Dispose();
         _realtimeClient.TranscriptDeltaReceived -= OnTranscriptDelta;
         _realtimeClient.TranscriptCompleted -= OnTranscriptCompleted;
         _realtimeClient.ErrorReceived -= OnClientError;
@@ -1091,7 +924,6 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         catch { /* DisposeAsync を推奨 */ }
 
         _throttleTimer.Dispose();
-        _idleFinalizeTimer.Dispose();
         _realtimeClient.TranscriptDeltaReceived -= OnTranscriptDelta;
         _realtimeClient.TranscriptCompleted -= OnTranscriptCompleted;
         _realtimeClient.ErrorReceived -= OnClientError;
@@ -1271,12 +1103,12 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     /// </summary>
     internal void ProcessAudioWithVadGate(float[] audio48kHz, AudioCaptureSettings settings)
     {
-        // 48kHz 入力を VAD 用 (16k) と送信用 (24k) に同時ステートフルリサンプル。
+        // v1.0.27 1 系統二段リサンプル:
+        //   48k 入力 → 48k→16k (_vadResampler) → 16k で VAD 判定 + 16k→24k (_sendResampler) → 24k で OpenAI 送信。
         // 両リサンプラは LatencyMargin を時間ベース (4ms) に揃えてあるので出力は時間同期し、
-        // 16k 512sample (32ms) と 24k 768sample (32ms) を「同じ時間区間の VAD フレームペア」
-        // として取り出せる。 16k で VAD 判定し、 対応する 24k フレームを送信・PreRoll に使う。
+        // 16k 512sample (32ms) と 24k 768sample (32ms) を「同じ時間区間の VAD フレームペア」として取り出せる。
         var resampled16k = _vadResampler.Resample(audio48kHz);
-        var resampled24k = _sendResampler.Resample(audio48kHz);
+        var resampled24k = _sendResampler.Resample(resampled16k);
 
         int frameSize16k = _vad.RequiredFrameSize; // Silero VAD v5 仕様: 512 sample @ 16kHz (32ms)
         const int frameSize24k = 768;              // 同じ 32ms を 24kHz サンプルで表すと 768
@@ -1360,39 +1192,38 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                     SendFrameToClient(frame24kHz);
                     _vadState = VadState.InSpeech;
                     _lastSpeechUtc = DateTime.UtcNow;
-                    // v1.0.26: Silence → InSpeech 遷移 = 発話再開。 Silence カウントと commit フラグをリセット。
+                    // v1.0.27: Silence → InSpeech 遷移 = 発話再開。 Silence カウントをリセット。
                     _silenceStartUtc = DateTime.MinValue;
-                    _silenceCommitFired = false;
                 }
                 else
                 {
-                    // v1.0.26 ★ 能動的区切り (server gap 対策):
-                    // VAD Silence が SilenceFinalizeMs 継続 + partial が溜まっている場合、
-                    // input_audio_buffer.commit を試験送信 + partial を強制確定する。
-                    // ARC Raiders 等で OpenAI が delta を 30〜45 秒送ってこない問題への client 側対策。
-                    if (_silenceStartUtc != DateTime.MinValue && !_silenceCommitFired)
+                    // v1.0.27 ★ 無音 PCM 継続送信 (server gap 対策):
+                    //
+                    // OpenAI Realtime Translate API は continuous streaming model 前提で、 入力音声が
+                    // 来ない区間は server が delta 出力を保留する (2026-05-24 ログから事実確証)。
+                    // ゆろさん観察 (実機): VAD OFF で BGM が押し出してるから途切れない。
+                    // → VAD Silence 中も「無音 PCM (ゼロ埋め)」を送って入力継続をアピール → server が
+                    //   保留してた delta を吐き出す動きを期待。 これで「繰...」「り返す、10分」のような
+                    //   分断 (v1.0.26 で観測) も発生しない (同 SegmentId のまま partial が伸びる)。
+                    //
+                    // 送信時間上限: SilencePaddingMs (default 5000ms)。 超えたら送信停止して token 節約。
+                    // Silero VAD が次の発話を検知した瞬間に Silence → InSpeech 再遷移して通常送信に戻る。
+                    var paddingMs = _settingsMonitor.CurrentValue.OpenAIRealtime.SilencePaddingMs;
+                    if (paddingMs > 0 && _silenceStartUtc != DateTime.MinValue)
                     {
                         var silenceMs = (DateTime.UtcNow - _silenceStartUtc).TotalMilliseconds;
-                        var threshold = _settingsMonitor.CurrentValue.OpenAIRealtime.SilenceFinalizeMs;
-                        // threshold <= 0 で機能無効化を許容
-                        if (threshold > 0 && silenceMs >= threshold)
+                        if (silenceMs <= paddingMs)
                         {
-                            _silenceCommitFired = true;
-                            // partial が無ければ commit 送信もスキップ (server 状態を不必要に揺らさない)
-                            bool hasPartial;
-                            lock (_textLock) { hasPartial = _accumulatedText.Length > 0; }
-                            if (hasPartial)
-                            {
-                                Logger.Info($"VAD Silence 継続 {silenceMs:F0}ms >= {threshold}ms → commit 送信 + partial 強制確定");
-                                _realtimeClient.SendCommit();
-                                // 強制確定はバックグラウンドで実行 (VAD frame 処理ループを block しない)。
-                                _ = Task.Run(() => FinalizePendingPartial($"VAD Silence {silenceMs:F0}ms"));
-                            }
+                            // 無音 PCM を送信 (ゼロ埋め PCM16、 24kHz/768 sample = 1536 bytes)。
+                            // バイト配列を 1 度だけ確保して使い回す (中身ゼロのまま不変)。
+                            _silencePaddingPcm16 ??= new byte[frame24kHz.Length * 2];
+                            _realtimeClient.SendAudio(_silencePaddingPcm16);
+                            // 旧 _skippedSecondsByVad は加算しない (実際には送信してるため UI 表示も「送信中」のまま)
+                            break;
                         }
                     }
 
-                    // PreRoll に積む (古いものは押し出す = OpenAI 送信スキップとして秒数加算)。
-                    // 中身は送信用 24k フレーム (PreRoll 解除時にそのまま送信できるよう)。
+                    // 無音 PCM 送信時間を超過 (or 機能無効) → 従来通り PreRoll に積む。
                     while (_preRollBuffer.Count >= preRollCapacity)
                     {
                         _preRollBuffer.Dequeue();
@@ -1432,10 +1263,9 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                     {
                         _vadState = VadState.Silence;
                         _preRollBuffer.Clear();
-                        // v1.0.26: Hangover → Silence 遷移 = 発話終了候補。 Silence 開始時刻を記録して
-                        // 「SilenceFinalizeMs 継続したら能動的区切り」のカウント開始。
+                        // v1.0.27: Hangover → Silence 遷移 = 発話終了候補。 Silence 開始時刻を記録して
+                        // 「SilencePaddingMs 以内は無音 PCM 継続送信」のカウント開始。
                         _silenceStartUtc = DateTime.UtcNow;
-                        _silenceCommitFired = false;
                         // LSTM state は連続性が高い方が誤検出が減るためここでは Reset しない
                         // (Start 時にだけ Reset を呼ぶ)。
                     }
