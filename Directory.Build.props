@@ -21,8 +21,13 @@
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
     <!--
       CI ビルド時のみ lockfile を厳格モードで検証する（ローカル開発では新規パッケージ追加を許可）。
-      `$(ContinuousIntegrationBuild)` は GitHub Actions の `dotnet` 関連 step が暗黙設定する。
+      /rere 第2R #A2-006-R2 (v1.0.29 候補): `$(ContinuousIntegrationBuild)` は dotnet SDK が
+      自動設定しない場合があるため、 主要 CI 環境変数 (GITHUB_ACTIONS / TF_BUILD / CI) を明示的に
+      見て ContinuousIntegrationBuild を有効化する。 これで lockfile (packages.lock.json) の
+      contentHash 検証が「CI で確実に発火する」を構造的に保証 (lockfile drift 防御の死活)。
+      MSBuild の Condition は同 PropertyGroup 内で順次評価されるので、 ContinuousIntegrationBuild を先に立ててから RestoreLockedMode を判定。
     -->
+    <ContinuousIntegrationBuild Condition="'$(GITHUB_ACTIONS)' == 'true' or '$(TF_BUILD)' == 'true' or '$(CI)' == 'true'">true</ContinuousIntegrationBuild>
     <RestoreLockedMode Condition="'$(ContinuousIntegrationBuild)' == 'true'">true</RestoreLockedMode>
     <!-- bin/obj を Platform/TargetFramework を含めず 1 か所に統一（単一 TFM のため簡潔化） -->
     <BaseOutputPath>$(MSBuildProjectDirectory)\bin\</BaseOutputPath>

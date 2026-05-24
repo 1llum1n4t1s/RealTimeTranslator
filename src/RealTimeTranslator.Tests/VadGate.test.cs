@@ -228,65 +228,12 @@ public sealed class VadGateTests
     // ProcessAudioWithVadGate: フレーム切り出し / chunk 跨ぎ
     // ═══════════════════════════════════════════════════════════════
     //
-    // ⚠️ 2026-05-24 リファクタ (48k→16k/24k 並列リサンプル化) で ProcessAudioWithVadGate の
-    //   入力契約が「16k 直接」→「48k 入力 + 内部 2 系統ステートフルリサンプル」に変わったため、
-    //   旧テスト (16k フレームサイズ単位での推論回数を厳密検証) は意味を失った。
-    //   StreamingResampler の LatencyMargin (4ms) による初回 warmup で、48k 入力 1536 sample が
-    //   そのまま 1 推論にならないなど挙動が変わる。 状態機の本質的な検証は ProcessVadFrame
-    //   (16k+24k フレームペアを直接渡す) 経路の上記テスト群で維持されている。
-    //   下記 4 テストは設計変更後の「48k 入力 + warmup 許容」を考慮した統計的テストに
-    //   書き直す課題として残す (v1.0.24 以降で対応予定)。
-
-    [TestMethod]
-    [TestCategory("VadGate")]
-    [Ignore("48k入力リファクタ後の再設計待ち (LatencyMargin warmup を考慮した統計的テストに書き換え)")]
-    public void ProcessAudioWithVadGate_ExactFrameSize_OneInference()
-    {
-        var (pipeline, vad, _, settings) = Create();
-        vad.NextProb = 0.9f;
-        pipeline.ProcessAudioWithVadGate(new float[512], settings);
-        Assert.AreEqual(1, vad.InferenceCount);
-    }
-
-    [TestMethod]
-    [TestCategory("VadGate")]
-    [Ignore("48k入力リファクタ後の再設計待ち")]
-    public void ProcessAudioWithVadGate_MultipleOfFrameSize_MultipleInferences()
-    {
-        var (pipeline, vad, _, settings) = Create();
-        vad.NextProb = 0.9f;
-        pipeline.ProcessAudioWithVadGate(new float[1024], settings);
-        Assert.AreEqual(2, vad.InferenceCount);
-    }
-
-    [TestMethod]
-    [TestCategory("VadGate")]
-    [Ignore("48k入力リファクタ後の再設計待ち")]
-    public void ProcessAudioWithVadGate_NotAlignedToFrame_AccumulatesAcrossChunks()
-    {
-        var (pipeline, vad, _, settings) = Create();
-        vad.NextProb = 0.9f;
-        pipeline.ProcessAudioWithVadGate(new float[800], settings);
-        Assert.AreEqual(1, vad.InferenceCount, "800 サンプルでは 1 フレーム分のみ推論");
-        pipeline.ProcessAudioWithVadGate(new float[224], settings);
-        Assert.AreEqual(2, vad.InferenceCount, "chunk 跨ぎ後、 残り 288+224=512 で 1 推論");
-    }
-
-    [TestMethod]
-    [TestCategory("VadGate")]
-    [Ignore("48k入力リファクタ後の再設計待ち")]
-    public void ProcessAudioWithVadGate_SmallChunks_AccumulateUntilFrameReady()
-    {
-        var (pipeline, vad, _, settings) = Create();
-        vad.NextProb = 0.9f;
-        for (int i = 0; i < 5; i++)
-        {
-            pipeline.ProcessAudioWithVadGate(new float[100], settings);
-        }
-        Assert.AreEqual(0, vad.InferenceCount, "512 サンプル未満では推論されない");
-        pipeline.ProcessAudioWithVadGate(new float[12], settings);
-        Assert.AreEqual(1, vad.InferenceCount);
-    }
+    // /rere 第2R #B2-002-CONT (v1.0.29 候補): 旧 4 テスト削除。
+    // 2026-05-24 リファクタ (48k 入力 + StreamingResampler) で「16k 入力 + フレームサイズ厳密検証」は仕様変更により
+    // 意味を失い、 LatencyMargin (4ms) warmup を考慮した統計的書き直しが必要だが、 ProcessVadFrame 直接呼び出しテスト
+    // (上記の Silence / InSpeech / Hangover 状態機検証 + 無音 PCM 送信検証) で **状態機の本質的な検証は維持済み**。
+    // ProcessAudioWithVadGate の入力フレーム切り出しは StreamingResampler.test.cs と統合カバー範囲なので、
+    // 統計的テスト書き直しは v1.0.30 以降の改善余地として記録のみ (本ファイル削除して [Ignore] 残骸を撤去)。
 
     // ═══════════════════════════════════════════════════════════════
     // v1.0.27: VAD Silence 中の無音 PCM 継続送信 (server delta 引き出し対策)

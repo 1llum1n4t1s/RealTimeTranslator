@@ -82,6 +82,17 @@ public partial class App : Application
             ea.Handled = true;
         };
 
+        // /rere 第2R #F-R2-005 (v1.0.29 候補): AppDomain.ProcessExit に LoggerService.Shutdown を bind する。
+        // タスクマネージャからの「タスクの終了」、 Windows シャットダウン WM_ENDSESSION、 Velopack の Process.Kill
+        // 経路など、 UnhandledException が発火しない強制終了経路で SuperLightLogger 内部の async buffer 内のログが
+        // ディスクに書かれず消える問題を予防。 ハンドラ時間制限 (Windows カーネル側 2-3 秒) があるが Shutdown は
+        // flush 主体で短時間で済む。 既存 OnShutdownRequested 経路では LoggerService.Shutdown が既に呼ばれているので
+        // 二重呼び出しでも安全 (LogManager.Shutdown は idempotent + auto re-init)。
+        AppDomain.CurrentDomain.ProcessExit += (_, _) =>
+        {
+            try { LoggerService.Shutdown(); } catch { }
+        };
+
         try
         {
             // ログ出力先は Velopack 管理外の %APPDATA%/Roaming/RealTimeTranslator/logs に固定。
