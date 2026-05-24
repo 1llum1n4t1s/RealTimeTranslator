@@ -74,7 +74,23 @@ public sealed record TranslationLogEntry(
     private static string Sanitize(string? value)
     {
         if (string.IsNullOrEmpty(value)) return string.Empty;
+        // タブ・改行・CR を半角空白に正規化 (TSV の 1 行 1 エントリ保証)。
         // 個別 Replace を 3 回行うより 1 パスで置換する方が割安だが、 入力は通常 100 文字未満なので可読性優先。
-        return value.Replace('\t', ' ').Replace('\n', ' ').Replace('\r', ' ');
+        var s = value.Replace('\t', ' ').Replace('\n', ' ').Replace('\r', ' ');
+
+        // ⭐ Excel CSV インジェクション対策 (CWE-1236、 /rere #A2-001 / #A2-002)
+        // 先頭文字が `=`, `+`, `-`, `@` のいずれかなら先頭に `'` (シングルクォート) を付与する。
+        // OWASP 推奨パターン: Excel / Google スプレッドシートで TSV を開いた瞬間に
+        //   `=HYPERLINK("http://evil",X)` / `=cmd|'/C calc'!A0` / `@SUM(1+9)*cmd|...`
+        // のような数式 / DDE / 任意 URL アクセスが発火するのを防ぐ。
+        // 翻訳テキスト本体 (Text) だけでなく ProcessName (FileVersionInfo.ProductName)
+        // も攻撃者制御可能 (任意 MOD exe が「=HYPERLINK(...)」を name に持てる) なので
+        // 全フィールド (Language / SessionId / ProcessName / Text) で同じ防御を適用する。
+        char first = s[0];
+        if (first == '=' || first == '+' || first == '-' || first == '@')
+        {
+            return "'" + s;
+        }
+        return s;
     }
 }

