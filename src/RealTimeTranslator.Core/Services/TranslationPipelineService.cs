@@ -100,16 +100,24 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     // EnableVad=false の場合は素通し (旧挙動)。
     private enum VadState { Silence, InSpeech, Hangover }
     private readonly IVoiceActivityDetector _vad;
-    // 16kHz→24kHz ストリーミングリサンプラ。 セッション内で 1 個だけ保持し、 VADゲート/VAD無効の
-    // 両パスの送信音声をこれ経由でリサンプルする。 フレーム単位の個別リサンプル (旧実装) が起こす
-    // フレーム境界のクリックノイズ (2026-05-23 実証: 振幅最大 90% のスパイクが 32ms ごとに挿入され
-    // OpenAI の文境界検出を破壊) を排除するため、 フィルタ状態を引き継ぐ単一インスタンスを使う。
-    private readonly StreamingResampler _streamingResampler = new();
-    // 16kHz / 32ms = 512 samples ごとに切り出すための accumulator (audio chunk 境界とフレーム
-    // 境界がズレるため、 残ったサンプルを次 chunk と結合して使う)。
+    // ⭐ 2 系統ストリーミングリサンプラ:
+    //   _vadResampler  (48k→16k): VAD (Silero v5 16kHz/512sample 固定仕様) の判定用
+    //   _sendResampler (48k→24k): OpenAI 送信用 (24kHz/mono PCM16)
+    // 旧設計は AudioCaptureService 内で 48k→16k リサンプルしてから TranslationPipelineService 側で
+    // 16k→24k と二段ダウンサンプル/アップサンプルしており、 高域情報を一度 16k まで削ってから
+    // 24k に水増しする情報損失があった。 入力 48k から 24k に直結することで音質劣化を最小化する。
+    // 両リサンプラは LatencyMargin を時間ベース (4ms) に揃えてあり、 16k 512sample = 24k 768sample
+    // = 同じ 32ms フレームとして時間同期できる (2026-05-24 改修)。
+    private readonly StreamingResampler _vadResampler = new(48000, 16000);
+    private readonly StreamingResampler _sendResampler = new(48000, 24000);
+    // 16kHz / 32ms = 512 samples ごとに切り出すための VAD用 accumulator。
+    // 24kHz / 32ms = 768 samples ごとに切り出すための送信用 accumulator (同じ時間区間に対応)。
     private float[]? _frameAccumulator;
     private int _frameAccumulatorLen;
-    // 発話冒頭の取りこぼし防止用に直近フレームを保持するリングバッファ。
+    private float[]? _frameAccumulator24k;
+    private int _frameAccumulator24kLen;
+    // 発話冒頭の取りこぼし防止用に直近フレームを保持するリングバッファ。 中身は送信用 24k フレーム
+    // (旧 16k から変更)。 VAD 判定は 16k で行うが PreRoll に積むのは送信フレームなので 24k で持つ。
     private readonly Queue<float[]> _preRollBuffer = new();
     private VadState _vadState = VadState.Silence;
     private int _hangoverFramesRemaining;
@@ -236,13 +244,16 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         // 旧セッションの hidden state / preroll が残っていると、 開始直後の判定が
         // ブレるので必ずここで初期化する。
         _vad.Reset();
-        // リサンプラのフィルタ状態 + 未消費入力を完全クリア (前セッションの残響を持ち越さない)。
-        _streamingResampler.Reset();
+        // 2 系統リサンプラのフィルタ状態 + 未消費入力を完全クリア (前セッションの残響を持ち越さない)。
+        _vadResampler.Reset();
+        _sendResampler.Reset();
         _preRollBuffer.Clear();
         _vadState = VadState.Silence;
         _hangoverFramesRemaining = 0;
         _frameAccumulator = null;
         _frameAccumulatorLen = 0;
+        _frameAccumulator24k = null;
+        _frameAccumulator24kLen = 0;
         _skippedSecondsByVad = 0;
         _sessionStartUtc = DateTime.UtcNow;
         _lastSpeechUtc = DateTime.UtcNow;
@@ -416,9 +427,9 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                     var audioCaptureSettings = _settingsMonitor.CurrentValue.AudioCapture;
                     if (!audioCaptureSettings.EnableVad)
                     {
-                        // VAD 無効: 旧パス (素通し送信)。 後方互換 & 緊急時の VAD バイパス用。
-                        // VADゲートパスと同じストリーミングリサンプラ経由で chunk 間の連続性も保つ。
-                        var resampled = _streamingResampler.Resample(audioData);
+                        // VAD 無効: 素通し送信。 入力 48kHz/mono を 24kHz にステートフルリサンプル
+                        // (48→24 は 2:1 関係でリサンプル品質良好、 旧 48→16→24 二段の情報損失を回避)。
+                        var resampled = _sendResampler.Resample(audioData);
                         if (resampled.Length > 0)
                         {
                             var pcm16 = AudioFormatConverter.Float32ToPcm16(resampled);
@@ -427,8 +438,9 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                     }
                     else
                     {
-                        // VAD 有効: 16kHz raw audio を 512 サンプル単位でフレーム化 → speech 判定 →
-                        // 発話区間のみ送信。 PreRoll + Hangover で発話冒頭/末尾の取りこぼし防止。
+                        // VAD 有効: 48kHz raw audio を 16k (VAD判定用) + 24k (送信用) に同時リサンプル
+                        // → 32ms 単位でフレームペア化 → VAD speech 判定区間のみ 24k フレーム送信。
+                        // PreRoll + Hangover で発話冒頭/末尾の取りこぼし防止。
                         ProcessAudioWithVadGate(audioData, audioCaptureSettings);
                     }
                 }
@@ -1171,28 +1183,51 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     /// ズレるため、 _frameAccumulator に残り部分を保持して次 chunk と結合する。
     /// テスト目的で internal (InternalsVisibleTo=RealTimeTranslator.Tests)。
     /// </summary>
-    internal void ProcessAudioWithVadGate(float[] audio16kHz, AudioCaptureSettings settings)
+    internal void ProcessAudioWithVadGate(float[] audio48kHz, AudioCaptureSettings settings)
     {
-        int frameSize = _vad.RequiredFrameSize;
-        if (_frameAccumulator is null || _frameAccumulator.Length != frameSize)
-        {
-            _frameAccumulator = new float[frameSize];
-            _frameAccumulatorLen = 0;
-        }
+        // 48kHz 入力を VAD 用 (16k) と送信用 (24k) に同時ステートフルリサンプル。
+        // 両リサンプラは LatencyMargin を時間ベース (4ms) に揃えてあるので出力は時間同期し、
+        // 16k 512sample (32ms) と 24k 768sample (32ms) を「同じ時間区間の VAD フレームペア」
+        // として取り出せる。 16k で VAD 判定し、 対応する 24k フレームを送信・PreRoll に使う。
+        var resampled16k = _vadResampler.Resample(audio48kHz);
+        var resampled24k = _sendResampler.Resample(audio48kHz);
 
-        int offset = 0;
-        while (offset < audio16kHz.Length)
-        {
-            int copy = Math.Min(frameSize - _frameAccumulatorLen, audio16kHz.Length - offset);
-            Array.Copy(audio16kHz, offset, _frameAccumulator, _frameAccumulatorLen, copy);
-            _frameAccumulatorLen += copy;
-            offset += copy;
+        int frameSize16k = _vad.RequiredFrameSize; // Silero VAD v5 仕様: 512 sample @ 16kHz (32ms)
+        const int frameSize24k = 768;              // 同じ 32ms を 24kHz サンプルで表すと 768
 
-            if (_frameAccumulatorLen == frameSize)
+        _frameAccumulator ??= new float[frameSize16k];
+        _frameAccumulator24k ??= new float[frameSize24k];
+
+        int off16 = 0, off24 = 0;
+        while (true)
+        {
+            // 16k 側を accumulator に積む
+            int copy16 = Math.Min(frameSize16k - _frameAccumulatorLen, resampled16k.Length - off16);
+            if (copy16 > 0)
             {
-                ProcessVadFrame(_frameAccumulator, settings);
-                _frameAccumulatorLen = 0;
+                Array.Copy(resampled16k, off16, _frameAccumulator, _frameAccumulatorLen, copy16);
+                _frameAccumulatorLen += copy16;
+                off16 += copy16;
             }
+            // 24k 側も同様
+            int copy24 = Math.Min(frameSize24k - _frameAccumulator24kLen, resampled24k.Length - off24);
+            if (copy24 > 0)
+            {
+                Array.Copy(resampled24k, off24, _frameAccumulator24k, _frameAccumulator24kLen, copy24);
+                _frameAccumulator24kLen += copy24;
+                off24 += copy24;
+            }
+
+            // 両方のフレームが揃ったらペアで処理
+            if (_frameAccumulatorLen == frameSize16k && _frameAccumulator24kLen == frameSize24k)
+            {
+                ProcessVadFrame(_frameAccumulator, _frameAccumulator24k, settings);
+                _frameAccumulatorLen = 0;
+                _frameAccumulator24kLen = 0;
+                continue; // 次のフレームペアを処理
+            }
+            // 進捗無し (src 消費しきり、 両アキュも未満) → 次の chunk まで待つ
+            if (copy16 == 0 && copy24 == 0) break;
         }
     }
 
@@ -1200,7 +1235,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     /// 1 フレーム (512 サンプル / 32ms) を VAD で判定し、 Silence/InSpeech/Hangover 状態機を回す。
     /// テスト目的で internal (InternalsVisibleTo=RealTimeTranslator.Tests)。
     /// </summary>
-    internal void ProcessVadFrame(float[] frame16kHz, AudioCaptureSettings settings)
+    internal void ProcessVadFrame(float[] frame16kHz, float[] frame24kHz, AudioCaptureSettings settings)
     {
         float prob;
         try
@@ -1211,7 +1246,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         {
             // VAD 推論失敗時は安全側 (= 送信) に倒し、 誤って発話を捨てない。
             Logger.Warn($"VAD 推論失敗 (発話と見なして素通し): {ex.Message}");
-            SendFrameToClient(frame16kHz);
+            SendFrameToClient(frame24kHz);
             _lastSpeechUtc = DateTime.UtcNow;
             return;
         }
@@ -1230,32 +1265,33 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
             case VadState.Silence:
                 if (isSpeech)
                 {
-                    // PreRoll バッファを丸ごと送信して発話冒頭の取りこぼしを補う。
+                    // PreRoll バッファ (24k フレーム) を丸ごと送信して発話冒頭の取りこぼしを補う。
                     while (_preRollBuffer.Count > 0)
                     {
                         var preRollFrame = _preRollBuffer.Dequeue();
                         SendFrameToClient(preRollFrame);
                     }
-                    SendFrameToClient(frame16kHz);
+                    SendFrameToClient(frame24kHz);
                     _vadState = VadState.InSpeech;
                     _lastSpeechUtc = DateTime.UtcNow;
                 }
                 else
                 {
                     // PreRoll に積む (古いものは押し出す = OpenAI 送信スキップとして秒数加算)。
+                    // 中身は送信用 24k フレーム (PreRoll 解除時にそのまま送信できるよう)。
                     while (_preRollBuffer.Count >= preRollCapacity)
                     {
                         _preRollBuffer.Dequeue();
                         _skippedSecondsByVad += frameSeconds;
                     }
-                    var copy = new float[frame16kHz.Length];
-                    Array.Copy(frame16kHz, copy, frame16kHz.Length);
+                    var copy = new float[frame24kHz.Length];
+                    Array.Copy(frame24kHz, copy, frame24kHz.Length);
                     _preRollBuffer.Enqueue(copy);
                 }
                 break;
 
             case VadState.InSpeech:
-                SendFrameToClient(frame16kHz);
+                SendFrameToClient(frame24kHz);
                 if (isSpeech)
                 {
                     _lastSpeechUtc = DateTime.UtcNow;
@@ -1268,7 +1304,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                 break;
 
             case VadState.Hangover:
-                SendFrameToClient(frame16kHz);
+                SendFrameToClient(frame24kHz);
                 if (isSpeech)
                 {
                     _vadState = VadState.InSpeech;
@@ -1291,12 +1327,10 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     }
 
     /// <summary>VAD ゲート通過分のフレームを 24kHz PCM16 に変換して OpenAI へ送信。</summary>
-    private void SendFrameToClient(float[] frame16kHz)
+    private void SendFrameToClient(float[] frame24kHz)
     {
-        // ストリーミングリサンプラ経由でフィルタ状態を引き継ぎ、 フレーム境界アーティファクトを回避。
-        var resampled = _streamingResampler.Resample(frame16kHz);
-        if (resampled.Length == 0) return; // warmup 等で出力が次回に持ち越されたケース
-        var pcm16 = AudioFormatConverter.Float32ToPcm16(resampled);
+        // 24kHz フレームを直接 PCM16 化して送信 (リサンプル不要、 _sendResampler 側で既に 24k 化済み)。
+        var pcm16 = AudioFormatConverter.Float32ToPcm16(frame24kHz);
         _realtimeClient.SendAudio(pcm16);
     }
 

@@ -95,15 +95,18 @@ internal sealed class BufferSampleProvider : ISampleProvider
 /// </summary>
 public sealed class StreamingResampler
 {
-    private const int SourceSampleRate = 16000;
-    private const int TargetSampleRate = 24000;
     // WDL の sinc 補間先読みぶん (出力ドメイン)。 各フレームでこのぶんの末尾を次回に保留し、
     // 先読み入力が揃ってから出力することで境界アーティファクトを排除する。
-    // ≒2.7ms 相当 (24kHz の 64 サンプル)。 リアルタイム性への影響は無視できる。
-    private const int LatencyMarginOut = 64;
-    private static readonly WaveFormat InputFormat = WaveFormat.CreateIeeeFloatWaveFormat(SourceSampleRate, 1);
+    // ⭐ targetSampleRate に比例させて「時間ぶん」を一定 (4ms) に揃える。
+    // これにより複数の StreamingResampler (例: 48k→16k VAD用 + 48k→24k 送信用) を並列に
+    // 動かしたとき、 出力の時間遅延が揃って 16k フレームと 24k フレームをペアリングできる。
+    // (旧 LatencyMarginOut=64 固定では 16k=4ms / 24k=2.7ms と遅延が違って同期がずれていた。)
+    private const int LatencyMarginMs = 4;
 
-    private readonly QueueSource _source = new(InputFormat);
+    private readonly int _sourceSampleRate;
+    private readonly int _targetSampleRate;
+    private readonly int _latencyMarginOut; // = _targetSampleRate * LatencyMarginMs / 1000
+    private readonly QueueSource _source;
     private WdlResamplingSampleProvider _resampler;
     // 累積カウンタで出力を駆動する。 「総入力に対応すべき総出力 − 既出力」だけを
     // 要求することで、 WDL が先読み (sinc 補間の未来サンプル) 不足のまま末尾を近似で
@@ -111,9 +114,15 @@ public sealed class StreamingResampler
     private long _totalInSamples;
     private long _totalOutSamples;
 
-    public StreamingResampler()
+    /// <param name="sourceSampleRate">入力サンプリングレート (既定 16000)</param>
+    /// <param name="targetSampleRate">出力サンプリングレート (既定 24000)</param>
+    public StreamingResampler(int sourceSampleRate = 16000, int targetSampleRate = 24000)
     {
-        _resampler = new WdlResamplingSampleProvider(_source, TargetSampleRate);
+        _sourceSampleRate = sourceSampleRate;
+        _targetSampleRate = targetSampleRate;
+        _latencyMarginOut = targetSampleRate * LatencyMarginMs / 1000;
+        _source = new QueueSource(WaveFormat.CreateIeeeFloatWaveFormat(sourceSampleRate, 1));
+        _resampler = new WdlResamplingSampleProvider(_source, targetSampleRate);
     }
 
     /// <summary>
@@ -136,8 +145,8 @@ public sealed class StreamingResampler
         // ただし末尾 LatencyMarginOut サンプルは保留して次回に回す。 こうしないと WDL が
         // source 枯渇時に sinc 先読み不足のまま末尾を近似で埋めてしまい、 フレーム境界に
         // 誤差が残る。 保留ぶんは次フレーム到着後 (先読み入力が揃ってから) 正確に出力される。
-        var targetTotalOut = _totalInSamples * TargetSampleRate / SourceSampleRate;
-        var wantOut = (int)(targetTotalOut - _totalOutSamples) - LatencyMarginOut;
+        var targetTotalOut = _totalInSamples * _targetSampleRate / _sourceSampleRate;
+        var wantOut = (int)(targetTotalOut - _totalOutSamples) - _latencyMarginOut;
         if (wantOut <= 0) return [];
 
         var output = new float[wantOut];
@@ -163,7 +172,7 @@ public sealed class StreamingResampler
         _source.Clear();
         _totalInSamples = 0;
         _totalOutSamples = 0;
-        _resampler = new WdlResamplingSampleProvider(_source, TargetSampleRate);
+        _resampler = new WdlResamplingSampleProvider(_source, _targetSampleRate);
     }
 
     /// <summary>

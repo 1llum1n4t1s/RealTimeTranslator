@@ -166,6 +166,51 @@ public sealed class StreamingResamplerTests
             Assert.AreEqual(freshOut[i], reusedOut[i], 1e-6f, $"Reset 後の出力が位置 {i} で不一致。");
     }
 
+    /// <summary>
+    /// 入力側リサンプラ (WASAPI 48kHz/2ch → 16kHz/mono) の境界アーティファクト排除テスト。
+    /// WASAPI チャンクは約 10ms (480 サンプル @ 48kHz)。 旧 AudioCaptureService.Resample は
+    /// チャンクごとに WdlResamplingSampleProvider を新規生成しており、 100Hz 周期で境界クリック
+    /// ノイズが入り ARC Raiders 等の動的音声で VAD/STT を断続的に騙していた (2026-05-24 確定)。
+    /// StreamingResampler を汎用化 (sourceRate/targetRate 引数) して同じパターンで修正できる
+    /// ことを実証する回帰テスト。
+    /// </summary>
+    [TestMethod]
+    public void Resample_48kTo16k_StreamingPreservesContinuity()
+    {
+        const int sourceRate = 48000;
+        const int targetRate = 16000;
+        const int wasapiChunk = 480; // 48kHz × 10ms
+        const int chunks = 12;
+        const int n = wasapiChunk * chunks;
+
+        var signal = new float[n];
+        for (int i = 0; i < n; i++)
+            signal[i] = (float)Math.Sin(2 * Math.PI * 440 * i / sourceRate);
+
+        // (A) 連続: 全体を 1 個のリサンプラに渡す (正解)
+        var continuousResampler = new StreamingResampler(sourceRate, targetRate);
+        var continuous = continuousResampler.Resample(signal);
+
+        // (B) ステートフル: 同じインスタンスにチャンクずつ流す (= 修正後の AudioCaptureService 動作)
+        var streamingResampler = new StreamingResampler(sourceRate, targetRate);
+        var streamed = new List<float>();
+        for (int off = 0; off < n; off += wasapiChunk)
+        {
+            var chunk = new float[wasapiChunk];
+            Array.Copy(signal, off, chunk, 0, wasapiChunk);
+            streamed.AddRange(streamingResampler.Resample(chunk));
+        }
+
+        // ステートフル供給なら連続リサンプルとほぼ完全一致する (= 境界アーティファクトなし)
+        int compareLen = Math.Min(continuous.Length, streamed.Count);
+        double maxDiff = 0;
+        for (int i = 0; i < compareLen; i++)
+            maxDiff = Math.Max(maxDiff, Math.Abs(continuous[i] - streamed[i]));
+
+        Assert.IsTrue(maxDiff < 1e-4,
+            $"48k→16k ステートフルストリーミングが連続リサンプルと乖離 (最大誤差={maxDiff:F6})。 入力側境界アーティファクトの疑い。");
+    }
+
     [TestMethod]
     public void Resample_EmptyInput_ReturnsEmpty()
     {

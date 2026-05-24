@@ -433,17 +433,20 @@ public class AudioCaptureService : IAudioCaptureService
                 }
             }
 
-            // バッファに追加（VAD用）
+            // バッファに追加。
+            // ⭐ 出力契約: WASAPI ネイティブレート (通常 48kHz) のモノラル float[] を発火する。
+            // 旧設計は AudioCaptureService 内で 48k→16k リサンプルしていたが、 送信経路が
+            // 48k→16k→24k と二段でリサンプル/ダウンサンプルする情報損失があった。 さらに
+            // チャンク境界 (~10ms) で WdlResamplingSampleProvider 新規生成による振幅最大 90% の
+            // クリックノイズが入り、 ARC Raiders 等の動的音声で VAD/STT を断続的に騙していた。
+            // この層では mono 化 (StereoToMono) と 48k 切り出しだけ行い、 リサンプルは
+            // TranslationPipelineService 側で「48k→16k (VAD判定用)」「48k→24k (送信用)」の
+            // 2 経路に分岐させてステートフル StreamingResampler で行う (2026-05-24)。
             lock (_bufferLock)
             {
-                var targetSampleRate = _settings.SampleRate;
+                var sampleRate = sourceFormat.SampleRate;
 
-                // VAD用のリサンプリング済みサンプルを準備
-                var resampledForVad = sourceFormat.SampleRate != targetSampleRate
-                    ? Resample(samples, sourceFormat.SampleRate, targetSampleRate)
-                    : samples;
-
-                foreach (var s in resampledForVad)
+                foreach (var s in samples)
                 {
                     _audioBuffer.Enqueue(s);
                 }
@@ -460,7 +463,7 @@ public class AudioCaptureService : IAudioCaptureService
                 }
 
                 // 一定量のデータが溜まったらイベントを発火（Queue.Dequeue は O(1)）
-                var samplesPerChunk = targetSampleRate * AudioChunkDurationMs / 1000;
+                var samplesPerChunk = sampleRate * AudioChunkDurationMs / 1000;
                 while (_audioBuffer.Count >= samplesPerChunk)
                 {
                     var chunk = new float[samplesPerChunk];
@@ -538,22 +541,9 @@ public class AudioCaptureService : IAudioCaptureService
         return ConvertToMono(allSamples.AsSpan(0, totalRead).ToArray(), format.Channels);
     }
 
-    /// <summary>
-    /// NAudio の WdlResamplingSampleProvider でリサンプリングする。
-    /// </summary>
-    private float[] Resample(float[] samples, int sourceSampleRate, int targetSampleRate)
-    {
-        if (sourceSampleRate == targetSampleRate)
-            return samples;
-
-        var inputFormat = WaveFormat.CreateIeeeFloatWaveFormat(sourceSampleRate, MonoChannelCount);
-        var inputProvider = new BufferSampleProvider(samples, inputFormat);
-        var resampler = new WdlResamplingSampleProvider(inputProvider, targetSampleRate);
-        var outputCount = (int)(samples.Length * (double)targetSampleRate / sourceSampleRate);
-        var output = new float[outputCount];
-        var read = resampler.Read(output, 0, outputCount);
-        return read == outputCount ? output : output.AsSpan(0, read).ToArray();
-    }
+    // 旧 Resample(samples, sourceRate, targetRate) は削除。
+    // チャンクごとに WdlResamplingSampleProvider を新規生成する設計が境界クリックノイズの
+    // 元凶だったため StreamingResampler 経由に置き換え済み (2026-05-24)。
 
     /// <summary>
     /// マルチチャンネルをモノラルにダウンミックス（平均）。2ch は ConvertToFloat 内で StereoToMonoSampleProvider を使用するため、主に 3ch 以上で使用。
