@@ -74,11 +74,42 @@ jobs:
             uploaded=$((uploaded + 1))
           done
           echo "✅ R2 アップロード完了: $uploaded ファイル"
-      - name: Verify delivery (releases.win-x64.json の HTTP 200 を検証)
+      - name: Verify delivery (releases.win-x64.json + 全 .nupkg の HEAD 検証)
+        # /rere 第2R #A2-008 + #F-R2-004 (v1.0.29 候補): releases.json の HTTP 200 だけでなく
+        # 該当する全 .nupkg を HEAD で到達性確認し、 R2 部分アップロード失敗時の中間状態露出を防ぐ。
+        # 「json は新版示すが該当 nupkg が 404」状態を CI 緑にしてしまう旧実装の問題を構造的に解消。
         run: |
           set -euo pipefail
-          url="https://rtt.nephilim.jp/releases.win-x64.json"
+          base="https://rtt.nephilim.jp"
+
+          # 1. releases.win-x64.json 自体の取得 (HTTP 200 + 中身があることを検証)
+          json_url="${base}/releases.win-x64.json"
+          echo "::group::releases.win-x64.json GET"
           curl --fail --silent --show-error --max-time 30 \
                --retry 3 --retry-delay 5 --retry-all-errors \
-               -o /dev/null -w "HTTP %{http_code} (%{size_download} bytes)\n" \
-               "$url"
+               -o /tmp/releases.json -w "HTTP %{http_code} (%{size_download} bytes)\n" \
+               "$json_url"
+          echo "::endgroup::"
+
+          # 2. ローカルにアップロードした packages/ 配下の全ファイル名を抽出し、
+          #    各 .nupkg / Setup.exe について R2 上の HEAD 検証 (404 が無いことを保証)。
+          failed=0
+          for f in packages/*; do
+            name=$(basename "$f")
+            url="${base}/${name}"
+            echo "::group::HEAD ${name}"
+            if ! curl --fail --silent --show-error --head --max-time 15 \
+                      --retry 2 --retry-delay 3 --retry-all-errors \
+                      -o /dev/null -w "HTTP %{http_code} (%{size_download} bytes)\n" \
+                      "$url"; then
+              echo "::error::R2 配信物が見つかりません: $url"
+              failed=$((failed + 1))
+            fi
+            echo "::endgroup::"
+          done
+
+          if [ "$failed" -gt 0 ]; then
+            echo "::error::配信検証失敗 — ${failed} 件の .nupkg / Setup.exe が R2 から取得できません。 手動で wrangler r2 object list を確認してください。"
+            exit 1
+          fi
+          echo "✅ 配信検証完了: 全 $(ls packages/ | wc -l) ファイルが R2 から到達可能"
