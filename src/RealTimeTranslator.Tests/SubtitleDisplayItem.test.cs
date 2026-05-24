@@ -7,11 +7,14 @@ namespace RealTimeTranslator.Tests;
 /// <summary>
 /// SubtitleDisplayItem (OverlayViewModel 内の字幕表示エンティティ) の表示寿命ロジックを検証する。
 ///
-/// v1.0.24 partial 連結方式の核心バグ修正:
-///  - 旧実装は partial / final 問わず DisplayDuration (5秒) 経過で字幕が消えていた
-///  - 2026-05-24 ゆろさん観察: 「あれは一生忘れません。」確定後、 partial「そ」が 5 秒で消えてしまう
-///  - TranslationPipelineService が最大寿命 45 秒で partial 連結を維持しても、 UI が 5 秒で消すと意味がない
-///  - 新実装: partial は永続表示 (次 Update or 確定まで)、 final のみ DisplayDuration カウントダウン
+/// 現行 (v1.0.27 以降): partial / final 問わず DisplayDuration (5 秒) 経過で字幕が消える。
+/// 経緯 (歴史):
+///  - 〜v1.0.23: partial / final 問わず DisplayDuration 経過で消える (現行と同じ挙動)
+///  - v1.0.24-26: partial 連結方式の核心バグ修正で「partial は永続表示」に変更
+///    (確定字幕後の partial「そ」が 5 秒で消える UX 違和感への対策)
+///  - v1.0.27: 「無音 PCM 5 秒継続送信」戦略 (#D-001) で server gap 自体を解消できるため、
+///    partial 連結方式は削除。 旧 v1.0.23 以前と同じ「両方 DisplayDuration で消える」挙動に巻き戻し。
+///  - v1.0.28 実機検証で完結文 emit 11 件発生して #D-001 戦略採用確定、 巻き戻しが正解と判明。
 /// </summary>
 [TestClass]
 public class SubtitleDisplayItemTests

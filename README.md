@@ -11,7 +11,7 @@ Windows 向けのリアルタイム字幕翻訳デスクトップアプリです
 - **半透明オーバーレイ字幕**: 透過・最前面・クリック透過対応の Avalonia ウィンドウに字幕を表示します。フォント・色・表示時間・行数を設定で調整可能。
 - **日本語フォント同梱**: 字幕に最適な日本語フォント 5 種類 (IBM Plex Sans JP / Noto Sans JP / LINE Seed JP / Zen Maru Gothic / M PLUS Rounded 1c) を OFL 1.1 ライセンスで同梱しており、 OS にフォントが入っていなくても綺麗な字幕表示が可能です。
 - **背景色 12 種類**: 字幕の見やすさをシーンに合わせて選べる多色背景 (黒 3 段階 / 白 / 灰 / 濃紺 / 濃緑 / 濃赤 / 茶 / 紫 / 透明 等)。 枠色は背景の輝度から自動派生して常に視認性を保ちます。
-- **発話の自然な区切り**: 句点 (`。！？.!?`) でセグメントを区切り、 句点が来ない長文に対しては読点フォールバック (100 文字超で「、」分割) で字幕が無限成長する UX バグを防ぎます。
+- **発話の自然な区切り**: 句点 (`。！？.!?`) でセグメントを区切り、 句点が来ない長文に対しては読点フォールバック (`MaxPartialChars`=80 文字超で「、」「,」/ 空白 / 閾値位置の優先順で強制分割。 v1.0.28 で復活した D-7 fallback) で字幕が無限成長する UX バグを防ぎます。
 - **VAD ゲート + コスト見える化**: Silero VAD (ONNX, 16kHz/512 サンプル) で人の声らしさを判定し、 無音区間の送信を抑制して OpenAI Realtime API の課金を削減します。 プリセット (Balanced / 頭尻尾重視 / 節約重視 / Custom) を用意。 セッションの経過時間 / 推定入力トークン / 推定コスト (USD) / VAD 節約秒数をリアルタイム表示します。
 - **翻訳ログ**: 確定字幕を `%APPDATA%\RealTimeTranslator\logs\translations\TranslationLog_YYYYMMDD.tsv` に TSV 形式で永続化し、 ADV ゲーム風の会話ログ画面で閲覧できます (保持期間 0=無制限 / 7 / 30 / 90 / 180 / 365 日を設定で選択)。
 - **自動アップデート**: Velopack による Cloudflare R2 経由 (`SimpleWebSource`) の自動更新に対応します。起動時に 1 回だけ自動チェック (30 秒タイムアウト)、 周期チェックなし、 「このバージョンを無視」で次回起動時もスキップ可能、 手動チェックはバージョンタブの「更新の確認」ボタンから。
@@ -20,10 +20,11 @@ Windows 向けのリアルタイム字幕翻訳デスクトップアプリです
 ## システム構成
 
 ```
-プロセス音声 (WASAPI Loopback)
-  ↓ 16kHz mono float32
+プロセス音声 (WASAPI Loopback、 native rate 48kHz/2ch)
+  ↓ StereoToMono
 TranslationPipelineService
-  ↓ resample 16k→24k + Float32→PCM16
+  ↓ StreamingResampler 48k→16k (VAD 判定用) + 16k→24k (送信用) を 1 系統二段で直列処理 (v1.0.27)
+  ↓ Float32→PCM16
 OpenAIRealtimeClient (WebSocket / wss://api.openai.com/v1/realtime/translations)
   ↓ response.output_audio_transcript.delta / .done
 SubtitleGenerated event

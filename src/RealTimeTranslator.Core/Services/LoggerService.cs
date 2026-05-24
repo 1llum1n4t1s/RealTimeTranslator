@@ -157,6 +157,37 @@ public static class LoggerService
 
             CleanupStaleFile(Path.Combine(effectiveConfig.LogDirectory, "0"));
             CleanupOldLogFiles(effectiveConfig.LogDirectory, effectiveConfig.FilePrefix, effectiveConfig.RetentionDays);
+
+            // /rere 第2R #F-R2-001 (v1.0.29 候補): 日次 cleanup タイマー起動。
+            // 旧実装は Initialize で 1 回だけ cleanup を実行 → 24h+ 連続稼働環境 (ゆろさんの配信用 PC 等) で
+            // 保持期間 (RetentionDays=7) を経過してもファイルが残り Roaming AppData 肥大化していた。
+            // 1 時間周期で日付変わりを検出して再 cleanup する Task を起動する。
+            // Shutdown で _isConfigured=0 になると while 条件で自然終了するので明示停止不要。
+            var captureLogDir = effectiveConfig.LogDirectory;
+            var capturePrefix = effectiveConfig.FilePrefix;
+            var captureDays = effectiveConfig.RetentionDays;
+            _ = Task.Run(async () =>
+            {
+                var lastCleanupDate = DateTime.Now.Date;
+                while (Volatile.Read(ref _isConfigured) == 1)
+                {
+                    try { await Task.Delay(TimeSpan.FromHours(1)).ConfigureAwait(false); }
+                    catch { break; }
+                    if (Volatile.Read(ref _isConfigured) != 1) break;
+
+                    var today = DateTime.Now.Date;
+                    if (today != lastCleanupDate)
+                    {
+                        lastCleanupDate = today;
+                        try { CleanupOldLogFiles(captureLogDir, capturePrefix, captureDays); }
+                        catch (Exception ex)
+                        {
+                            try { Log($"Daily cleanup error: {ex.Message}", LogLevel.Warning); }
+                            catch { /* logger 自身が壊れていれば諦める */ }
+                        }
+                    }
+                }
+            });
         }
         catch
         {
