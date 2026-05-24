@@ -916,6 +916,12 @@
                                     <Button Command="{Binding OpenSettingsFolderCommand}"
                                             Content="設定フォルダを開く" FontSize="12"/>
                                 </StackPanel>
+                                <!-- /rere #F-002: ログには翻訳テキストの先頭 40 文字スニペットが含まれる。
+                                     GitHub Issues 等への共有前にユーザーへ警告を表示する。 -->
+                                <TextBlock Margin="0,10,0,0" FontSize="11"
+                                           Foreground="{DynamicResource Brush.Error}"
+                                           Text="⚠️ ログには翻訳テキストの先頭 40 文字が含まれます。 GitHub Issues 等で共有する前に内容を確認してください。"
+                                           TextWrapping="Wrap"/>
                             </StackPanel>
                         </Border>
 
