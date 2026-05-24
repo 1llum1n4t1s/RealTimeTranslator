@@ -54,16 +54,22 @@ public sealed class VadGateTests
             SentAudioByteLengths.Add(pcm16Audio.Length);
             TotalAudioInputSamples24kHz += pcm16Audio.Length / 2;
         }
+        // v1.0.26: VAD Silence で commit 試験送信が呼ばれることを検証するカウンタ。
+        public int SendCommitCallCount { get; private set; }
+        public void SendCommit() => SendCommitCallCount++;
         public Task DisconnectAsync() => Task.CompletedTask;
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
         public void Dispose() { }
+        // v1.0.26: partial 蓄積テスト用に delta を直接発火するヘルパー (TranslationPipelineService.OnTranscriptDelta を起動)。
+        public void RaiseDelta(string delta) => TranscriptDeltaReceived?.Invoke(delta);
     }
 
     // TestAudioCaptureService / TestSettingsService / StubOptionsMonitor は TestDoubles.cs に共通化。
 
     private static (TranslationPipelineService pipeline, ControllableVadDetector vad, RecordingTranscriber transcriber, AudioCaptureSettings vadSettings) Create(
         int preRollMs = 384,  // 384/32 = 12 frames
-        int hangoverMs = 192) // 192/32 = 6 frames
+        int hangoverMs = 192, // 192/32 = 6 frames
+        int silenceFinalizeMs = 2000) // v1.0.26: VAD Silence 継続 → commit + 強制確定の閾値 (テストでは短くする)
     {
         var vad = new ControllableVadDetector();
         var transcriber = new RecordingTranscriber();
@@ -81,6 +87,7 @@ public sealed class VadGateTests
             {
                 ApiKey = "test-key",
                 Model = "gpt-realtime-translate",
+                SilenceFinalizeMs = silenceFinalizeMs,
             }
         };
         var monitor = new StubOptionsMonitor(settings);
@@ -282,5 +289,109 @@ public sealed class VadGateTests
         Assert.AreEqual(0, vad.InferenceCount, "512 サンプル未満では推論されない");
         pipeline.ProcessAudioWithVadGate(new float[12], settings);
         Assert.AreEqual(1, vad.InferenceCount);
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // v1.0.26: VAD Silence 継続 → 能動的区切り (SendCommit + 強制確定)
+    // ═══════════════════════════════════════════════════════════════
+
+    /// <summary>
+    /// VAD Silence が SilenceFinalizeMs 継続し、 かつ partial が蓄積されている場合、
+    /// input_audio_buffer.commit が試験送信される (server gap 対策の能動的区切り)。
+    /// </summary>
+    [TestMethod]
+    [TestCategory("VadGate")]
+    public async Task Silence_PartialPresent_AfterSilenceFinalizeMs_TriggersCommitOnce()
+    {
+        // SilenceFinalizeMs=200 で短く設定 (テスト時間最小化)。 hangoverMs も小さく (32ms=1 フレーム)。
+        var (pipeline, vad, transcriber, settings) = Create(hangoverMs: 32, silenceFinalizeMs: 200);
+
+        // 1. partial を蓄積 (delta を発火 → TranslationPipelineService._accumulatedText に「そ」)
+        transcriber.RaiseDelta("そ");
+
+        // 2. Silence → InSpeech → Hangover → Silence の遷移を強制
+        vad.NextProb = 0.9f;
+        pipeline.ProcessVadFrame(Frame(), Frame24k(), settings); // Silence → InSpeech
+        vad.NextProb = 0.1f;
+        pipeline.ProcessVadFrame(Frame(), Frame24k(), settings); // InSpeech → Hangover (1 frame)
+        pipeline.ProcessVadFrame(Frame(), Frame24k(), settings); // Hangover → Silence (hangoverMs=32 → 1 frame で抜ける)
+
+        // 3. SilenceFinalizeMs (200ms) 超えるまで待機
+        await Task.Delay(300);
+
+        // 4. もう 1 フレーム投入で Silence 状態の継続判定が走る
+        pipeline.ProcessVadFrame(Frame(), Frame24k(), settings);
+
+        Assert.AreEqual(1, transcriber.SendCommitCallCount,
+            "VAD Silence 継続 + partial あり で SendCommit が 1 回だけ呼ばれるはず");
+
+        // 5. 追加で何フレーム投入しても 2 回目は呼ばれない (_silenceCommitFired フラグで連発抑制)
+        for (int i = 0; i < 5; i++)
+        {
+            pipeline.ProcessVadFrame(Frame(), Frame24k(), settings);
+        }
+        Assert.AreEqual(1, transcriber.SendCommitCallCount,
+            "_silenceCommitFired フラグで SendCommit は 1 回限り (連発しない)");
+    }
+
+    /// <summary>
+    /// VAD Silence が継続しても partial が無ければ SendCommit は呼ばれない (server 状態を不必要に揺らさない)。
+    /// </summary>
+    [TestMethod]
+    [TestCategory("VadGate")]
+    public async Task Silence_NoPartial_AfterSilenceFinalizeMs_DoesNotTriggerCommit()
+    {
+        var (pipeline, vad, transcriber, settings) = Create(hangoverMs: 32, silenceFinalizeMs: 200);
+
+        // partial を蓄積しない (RaiseDelta を呼ばない)
+        vad.NextProb = 0.9f;
+        pipeline.ProcessVadFrame(Frame(), Frame24k(), settings);
+        vad.NextProb = 0.1f;
+        pipeline.ProcessVadFrame(Frame(), Frame24k(), settings);
+        pipeline.ProcessVadFrame(Frame(), Frame24k(), settings);
+
+        await Task.Delay(300);
+        pipeline.ProcessVadFrame(Frame(), Frame24k(), settings);
+
+        Assert.AreEqual(0, transcriber.SendCommitCallCount,
+            "partial が無いときは SendCommit がスキップされるはず (server 状態を不必要に揺らさない)");
+    }
+
+    /// <summary>
+    /// VAD Silence → InSpeech 再遷移で _silenceCommitFired フラグがリセットされ、
+    /// 次の Silence 継続時に再度 SendCommit が発火可能になる。
+    /// </summary>
+    [TestMethod]
+    [TestCategory("VadGate")]
+    public async Task Silence_ResumeSpeechThenSilenceAgain_CommitFiresAgain()
+    {
+        var (pipeline, vad, transcriber, settings) = Create(hangoverMs: 32, silenceFinalizeMs: 200);
+
+        // 1 回目: partial → silence 継続 → commit 1 回
+        transcriber.RaiseDelta("そ");
+        vad.NextProb = 0.9f;
+        pipeline.ProcessVadFrame(Frame(), Frame24k(), settings);
+        vad.NextProb = 0.1f;
+        pipeline.ProcessVadFrame(Frame(), Frame24k(), settings);
+        pipeline.ProcessVadFrame(Frame(), Frame24k(), settings);
+        await Task.Delay(300);
+        pipeline.ProcessVadFrame(Frame(), Frame24k(), settings);
+        Assert.AreEqual(1, transcriber.SendCommitCallCount, "1 回目の silence で commit 発火");
+
+        // 強制確定が走るのを待つ (Task.Run の非同期完了)
+        await Task.Delay(100);
+
+        // 2 回目: 発話再開 (Silence → InSpeech) → 新しい partial → 再 silence → commit 2 回目
+        transcriber.RaiseDelta("つ");
+        vad.NextProb = 0.9f;
+        pipeline.ProcessVadFrame(Frame(), Frame24k(), settings); // Silence → InSpeech (フラグリセット)
+        vad.NextProb = 0.1f;
+        pipeline.ProcessVadFrame(Frame(), Frame24k(), settings); // InSpeech → Hangover
+        pipeline.ProcessVadFrame(Frame(), Frame24k(), settings); // Hangover → Silence
+        await Task.Delay(300);
+        pipeline.ProcessVadFrame(Frame(), Frame24k(), settings);
+
+        Assert.AreEqual(2, transcriber.SendCommitCallCount,
+            "発話再開 → 再 silence で _silenceCommitFired がリセットされ、 commit が再発火するはず");
     }
 }

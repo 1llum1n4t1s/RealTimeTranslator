@@ -55,6 +55,10 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
     private volatile bool _shouldReconnect;
     private volatile ConnectionState _state = ConnectionState.Disconnected;
     private readonly SemaphoreSlim _connectLock = new(1, 1);
+    // v1.0.26 追加: WebSocket.SendAsync は同時 in-flight 1 件しか許されない。
+    // 旧設計は SendLoopAsync 単独だったので排他不要だったが、 SendCommit() を別 task から
+    // 発火する設計を取ったため、 audio send loop と commit 送信の排他制御が必要。
+    private readonly SemaphoreSlim _wsSendLock = new(1, 1);
 
     // 受信した event type を最初の 1 回だけ Info ログに出すための記憶（診断用）。
     // OpenAI Realtime Translation API がどんな event を返してくるか分からない状況で、
@@ -179,6 +183,47 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
             // どちらにせよ書けなかった事実をメトリクス化する。
             Interlocked.Increment(ref _totalDroppedAudioChunks);
         }
+    }
+
+    /// <summary>
+    /// v1.0.26 試験実装: input_audio_buffer.commit を fire-and-forget で送信する。
+    /// Translate API ではドキュメント化されてない event だが、 server が応答すれば pending audio を
+    /// 即翻訳して残り delta を吐いてくれる可能性がある (ARC Raiders 等の 30〜45 秒 silence gap への対策)。
+    /// 拒否されても error event がログに残るだけで pipeline 自体は止まらない。
+    /// 別タスクで実行することで呼び出し元 (VAD frame 処理ループ) を block しない。
+    /// </summary>
+    public void SendCommit()
+    {
+        if (State != ConnectionState.Connected) return;
+        if (_ws is not { State: WebSocketState.Open }) return;
+
+        // Translate API の event 命名規則に従い、 `session.` プレフィックス付きで送信する
+        // (session.input_audio_buffer.append と同様。 通常 Realtime API の `input_audio_buffer.commit` ではない)。
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                const string commitJson = "{\"type\":\"session.input_audio_buffer.commit\"}";
+                var bytes = Encoding.UTF8.GetBytes(commitJson);
+                await _wsSendLock.WaitAsync().ConfigureAwait(false);
+                try
+                {
+                    if (_ws is { State: WebSocketState.Open })
+                    {
+                        await _ws.SendAsync(bytes, WebSocketMessageType.Text, true, CancellationToken.None).ConfigureAwait(false);
+                        Logger.Info("input_audio_buffer.commit 送信 (試験: server が応答すれば残り delta を吐く想定)");
+                    }
+                }
+                finally
+                {
+                    _wsSendLock.Release();
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Warn($"input_audio_buffer.commit 送信失敗: {ex.Message}");
+            }
+        });
     }
 
     public async Task DisconnectAsync()
@@ -509,7 +554,16 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
                 jsonWriter.WriteEndObject();
                 await jsonWriter.FlushAsync(ct).ConfigureAwait(false);
 
-                await _ws.SendAsync(bufferWriter.WrittenMemory, WebSocketMessageType.Text, true, ct).ConfigureAwait(false);
+                // v1.0.26: SendCommit() (別 task 経由) との WebSocket SendAsync 競合を排他制御。
+                await _wsSendLock.WaitAsync(ct).ConfigureAwait(false);
+                try
+                {
+                    await _ws.SendAsync(bufferWriter.WrittenMemory, WebSocketMessageType.Text, true, ct).ConfigureAwait(false);
+                }
+                finally
+                {
+                    _wsSendLock.Release();
+                }
                 // 統計用: 送信した PCM16 (= 2 bytes/sample, 24kHz mono) のサンプル数を累積。
                 // server usage が拾えないモデル/イベントの fallback 推定に使う。
                 Interlocked.Add(ref _totalAudioInputSamples24kHz, audioBatch.WrittenCount / 2);

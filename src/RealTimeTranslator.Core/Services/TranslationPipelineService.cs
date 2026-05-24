@@ -132,6 +132,12 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     private readonly Queue<float[]> _preRollBuffer = new();
     private VadState _vadState = VadState.Silence;
     private int _hangoverFramesRemaining;
+    // v1.0.26 追加: VAD Silence 状態に遷移した時刻。 「VAD Silence が SilenceFinalizeMs 継続したら
+    // input_audio_buffer.commit 送信 + partial 強制確定」する能動的区切りロジックの起点。
+    // Silence → InSpeech 遷移でリセット (DateTime.MinValue)。 1 回発火で _silenceCommitFired=true にして連発抑制。
+    // ARC Raiders 等で OpenAI server が delta を 30〜45 秒送ってこない問題への client 側対策 (2026-05-24)。
+    private DateTime _silenceStartUtc = DateTime.MinValue;
+    private bool _silenceCommitFired;
     // 自動 Pause 判定用 (最後に speech と判定された時刻)。
     private DateTime _lastSpeechUtc = DateTime.UtcNow;
     private DateTime _sessionStartUtc = DateTime.UtcNow;
@@ -262,6 +268,8 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         _preRollBuffer.Clear();
         _vadState = VadState.Silence;
         _hangoverFramesRemaining = 0;
+        _silenceStartUtc = DateTime.MinValue;
+        _silenceCommitFired = false;
         _frameAccumulator = null;
         _frameAccumulatorLen = 0;
         _frameAccumulator24k = null;
@@ -710,7 +718,10 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
             }
             lifetimeSec = GetSafeMaxSegmentLifetimeSec();
             elapsed = (DateTime.UtcNow - _segmentStartUtc).TotalSeconds;
-            shouldFinalize = elapsed >= lifetimeSec;
+            // v1.0.26: double 精度問題で `elapsed = 44.9999... < 45.0` で false になり、
+            // SyncIdleFinalizeTimer が remaining=0.0001 秒で再スケジュール → 即発火 → 再判定で false → ... と
+            // 同 ms 内に 17 回連続発火するバグ (2026-05-24 ログで観測) を回避するため 10ms 余裕を持たせる。
+            shouldFinalize = elapsed >= lifetimeSec - 0.01;
             segmentIdSnapshot = _currentSegmentId;
             trailingLen = _accumulatedText.Length;
         }
@@ -747,9 +758,11 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
             var lifetimeSec = GetSafeMaxSegmentLifetimeSec();
             var elapsed = (DateTime.UtcNow - _segmentStartUtc).TotalSeconds;
             var remainingSec = Math.Max(0.0, lifetimeSec - elapsed);
-            // TimeSpan.FromSeconds(0) でもタイマーは即発火するので問題ない。
+            // v1.0.26: 最小待機 100ms を強制 (連続発火防止)。 旧実装は remaining=0.0001 秒等の極小値で
+            // 即発火 → リスケ → 即発火 のループに陥り、 同 ms 内に十数回タイマー発火する CPU + ログ汚染バグがあった。
             // 上限 1 時間でクランプ (寿命設定が極端でも Timer.Change が OverflowException にならないよう保護)。
             var remainingClamped = Math.Min(remainingSec, 3600.0);
+            remainingClamped = Math.Max(remainingClamped, 0.1);
             _idleFinalizeTimer.Change(TimeSpan.FromSeconds(remainingClamped), Timeout.InfiniteTimeSpan);
         }
     }
@@ -1347,9 +1360,37 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                     SendFrameToClient(frame24kHz);
                     _vadState = VadState.InSpeech;
                     _lastSpeechUtc = DateTime.UtcNow;
+                    // v1.0.26: Silence → InSpeech 遷移 = 発話再開。 Silence カウントと commit フラグをリセット。
+                    _silenceStartUtc = DateTime.MinValue;
+                    _silenceCommitFired = false;
                 }
                 else
                 {
+                    // v1.0.26 ★ 能動的区切り (server gap 対策):
+                    // VAD Silence が SilenceFinalizeMs 継続 + partial が溜まっている場合、
+                    // input_audio_buffer.commit を試験送信 + partial を強制確定する。
+                    // ARC Raiders 等で OpenAI が delta を 30〜45 秒送ってこない問題への client 側対策。
+                    if (_silenceStartUtc != DateTime.MinValue && !_silenceCommitFired)
+                    {
+                        var silenceMs = (DateTime.UtcNow - _silenceStartUtc).TotalMilliseconds;
+                        var threshold = _settingsMonitor.CurrentValue.OpenAIRealtime.SilenceFinalizeMs;
+                        // threshold <= 0 で機能無効化を許容
+                        if (threshold > 0 && silenceMs >= threshold)
+                        {
+                            _silenceCommitFired = true;
+                            // partial が無ければ commit 送信もスキップ (server 状態を不必要に揺らさない)
+                            bool hasPartial;
+                            lock (_textLock) { hasPartial = _accumulatedText.Length > 0; }
+                            if (hasPartial)
+                            {
+                                Logger.Info($"VAD Silence 継続 {silenceMs:F0}ms >= {threshold}ms → commit 送信 + partial 強制確定");
+                                _realtimeClient.SendCommit();
+                                // 強制確定はバックグラウンドで実行 (VAD frame 処理ループを block しない)。
+                                _ = Task.Run(() => FinalizePendingPartial($"VAD Silence {silenceMs:F0}ms"));
+                            }
+                        }
+                    }
+
                     // PreRoll に積む (古いものは押し出す = OpenAI 送信スキップとして秒数加算)。
                     // 中身は送信用 24k フレーム (PreRoll 解除時にそのまま送信できるよう)。
                     while (_preRollBuffer.Count >= preRollCapacity)
@@ -1391,6 +1432,10 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                     {
                         _vadState = VadState.Silence;
                         _preRollBuffer.Clear();
+                        // v1.0.26: Hangover → Silence 遷移 = 発話終了候補。 Silence 開始時刻を記録して
+                        // 「SilenceFinalizeMs 継続したら能動的区切り」のカウント開始。
+                        _silenceStartUtc = DateTime.UtcNow;
+                        _silenceCommitFired = false;
                         // LSTM state は連続性が高い方が誤検出が減るためここでは Reset しない
                         // (Start 時にだけ Reset を呼ぶ)。
                     }

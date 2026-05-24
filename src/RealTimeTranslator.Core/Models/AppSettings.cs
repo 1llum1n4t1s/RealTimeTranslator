@@ -151,6 +151,16 @@ public class OpenAIRealtimeSettings
     // 発話開始からこの値 (秒) を超えたら強制確定する。 デフォルト 45 秒は「人間の一発話の現実的上限」。
     // 隠し設定 — UI には出さず settings.json 直編集または DI override で調整する想定。
     public double MaxSegmentLifetimeSec { get; set; } = 45.0;
+
+    // ⭐ VAD Silence 連続時間ベースの「能動的区切り」(v1.0.26 追加)。
+    // OpenAI Realtime Translate API は continuous streaming model 前提で、 server-side の
+    // 発話終端検知が ARC Raiders 等のゲーム音声で 30〜40 秒 silence する挙動 (2026-05-24 確証)。
+    // 公式に「ここで区切って」と要求する API は存在しない (response.create も使うなと明示)。
+    // ─ ローカル VAD (Silero v5) が Hangover → Silence 遷移し、 この時間 (ミリ秒) 継続したら:
+    //   1. input_audio_buffer.commit を試験送信 (server が応答すれば残り delta を即吐く可能性)
+    //   2. partial を強制確定 (client 側完結 — server 応答に依存しない fallback)
+    // 値が 0 以下なら機能を無効化する。 VAD 無効時 (素通し) も機能しない (Silence 状態が無い)。
+    public int SilenceFinalizeMs { get; set; } = 2000;
 }
 
 // GameProfile / GameProfiles は旧 Whisper+LLM ローカル翻訳時代の設定。
