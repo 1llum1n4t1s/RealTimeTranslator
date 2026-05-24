@@ -37,14 +37,5 @@ public interface IRealtimeTranscriber : IAsyncDisposable, IDisposable
     Task ConnectAsync(OpenAIRealtimeSettings settings, CancellationToken ct = default);
     void SendAudio(byte[] pcm16Audio);
 
-    /// <summary>
-    /// input_audio_buffer.commit を送信する (v1.0.26 試験実装)。
-    /// OpenAI Realtime Translate API はドキュメント化されてない動作だが、 server が応答すれば
-    /// pending audio を即翻訳して残り delta を吐いてくれる可能性がある。
-    /// 拒否時は ErrorReceived (もしくは error event ログ) で観察し、 pipeline 自体は止まらない。
-    /// 未接続時 / WebSocket 未 Open 時は no-op (静かに無視)。
-    /// </summary>
-    void SendCommit();
-
     Task DisconnectAsync();
 }

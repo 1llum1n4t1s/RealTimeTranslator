@@ -54,9 +54,6 @@ public sealed class VadGateTests
             SentAudioByteLengths.Add(pcm16Audio.Length);
             TotalAudioInputSamples24kHz += pcm16Audio.Length / 2;
         }
-        // v1.0.26: VAD Silence で commit 試験送信が呼ばれることを検証するカウンタ。
-        public int SendCommitCallCount { get; private set; }
-        public void SendCommit() => SendCommitCallCount++;
         public Task DisconnectAsync() => Task.CompletedTask;
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
         public void Dispose() { }

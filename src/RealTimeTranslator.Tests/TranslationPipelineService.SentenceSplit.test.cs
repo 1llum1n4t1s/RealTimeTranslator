@@ -31,7 +31,6 @@ public sealed class TranslationPipelineServiceSentenceSplitTests
             return Task.CompletedTask;
         }
         public void SendAudio(byte[] pcm16Audio) { }
-        public void SendCommit() { }
         public Task DisconnectAsync()
         {
             State = ConnectionState.Disconnected;

@@ -36,7 +36,6 @@ public sealed class TranslationPipelineServiceAdversarialTests
         public Task ConnectAsync(OpenAIRealtimeSettings settings, CancellationToken ct = default)
         { State = ConnectionState.Connected; StateChanged?.Invoke(State); return Task.CompletedTask; }
         public void SendAudio(byte[] pcm16Audio) { }
-        public void SendCommit() { }
         public Task DisconnectAsync()
         { State = ConnectionState.Disconnected; StateChanged?.Invoke(State); return Task.CompletedTask; }
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
@@ -192,7 +191,6 @@ public sealed class TranslationPipelineServiceAdversarialTests
         public Task ConnectAsync(OpenAIRealtimeSettings settings, CancellationToken ct = default)
         { State = ConnectionState.Connected; StateChanged?.Invoke(State); return Task.CompletedTask; }
         public void SendAudio(byte[] pcm16Audio) { }
-        public void SendCommit() { }
         public Task DisconnectAsync()
         { State = ConnectionState.Disconnected; StateChanged?.Invoke(State); return Task.CompletedTask; }
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
@@ -274,7 +272,6 @@ public sealed class TranslationPipelineServiceAdversarialTests
 #pragma warning restore CS0067
         public Task ConnectAsync(OpenAIRealtimeSettings settings, CancellationToken ct = default) => Task.CompletedTask;
         public void SendAudio(byte[] pcm16Audio) { }
-        public void SendCommit() { }
         public Task DisconnectAsync() => Task.CompletedTask;
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
         public void Dispose() { }

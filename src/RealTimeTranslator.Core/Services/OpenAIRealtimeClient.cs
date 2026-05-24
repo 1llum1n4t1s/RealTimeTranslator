@@ -58,9 +58,11 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
     private volatile bool _shouldReconnect;
     private volatile ConnectionState _state = ConnectionState.Disconnected;
     private readonly SemaphoreSlim _connectLock = new(1, 1);
-    // v1.0.26 追加: WebSocket.SendAsync は同時 in-flight 1 件しか許されない。
-    // 旧設計は SendLoopAsync 単独だったので排他不要だったが、 SendCommit() を別 task から
-    // 発火する設計を取ったため、 audio send loop と commit 送信の排他制御が必要。
+    // WebSocket.SendAsync は同時 in-flight 1 件しか許されない仕様 (RFC 6455)。
+    // 現状 SendLoopAsync 単独 writer なので機能的には不要だが、 将来別経路の SendAsync 追加
+    // (新 control frame 送信等) に備えた safety net として残置。 取得コストは μs オーダーで無視できる。
+    // /rere 第2R #B2-001-CONT (v1.0.29 候補): SendCommit デッドコード削除に伴って排他理由は消失したが
+    // 構造的予防として保持する選択。
     private readonly SemaphoreSlim _wsSendLock = new(1, 1);
 
     // 受信した event type を最初の 1 回だけ Info ログに出すための記憶（診断用）。
@@ -201,46 +203,11 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
         }
     }
 
-    /// <summary>
-    /// v1.0.26 試験実装: input_audio_buffer.commit を fire-and-forget で送信する。
-    /// Translate API ではドキュメント化されてない event だが、 server が応答すれば pending audio を
-    /// 即翻訳して残り delta を吐いてくれる可能性がある (ARC Raiders 等の 30〜45 秒 silence gap への対策)。
-    /// 拒否されても error event がログに残るだけで pipeline 自体は止まらない。
-    /// 別タスクで実行することで呼び出し元 (VAD frame 処理ループ) を block しない。
-    /// </summary>
-    public void SendCommit()
-    {
-        if (State != ConnectionState.Connected) return;
-        if (_ws is not { State: WebSocketState.Open }) return;
-
-        // Translate API の event 命名規則に従い、 `session.` プレフィックス付きで送信する
-        // (session.input_audio_buffer.append と同様。 通常 Realtime API の `input_audio_buffer.commit` ではない)。
-        _ = Task.Run(async () =>
-        {
-            try
-            {
-                const string commitJson = "{\"type\":\"session.input_audio_buffer.commit\"}";
-                var bytes = Encoding.UTF8.GetBytes(commitJson);
-                await _wsSendLock.WaitAsync().ConfigureAwait(false);
-                try
-                {
-                    if (_ws is { State: WebSocketState.Open })
-                    {
-                        await _ws.SendAsync(bytes, WebSocketMessageType.Text, true, CancellationToken.None).ConfigureAwait(false);
-                        Logger.Info("input_audio_buffer.commit 送信 (試験: server が応答すれば残り delta を吐く想定)");
-                    }
-                }
-                finally
-                {
-                    _wsSendLock.Release();
-                }
-            }
-            catch (Exception ex)
-            {
-                Logger.Warn($"input_audio_buffer.commit 送信失敗: {ex.Message}");
-            }
-        });
-    }
+    // /rere 第2R #B2-001-CONT (v1.0.29 候補): SendCommit() メソッド削除。
+    // v1.0.26 試験実装 (`session.input_audio_buffer.commit` 送信) は API に拒否され (BadRequest 大量発生)、
+    // v1.0.27 で「無音 PCM 継続送信」戦略に置換、 v1.0.28 実機で 11 件完結文 emit を観測して
+    // #D-001 戦略採用確定。 SendCommit はプロダクション未使用デッドコードとして削除。
+    // 関連: IRealtimeTranscriber インターフェースからも削除、 全 test double から no-op 実装削除。
 
     public async Task DisconnectAsync()
     {
