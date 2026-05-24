@@ -1,3 +1,4 @@
+using System.Text;
 using System.Threading.Channels;
 using Microsoft.Extensions.Options;
 using RealTimeTranslator.Core.Interfaces;
@@ -17,6 +18,13 @@ namespace RealTimeTranslator.Core.Services;
 ///   これで Append の発火順序が TSV ファイル上で保証される + ClearAll 直後の Append が UI と乖離する race も消える。
 /// - 読み取り系 (<see cref="ReadAllAsync"/>) は lock を一切取らず並行可能。 起動時の初期読み込みのみで
 ///   翻訳開始前に完了する想定なので、 書き込みとの厳密な整合性は不要。
+///
+/// /rere 第2R #C2-R2-001 + #F-R2-002 (v1.0.29 候補):
+/// - **keep-open StreamWriter**: 旧実装は Append ごとに File.AppendAllTextAsync で open/close を繰り返し、
+///   Defender 環境では 1 件 5-15ms × 数千件 = 数十秒の I/O 累積 stall を起こしていた。
+///   日付別 StreamWriter を保持して open/close を 1 日 1 回に抑える。
+/// - **日次 retention タイマー**: 旧実装は起動時 1 回のみ retention を実行し、 24h+ 連続稼働で
+///   保持期間オーバーが起きていた。 1 時間周期で「日付変わったか」を検出して再実行する。
 /// </summary>
 public sealed class TranslationLogService : ITranslationLogger, IAsyncDisposable
 {
@@ -33,6 +41,23 @@ public sealed class TranslationLogService : ITranslationLogger, IAsyncDisposable
     /// <summary>Channel から取り出して順次実行するワーカー Task。</summary>
     private readonly Task _writeWorkerTask;
 
+    /// <summary>
+    /// /rere 第2R #C2-R2-001 (v1.0.29 候補): 日付別の StreamWriter を保持。
+    /// 日付が変わったら旧 writer を Dispose してから新規 open。 これで open/close を 1 日 1 回に抑える。
+    /// 単一ワーカー (WriteWorkerLoopAsync) からのみアクセスされるため lock 不要。
+    /// </summary>
+    private StreamWriter? _currentWriter;
+    private DateTime _currentFileDate = DateTime.MinValue;
+
+    /// <summary>
+    /// /rere 第2R #F-R2-002 (v1.0.29 候補): 日次 retention タイマー。
+    /// 1 時間ごとに「日付が変わったか」を判定し、 変わっていれば retention 再実行する。
+    /// 24h+ 連続稼働環境でも保持期間が正しく機能する。
+    /// </summary>
+    private readonly CancellationTokenSource _retentionTimerCts = new();
+    private readonly Task _retentionTimerTask;
+    private DateTime _lastRetentionDate = DateTime.MinValue;
+
     public string LogDirectory { get; }
 
     public TranslationLogService(IOptionsMonitor<AppSettings> settingsMonitor)
@@ -46,6 +71,9 @@ public sealed class TranslationLogService : ITranslationLogger, IAsyncDisposable
 
         // Channel ワーカーを起動。 Singleton 寿命と一致するため Stop 不要 (DisposeAsync で Complete する)。
         _writeWorkerTask = Task.Run(WriteWorkerLoopAsync);
+
+        // /rere 第2R #F-R2-002: 日次 retention タイマー開始 (1 時間周期で日付変わり検知)。
+        _retentionTimerTask = Task.Run(() => DailyRetentionLoopAsync(_retentionTimerCts.Token));
     }
 
     private async Task WriteWorkerLoopAsync()
@@ -69,6 +97,46 @@ public sealed class TranslationLogService : ITranslationLogger, IAsyncDisposable
             // ReadAllAsync 自体は通常例外を投げないが、 念のため握ってアプリ全体を止めない。
             LoggerService.LogException("TranslationLogService.WriteWorker が予期せず終了", ex);
         }
+        finally
+        {
+            // ワーカー終了時に保持中の StreamWriter を flush + close する。
+            await CloseCurrentWriterAsync().ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// /rere 第2R #F-R2-002 (v1.0.29 候補): 1 時間周期で日付変わりを検出し retention を再実行する。
+    /// Append 経由で日付変わり時にも実行されるが、 「24h+ 起動しっぱなしで Append が来ない silence 時間」
+    /// (例: 配信用 PC で待機中) でも retention が走ることを保証する。
+    /// </summary>
+    private async Task DailyRetentionLoopAsync(CancellationToken ct)
+    {
+        try
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                try { await Task.Delay(TimeSpan.FromHours(1), ct).ConfigureAwait(false); }
+                catch (OperationCanceledException) { return; }
+
+                var today = DateTime.Now.Date;
+                if (today != _lastRetentionDate)
+                {
+                    _lastRetentionDate = today;
+                    try
+                    {
+                        await PerformRetentionCleanupAsync().ConfigureAwait(false);
+                    }
+                    catch (Exception ex)
+                    {
+                        LoggerService.LogWarning($"TranslationLogService.DailyRetentionLoop: {ex.Message}");
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            LoggerService.LogException("TranslationLogService.DailyRetentionLoop が予期せず終了", ex);
+        }
     }
 
     public void Append(TranslationLogEntry entry)
@@ -84,11 +152,46 @@ public sealed class TranslationLogService : ITranslationLogger, IAsyncDisposable
     private async Task AppendInternalAsync(TranslationLogEntry entry)
     {
         EnsureDirectory();
-        var filePath = GetFilePathForDate(entry.Timestamp);
-        // File.AppendAllTextAsync は内部で UTF-8 で追記する。
-        // 翻訳テキストの \t / \n は ToTsvLine で除去済みなので 1 行 1 エントリが保証される。
-        await File.AppendAllTextAsync(filePath, entry.ToTsvLine() + Environment.NewLine,
-                                      System.Text.Encoding.UTF8).ConfigureAwait(false);
+        var entryDate = entry.Timestamp.Date;
+
+        // /rere 第2R #C2-R2-001 (v1.0.29 候補): keep-open StreamWriter で 1 件あたり 5-15ms の
+        // open/close を削減 (Defender 環境)。 日付が変わったら旧 writer を Dispose してから新規 open。
+        if (_currentWriter is null || entryDate != _currentFileDate)
+        {
+            await CloseCurrentWriterAsync().ConfigureAwait(false);
+            var filePath = GetFilePathForDate(entry.Timestamp);
+            // FileShare.Read で他プロセスから読める (Notepad で開く等)。
+            // useAsync: true で WriteLineAsync が真の非同期 I/O を使う。
+            var fs = new FileStream(filePath, FileMode.Append, FileAccess.Write, FileShare.Read,
+                                    bufferSize: 4096, useAsync: true);
+            _currentWriter = new StreamWriter(fs, new UTF8Encoding(false)) { AutoFlush = true };
+            _currentFileDate = entryDate;
+
+            // 日付が変わったタイミングで retention も実行 (DailyRetentionLoop と二重発火するが
+            // PerformRetentionCleanupAsync は idempotent なので問題なし)。
+            if (entryDate != _lastRetentionDate)
+            {
+                _lastRetentionDate = entryDate;
+                _ = Task.Run(async () =>
+                {
+                    try { await PerformRetentionCleanupAsync().ConfigureAwait(false); }
+                    catch (Exception ex) { LoggerService.LogWarning($"TranslationLogService: 日付変わり retention 失敗: {ex.Message}"); }
+                });
+            }
+        }
+
+        // AutoFlush=true なので WriteLineAsync の戻りでディスク到達済 (耐クラッシュ性維持)。
+        await _currentWriter!.WriteLineAsync(entry.ToTsvLine()).ConfigureAwait(false);
+    }
+
+    private async Task CloseCurrentWriterAsync()
+    {
+        if (_currentWriter is not null)
+        {
+            try { await _currentWriter.DisposeAsync().ConfigureAwait(false); }
+            catch (Exception ex) { LoggerService.LogWarning($"TranslationLogService: writer Dispose 失敗: {ex.Message}"); }
+            _currentWriter = null;
+        }
     }
 
     public async Task<IReadOnlyList<TranslationLogEntry>> ReadAllAsync(int? maxEntries = null)
@@ -206,9 +309,12 @@ public sealed class TranslationLogService : ITranslationLogger, IAsyncDisposable
         return tcs.Task;
     }
 
-    private Task ClearAllInternalAsync()
+    private async Task ClearAllInternalAsync()
     {
-        if (!Directory.Exists(LogDirectory)) return Task.CompletedTask;
+        // /rere 第2R #C2-R2-001 連動: keep-open writer を先に Dispose してファイルロックを解放してから削除。
+        await CloseCurrentWriterAsync().ConfigureAwait(false);
+
+        if (!Directory.Exists(LogDirectory)) return;
         var files = Directory.GetFiles(LogDirectory, $"{FilePrefix}_*{FileExtension}");
         foreach (var file in files)
         {
@@ -222,7 +328,6 @@ public sealed class TranslationLogService : ITranslationLogger, IAsyncDisposable
             }
         }
         LoggerService.LogInfo($"TranslationLogService: 全翻訳ログを削除しました ({files.Length} ファイル)");
-        return Task.CompletedTask;
     }
 
     private void EnsureDirectory()
@@ -245,6 +350,9 @@ public sealed class TranslationLogService : ITranslationLogger, IAsyncDisposable
     /// </summary>
     public async ValueTask DisposeAsync()
     {
+        // 日次 retention タイマーを停止 (Task.Delay の CancellationToken でキャンセル)
+        _retentionTimerCts.Cancel();
+
         _writeChannel.Writer.TryComplete();
         try
         {
@@ -258,5 +366,15 @@ public sealed class TranslationLogService : ITranslationLogger, IAsyncDisposable
         {
             LoggerService.LogWarning($"TranslationLogService.DisposeAsync: {ex.Message}");
         }
+
+        try
+        {
+            await _retentionTimerTask.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
+        }
+        catch (TimeoutException) { /* タイマー Cancel 待ちタイムアウト、 致命的でない */ }
+        catch (OperationCanceledException) { /* 正常 cancel */ }
+        catch (Exception ex) { LoggerService.LogWarning($"TranslationLogService.DisposeAsync (retentionTimer): {ex.Message}"); }
+
+        _retentionTimerCts.Dispose();
     }
 }
