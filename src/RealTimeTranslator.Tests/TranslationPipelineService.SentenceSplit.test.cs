@@ -249,8 +249,9 @@ public sealed class TranslationPipelineServiceSentenceSplitTests
         Assert.AreEqual("新セッションの文。", emitted.First(x => x.IsFinal).TranslatedText);
     }
 
-    // v1.0.27 棚卸し削除: OnTranscriptDelta_LongMachineGunTalk_FallbackSplitOnComma
-    // (D-7 句読点 fallback 廃止のため該当機能なし)
+    // v1.0.27 棚卸しで一度削除されたが、 2026-05-24 ARC Raiders 実機ログで
+    // 「partial が 127 文字まで育って完結文 emit=0」が観測されたため v1.0.28 で復活。
+    // /rere レビュー #D-005 (句点なしコンテンツで _accumulatedText 無限成長) の安全弁。
 
     /// <test rere="B3-010" />
     [TestMethod]
@@ -263,5 +264,152 @@ public sealed class TranslationPipelineServiceSentenceSplitTests
         var finals = emitted.Where(x => x.IsFinal).ToList();
         Assert.AreEqual(0, finals.Count, "句点なし短文では IsFinal emit ゼロのはず");
         // partial は throttle で発火するため、 即時には emit されないこともある
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // FindForcedSplitIndex の単体テスト (v1.0.28 D-7 fallback 復活、 /rere #D-005)
+    // ═══════════════════════════════════════════════════════════════
+
+    [TestMethod]
+    [TestCategory("ForcedSplit")]
+    public void FindForcedSplitIndex_BelowThreshold_Returns0()
+    {
+        var sb = new System.Text.StringBuilder("短い文");
+        Assert.AreEqual(0, TranslationPipelineService.FindForcedSplitIndex(sb, maxChars: 80));
+    }
+
+    [TestMethod]
+    [TestCategory("ForcedSplit")]
+    public void FindForcedSplitIndex_MaxCharsZeroOrNegative_Returns0()
+    {
+        var sb = new System.Text.StringBuilder(new string('a', 200));
+        Assert.AreEqual(0, TranslationPipelineService.FindForcedSplitIndex(sb, maxChars: 0));
+        Assert.AreEqual(0, TranslationPipelineService.FindForcedSplitIndex(sb, maxChars: -5));
+    }
+
+    [TestMethod]
+    [TestCategory("ForcedSplit")]
+    public void FindForcedSplitIndex_FindsJapaneseCommaInLookback()
+    {
+        // 全角 70 文字 + 「、」+ 全角 15 文字 (合計 86 文字、 maxChars=80)
+        // 末尾 30 文字以内 (= index 50 以降) に「、」が index 70 にある → splitIdx = 71
+        var sb = new System.Text.StringBuilder(new string('あ', 70) + "、" + new string('い', 15));
+        int idx = TranslationPipelineService.FindForcedSplitIndex(sb, maxChars: 80);
+        Assert.AreEqual(71, idx, "「、」の直後 (71) で分割されるはず");
+        Assert.AreEqual('、', sb[idx - 1]);
+    }
+
+    [TestMethod]
+    [TestCategory("ForcedSplit")]
+    public void FindForcedSplitIndex_FindsAsciiCommaInLookback()
+    {
+        // 60 文字 + 半角 ',' + 25 文字 (合計 86 文字)
+        // 末尾 30 文字以内に ',' があるので index 60+1=61 で分割
+        var sb = new System.Text.StringBuilder(new string('a', 60) + "," + new string('b', 25));
+        int idx = TranslationPipelineService.FindForcedSplitIndex(sb, maxChars: 80);
+        Assert.AreEqual(61, idx, "半角 ',' の直後 (61) で分割");
+    }
+
+    [TestMethod]
+    [TestCategory("ForcedSplit")]
+    public void FindForcedSplitIndex_FindsHalfWidthSpace()
+    {
+        var sb = new System.Text.StringBuilder(new string('x', 60) + " " + new string('y', 25));
+        int idx = TranslationPipelineService.FindForcedSplitIndex(sb, maxChars: 80);
+        Assert.AreEqual(61, idx, "半角空白の直後 (61) で分割");
+    }
+
+    [TestMethod]
+    [TestCategory("ForcedSplit")]
+    public void FindForcedSplitIndex_FindsFullWidthSpace()
+    {
+        var sb = new System.Text.StringBuilder(new string('あ', 60) + "　" + new string('い', 25));
+        int idx = TranslationPipelineService.FindForcedSplitIndex(sb, maxChars: 80);
+        Assert.AreEqual(61, idx, "全角空白の直後 (61) で分割");
+    }
+
+    [TestMethod]
+    [TestCategory("ForcedSplit")]
+    public void FindForcedSplitIndex_NoCandidate_ReturnsMaxChars()
+    {
+        // 句読点も空白も無い 100 文字 → maxChars (80) で強制切断
+        var sb = new System.Text.StringBuilder(new string('a', 100));
+        Assert.AreEqual(80, TranslationPipelineService.FindForcedSplitIndex(sb, maxChars: 80));
+    }
+
+    [TestMethod]
+    [TestCategory("ForcedSplit")]
+    public void FindForcedSplitIndex_CommaOutsideLookback_ReturnsMaxChars()
+    {
+        // 「、」は index 10 (lookback 範囲 50- から外れる) → 候補にならない → maxChars (80) で強制切断
+        var sb = new System.Text.StringBuilder(new string('a', 10) + "、" + new string('b', 90));
+        Assert.AreEqual(80, TranslationPipelineService.FindForcedSplitIndex(sb, maxChars: 80));
+    }
+
+    [TestMethod]
+    [TestCategory("ForcedSplit")]
+    public void FindForcedSplitIndex_CommaPreferredOverSpace()
+    {
+        // 「、」は index 55, 空白は index 70 → 「、」(より新しいループは「、」を先に探す→空白は探索しない)
+        var sb = new System.Text.StringBuilder(new string('a', 55) + "、" + new string('b', 14) + " " + new string('c', 15));
+        int idx = TranslationPipelineService.FindForcedSplitIndex(sb, maxChars: 80);
+        Assert.AreEqual(56, idx, "「、」(index 55) が空白 (index 70) より優先される");
+    }
+
+    [TestMethod]
+    [TestCategory("ForcedSplit")]
+    public void FindForcedSplitIndex_NullStringBuilder_Throws()
+    {
+        Assert.ThrowsExactly<ArgumentNullException>(() =>
+            TranslationPipelineService.FindForcedSplitIndex(null!, maxChars: 80));
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // OnTranscriptDelta + D-7 fallback の統合テスト
+    // ═══════════════════════════════════════════════════════════════
+
+    /// <test rere="#D-005 (v1.0.28 復活)" />
+    [TestMethod]
+    [TestCategory("SentenceSplit")]
+    public void OnTranscriptDelta_NoTerminatorButCommaAt80_ForcedSplitOnComma()
+    {
+        // ARC Raiders 実機シナリオ再現: 句点なし、 80 文字超で「、」がある場所で強制分割
+        // 70 文字 + 「、」+ 残り 15 文字 = 86 文字 (>= 80) → D-7 fallback で「、」直後 (71) 分割
+        var (pipeline, transcriber, emitted) = CreatePipeline();
+        var input = new string('あ', 70) + "、" + new string('い', 15);
+        transcriber.RaiseDelta(input);
+
+        var finals = emitted.Where(x => x.IsFinal).ToList();
+        Assert.AreEqual(1, finals.Count, "D-7 fallback で 1 件強制分割 emit されるはず");
+        Assert.AreEqual(new string('あ', 70) + "、", finals[0].TranslatedText, "「、」直後で分割");
+    }
+
+    /// <test rere="#D-005 (v1.0.28 復活)" />
+    [TestMethod]
+    [TestCategory("SentenceSplit")]
+    public void OnTranscriptDelta_NoTerminatorNoComma_ForcedSplitAtMaxChars()
+    {
+        // 句読点も空白も無い 100 文字 → maxChars (80) 位置で強制切断
+        var (pipeline, transcriber, emitted) = CreatePipeline();
+        var input = new string('あ', 100);
+        transcriber.RaiseDelta(input);
+
+        var finals = emitted.Where(x => x.IsFinal).ToList();
+        Assert.AreEqual(1, finals.Count, "強制切断で 1 件 emit");
+        Assert.AreEqual(80, finals[0].TranslatedText.Length, "maxChars (80) 位置で切断");
+    }
+
+    /// <test rere="#D-005 (v1.0.28 復活)" />
+    [TestMethod]
+    [TestCategory("SentenceSplit")]
+    public void OnTranscriptDelta_BelowThreshold_NoForcedSplit()
+    {
+        // 79 文字 (< 80) → D-7 fallback 発火しない
+        var (pipeline, transcriber, emitted) = CreatePipeline();
+        var input = new string('あ', 79);
+        transcriber.RaiseDelta(input);
+
+        var finals = emitted.Where(x => x.IsFinal).ToList();
+        Assert.AreEqual(0, finals.Count, "閾値未満では強制分割しない");
     }
 }

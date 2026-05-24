@@ -161,6 +161,26 @@ public class OpenAIRealtimeSettings
     //   - Silence → InSpeech 再遷移でカウントリセット
     // 値が 0 以下なら機能を無効化する (= VAD Silence 中は完全に送信停止、 v1.0.25 以前と同じ)。
     public int SilencePaddingMs { get; set; } = 5000;
+
+    // ⭐ D-7 fallback: 句点なし partial の最大累積文字数 (v1.0.28 復活)。
+    //
+    // 背景 (2026-05-24 v1.0.27 実機ログから事実確証):
+    //   OpenAI Realtime Translate API は句読点 (`。！？.!?`) を必ず入れるとは限らず、
+    //   ARC Raiders のセリフ「また良いその場所について実際に気にかけてくれるとは...」が
+    //   1 分 25 秒・127 文字に渡って **句点ゼロで partial だけ伸び続け、 完結文 emit=0** の状態を観測。
+    //   v1.0.24 で導入された D-7 fallback (100 文字超で「、」強制分割) を v1.0.27 棚卸しで削除した
+    //   ことが裏目に出た。 「無音 PCM 送信で server が句点入れる」前提は破綻していた。
+    //
+    // 動作:
+    //   _accumulatedText.Length >= MaxPartialChars に到達したら、 OnTranscriptDelta 内で:
+    //     1. 末尾 30 文字以内の「、」「,」を探して切る (自然な節目優先)
+    //     2. なければ末尾 30 文字以内の半角/全角空白で切る
+    //     3. なければ閾値位置で強制切断 (最終手段)
+    //   切った部分を完結文として emit + 新 SegmentId 発行。
+    //
+    // 値が 0 以下なら機能を無効化する (= 句点が来るまで永遠に partial が伸びる、 v1.0.27 と同じ挙動)。
+    // 80 文字は字幕として 2-3 行に収まる読みやすい長さの目安。
+    public int MaxPartialChars { get; set; } = 80;
 }
 
 // GameProfile / GameProfiles は旧 Whisper+LLM ローカル翻訳時代の設定。

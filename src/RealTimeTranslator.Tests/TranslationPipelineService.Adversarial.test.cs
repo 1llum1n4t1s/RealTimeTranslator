@@ -485,20 +485,25 @@ public sealed class TranslationPipelineServiceAdversarialTests
         Assert.AreEqual(2, finals[1].TranslatedText.EnumerateRunes().Count(), "😂/。 の 2 Rune に健全デコードできるはず");
     }
 
-    // v1.0.27 棚卸し削除: OnTranscriptDelta_HugeNoTerminatorWithComma_FallbackSplitAndNoQuadraticHang
-    // (D-7 句読点 fallback 廃止のため該当機能なし)
+    // v1.0.28 復活: D-7 fallback (句読点なし partial 強制分割) のテスト
+    // v1.0.27 で削除されたが、 2026-05-24 ARC Raiders 実機ログで「partial が 127 文字まで育って
+    // 完結文 emit=0」観測のため v1.0.28 で復活 (/rere #D-005)。
 
     /// <adversarial category="boundary" severity="high" />
     [TestMethod]
     [TestCategory("SentenceSplitBoundary")]
     [Timeout(15000)]
-    public void OnTranscriptDelta_HugeNoTerminatorNoComma_NoFinalNoCrash()
+    public void OnTranscriptDelta_HugeNoTerminatorNoComma_ForcedSplitWithDedup()
     {
+        // v1.0.28: 100,000 文字の同種文字連続 → D-7 fallback while ループで 80 文字単位に分割を試みる。
+        // しかし同じ「x」x 80 が繰り返されるので Bigram Jaccard 類似重複抑制 (v1.0.20) で 1 件のみ
+        // emit、 残りは類似抑制ログのみで _accumulatedText から消化される (= ハングしない)。
         var (pipeline, transcriber, emitted) = CreatePipeline();
         var huge = new string('x', 100_000);
         transcriber.RaiseDelta(huge);
         var finals = emitted.Where(x => x.IsFinal).ToList();
-        Assert.AreEqual(0, finals.Count, "読点も句点もない巨大文は fallback 対象外で確定 emit ゼロのはず");
+        Assert.IsTrue(finals.Count <= 1,
+            $"v1.0.28 D-7 fallback: 同種文字繰り返しは類似抑制で 1 件以下に収束 (実際 {finals.Count})");
     }
 
     /// <adversarial category="boundary" severity="med" />
@@ -800,8 +805,11 @@ public sealed class TranslationPipelineServiceAdversarialTests
     [TestMethod]
     [TestCategory("ResourceExhaustion")]
     [Timeout(10000)]
-    public void OnTranscriptDelta_NeverEndingMachineGunTalkWithoutComma_CompletesWithinTimeout()
+    public void OnTranscriptDelta_NeverEndingMachineGunTalkWithoutComma_ForcedSplitWithinTimeout()
     {
+        // v1.0.28: 「あ」を 50,000 件 delta → D-7 fallback で 80 文字到達のたびに切り出し試行。
+        // 同じ「あ」x 80 が繰り返されるので Bigram Jaccard 類似抑制で 1 件以下に収束。
+        // 重要なのは「ハングしない」「9 秒以内に完了」「O(n²) 劣化なし」(while ループで O(N))。
         var (pipeline, transcriber, emitted) = ResourceTestPipelineFactory.Create();
         try
         {
@@ -810,8 +818,10 @@ public sealed class TranslationPipelineServiceAdversarialTests
             for (int i = 0; i < count; i++) transcriber.RaiseDelta("あ");
             sw.Stop();
 
-            Assert.AreEqual(0, emitted.Count(x => x.IsFinal), "句点・読点なしの delta では IsFinal emit はゼロのはず");
-            Assert.IsTrue(sw.Elapsed < TimeSpan.FromSeconds(9), $"句点なし {count} 件の delta 処理が 9 秒未満で完了するべき (実際 {sw.Elapsed.TotalSeconds:F1}s) — O(n^2) 劣化/ハング検出");
+            Assert.IsTrue(emitted.Count(x => x.IsFinal) <= 1,
+                $"「あ」連続は類似重複抑制で 1 件以下に収束 (実際 {emitted.Count(x => x.IsFinal)})");
+            Assert.IsTrue(sw.Elapsed < TimeSpan.FromSeconds(9),
+                $"句点なし {count} 件の delta 処理が 9 秒未満で完了するべき (実際 {sw.Elapsed.TotalSeconds:F1}s) — D-7 fallback while ループの O(N) 性検証");
         }
         finally { pipeline.Dispose(); }
     }

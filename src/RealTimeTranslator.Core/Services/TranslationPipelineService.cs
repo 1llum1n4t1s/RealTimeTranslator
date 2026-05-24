@@ -561,6 +561,54 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                     _throttleTimer.Change(DeltaThrottle, Timeout.InfiniteTimeSpan);
                 }
             }
+
+            // === D-7 fallback (v1.0.28 復活、 /rere #D-005 対策) ===
+            // 句点を一切入れない server 出力 (ARC Raiders のセリフ等で 2026-05-24 実機観測) で
+            // partial が永遠に伸び続けて「育ちすぎて途切れない」UX 破綻を防ぐ最終安全弁。
+            // 完結文 emit の後に判定するため、 既に句点で切れている trailing 部分のみが対象。
+            // _cachedRealtimeSettings.MaxPartialChars (default 80) 文字を超えたら強制分割。
+            //
+            // while ループ化の理由: 1 delta で巨大な (例: 100,000 文字) テキストが流れ込んだ場合、
+            // 1 回切るだけだと残り 99,920 文字が partial として残り「育ちすぎる」問題が残存する。
+            // ループで _accumulatedText.Length が maxChars 未満になるまで切り続ける。
+            // 各 iteration は O(1) のスキャン + O(分割サイズ) の Remove なので、 全体は O(N)。
+            int maxChars = _cachedRealtimeSettings.MaxPartialChars;
+            while (maxChars > 0 && _accumulatedText.Length >= maxChars)
+            {
+                int splitIdx = FindForcedSplitIndex(_accumulatedText, maxChars);
+                if (splitIdx <= 0 || splitIdx > _accumulatedText.Length)
+                {
+                    // 防御: FindForcedSplitIndex は本来 1〜sb.Length を返すが、
+                    // 万一 0 や範囲外を返したら無限ループを防ぐため break。
+                    break;
+                }
+
+                var forcedSentence = _accumulatedText.ToString(0, splitIdx);
+                if (string.IsNullOrWhiteSpace(forcedSentence))
+                {
+                    // 空白のみの fragment は emit せず捨てる
+                    _accumulatedText.Remove(0, splitIdx);
+                    continue;
+                }
+
+                if (!IsSimilarToRecentEmission(forcedSentence))
+                {
+                    (completedSentences ??= new()).Add((_currentSegmentId, forcedSentence));
+                    RecordEmission(forcedSentence);
+                    Logger.Info($"D-7 fallback: 句点なし {forcedSentence.Length} 文字超過 (>= {maxChars}) のため強制分割。 SegmentId={ShortSegmentId(_currentSegmentId)} 末尾='{TruncateForLog(forcedSentence)}'");
+                }
+                else
+                {
+                    Logger.Info($"D-7 fallback (類似重複抑制): SegmentId={ShortSegmentId(_currentSegmentId)} 内容='{TruncateForLog(forcedSentence)}'");
+                }
+                _currentSegmentId = Guid.NewGuid().ToString();
+                _lastFinalizedTranscript.Append(forcedSentence);
+                _accumulatedText.Remove(0, splitIdx);
+                _lastEmitTime = DateTime.UtcNow;
+                _hasPendingDelta = false;
+                _throttleTimer.Change(Timeout.Infinite, Timeout.Infinite);
+                emitPartial = _accumulatedText.Length > 0;
+            }
         }
 
         // ロック外で完結文を emit。
@@ -1022,6 +1070,51 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         if (!isFinalContext && prevIsDigit && i == length - 1) return false;
 
         return true;
+    }
+
+
+    /// <summary>
+    /// D-7 fallback (v1.0.28): 句点なしで partial が <paramref name="maxChars"/> 文字以上に成長したときの
+    /// 強制分割位置を決定する。 OnTranscriptDelta の lock 内から呼ばれる前提で、 外部副作用なしの純粋関数。
+    /// </summary>
+    /// <remarks>
+    /// 優先順位:
+    ///   1. 末尾 30 文字以内の「、」「,」の直後で切る (自然な節目優先)
+    ///   2. なければ末尾 30 文字以内の半角/全角空白の直後で切る
+    ///   3. それでもなければ maxChars 位置で強制切断 (最終手段)
+    /// 戻り値は分割位置 (0 = 分割不要、 sb.Length 以下)。 呼び出し側で sb.ToString(0, idx) で切り出せる。
+    /// </remarks>
+    internal static int FindForcedSplitIndex(StringBuilder sb, int maxChars)
+    {
+        if (sb is null) throw new ArgumentNullException(nameof(sb));
+        if (maxChars <= 0 || sb.Length < maxChars) return 0;
+
+        const int LookbackWindow = 30;
+        int scanStart = Math.Max(0, maxChars - LookbackWindow);
+        int scanEnd = sb.Length;
+
+        // 1. 末尾「、」「,」を探す (新しいものから)
+        for (int i = scanEnd - 1; i >= scanStart; i--)
+        {
+            char c = sb[i];
+            if (c == '、' || c == ',')
+            {
+                return i + 1;
+            }
+        }
+
+        // 2. 末尾「 」「　」を探す
+        for (int i = scanEnd - 1; i >= scanStart; i--)
+        {
+            char c = sb[i];
+            if (c == ' ' || c == '　')
+            {
+                return i + 1;
+            }
+        }
+
+        // 3. 最終手段: maxChars 位置で強制切断
+        return maxChars;
     }
 
     // ═══════════════════════════════════════════════════════════════
