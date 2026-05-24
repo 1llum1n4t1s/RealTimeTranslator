@@ -58,12 +58,14 @@ public sealed record TranslationLogEntry(
             return false;
         }
 
+        // /rere 第2R #B2-R2-001 (v1.0.29 候補): Sanitize で付与した `'` prefix を剥がして元値に戻す
+        // (round-trip 対称化)。 ADV ログ UI 表示で「'=cmd」が見えるのを防ぐ。
         entry = new TranslationLogEntry(
             Timestamp: timestamp,
-            Language: parts[1],
-            SessionId: parts[2],
-            ProcessName: parts[3],
-            Text: parts[4]);
+            Language: UnescapeCsvInjectionPrefix(parts[1]),
+            SessionId: UnescapeCsvInjectionPrefix(parts[2]),
+            ProcessName: UnescapeCsvInjectionPrefix(parts[3]),
+            Text: UnescapeCsvInjectionPrefix(parts[4]));
         return true;
     }
 
@@ -92,5 +94,25 @@ public sealed record TranslationLogEntry(
             return "'" + s;
         }
         return s;
+    }
+
+
+    /// <summary>
+    /// /rere 第2R #B2-R2-001 (v1.0.29 候補): Sanitize で先頭に付与した `'` を剥がして元値に戻す。
+    /// ADV ログ UI に「'=cmd」が見える round-trip 非対称を解消する。
+    /// パターン: `'=`, `'+`, `'-`, `'@` の 4 種のみ剥がす (Sanitize の prefix 対象と一致)。
+    /// 元値が `'=cmd` のように本当に `'` で始まる稀ケースは Sanitize 後と区別不能だが、
+    /// 攻撃面の Excel CSV インジェクション対策効果は維持されるため OWASP 推奨パターンとして許容。
+    /// </summary>
+    private static string UnescapeCsvInjectionPrefix(string value)
+    {
+        // 呼び元 (TryParseTsvLine) は string.Split 由来で null は来ない。 NRT 解析の警告対策で nullable check を省く。
+        if (value.Length < 2 || value[0] != '\'') return value;
+        char second = value[1];
+        if (second == '=' || second == '+' || second == '-' || second == '@')
+        {
+            return value.Substring(1);
+        }
+        return value;
     }
 }

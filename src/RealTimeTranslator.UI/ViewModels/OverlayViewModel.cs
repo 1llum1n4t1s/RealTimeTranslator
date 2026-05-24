@@ -27,8 +27,10 @@ public partial class OverlayViewModel : ObservableObject, IDisposable
     [ObservableProperty]
     public partial ObservableCollection<SubtitleDisplayItem> Subtitles { get; set; } = new();
 
+    // /rere 第2R #B2-010-CONT (v1.0.29 候補): 既定値を AppSettings.cs:70 / SettingsViewModel.cs SanitizeSettings 矯正先と統一。
+    // 旧 "Yu Gothic UI" は OS フォールバック想定の歴史残骸、 現行アプリ既定は同梱 IBM Plex Sans JP に統一。
     [ObservableProperty]
-    public partial string FontFamily { get; set; } = "Yu Gothic UI";
+    public partial string FontFamily { get; set; } = "IBM Plex Sans JP";
 
     [ObservableProperty]
     public partial double FontSize { get; set; } = 24;
@@ -176,7 +178,7 @@ public partial class OverlayViewModel : ObservableObject, IDisposable
     private static string ResolveFontFamily(string familyName)
     {
         if (string.IsNullOrWhiteSpace(familyName))
-            return "Yu Gothic UI";
+            return "IBM Plex Sans JP"; // /rere 第2R #B2-010-CONT: AppSettings.cs:70 default と統一
         return EmbeddedFontMap.TryGetValue(familyName, out var uri) ? uri : familyName;
     }
 

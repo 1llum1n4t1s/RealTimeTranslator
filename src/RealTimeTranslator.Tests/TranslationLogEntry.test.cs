@@ -246,4 +246,54 @@ public class TranslationLogEntryTests
         Assert.IsTrue(line.Contains("\t'=cmd|"),
             $"DDE 攻撃ペイロードは ' で無害化されるはず: {line}");
     }
+
+    // /rere 第2R #B2-R2-001: TryParseTsvLine で `'` prefix を剥がして round-trip 対称化を検証
+
+    [TestMethod]
+    [TestCategory("CsvInjection")]
+    public void RoundTrip_CsvInjectionPrefix_RestoresOriginalText()
+    {
+        var original = new TranslationLogEntry(SampleTime, "ja", "s1", "Chrome", "=cmd|'/C calc'!A0");
+        var line = original.ToTsvLine();
+        Assert.IsTrue(line.Contains("\t'=cmd|"), "書き込み時は ' で無害化");
+
+        var ok = TranslationLogEntry.TryParseTsvLine(line, out var parsed);
+        Assert.IsTrue(ok);
+        Assert.AreEqual("=cmd|'/C calc'!A0", parsed!.Text, "UnescapeCsvInjectionPrefix で元値復元");
+    }
+
+    [TestMethod]
+    [TestCategory("CsvInjection")]
+    public void RoundTrip_ProcessNamePrefix_RestoresOriginal()
+    {
+        var original = new TranslationLogEntry(SampleTime, "ja", "s1", "=HYPERLINK(\"http://evil\",X)", "ok");
+        var line = original.ToTsvLine();
+        var ok = TranslationLogEntry.TryParseTsvLine(line, out var parsed);
+        Assert.IsTrue(ok);
+        Assert.AreEqual("=HYPERLINK(\"http://evil\",X)", parsed!.ProcessName, "ProcessName も復元");
+        Assert.AreEqual("ok", parsed.Text);
+    }
+
+    [TestMethod]
+    [TestCategory("CsvInjection")]
+    public void RoundTrip_SafeText_NoChange()
+    {
+        var original = new TranslationLogEntry(SampleTime, "ja", "s1", "Chrome", "こんにちは。");
+        var line = original.ToTsvLine();
+        var ok = TranslationLogEntry.TryParseTsvLine(line, out var parsed);
+        Assert.IsTrue(ok);
+        Assert.AreEqual("こんにちは。", parsed!.Text, "安全テキストは変更されない");
+    }
+
+    [TestMethod]
+    [TestCategory("CsvInjection")]
+    public void RoundTrip_SingleQuoteFollowedBySafeChar_NotStripped()
+    {
+        // 翻訳の「'hello'」のように `'` で始まり 2 文字目が `=+-@` 以外なら剥がさない
+        var original = new TranslationLogEntry(SampleTime, "ja", "s1", "Chrome", "'hello'");
+        var line = original.ToTsvLine();
+        var ok = TranslationLogEntry.TryParseTsvLine(line, out var parsed);
+        Assert.IsTrue(ok);
+        Assert.AreEqual("'hello'", parsed!.Text, "2 文字目が =+-@ でなければ ' は剥がさない");
+    }
 }
