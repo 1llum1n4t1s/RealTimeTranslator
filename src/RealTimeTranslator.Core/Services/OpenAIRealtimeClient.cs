@@ -41,6 +41,9 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
     private CancellationTokenSource? _cts;
     private Task? _receiveTask;
     private Task? _sendTask;
+    // /rere #C2-005: 容量を定数化して SendAudio のドロップ件数検知 (reader.Count >= capacity) と
+    // Channel 構築時の指定を 1 箇所で管理する。 旧実装は line 156 / 908 で 30 をハードコードしていた。
+    private const int SendChannelCapacity = 30;
     private Channel<byte[]>? _sendChannel;
     private OpenAIRealtimeSettings _settings = new();
     private int _reconnectAttempts;
@@ -153,7 +156,7 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
             // 容量 30: 1 chunk ≒ 80ms で約 2.4 秒分のバッファ。
             // 旧 100 (≒8秒) だと DropOldest 発動まで時間がかかり追いつきが遅かった。
             // 30 にすることでバックログ時の最大遅延を ~2.4 秒に短縮する。
-            _sendChannel = Channel.CreateBounded<byte[]>(new BoundedChannelOptions(30)
+            _sendChannel = Channel.CreateBounded<byte[]>(new BoundedChannelOptions(SendChannelCapacity)
             {
                 FullMode = BoundedChannelFullMode.DropOldest,
                 SingleReader = true
@@ -173,14 +176,27 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
         // 再接続中・接続前は音声を捨てる（新セッションでコンテキスト連続性がないため送っても無駄）。
         if (State != ConnectionState.Connected) return;
 
-        var writer = _sendChannel?.Writer;
-        if (writer is null) return;
+        var channel = _sendChannel;
+        if (channel is null) return;
+        var reader = channel.Reader;
+        var writer = channel.Writer;
 
+        // /rere #C2-005 修正 (v1.0.28): BoundedChannelFullMode.DropOldest 仕様では writer.TryWrite が
+        // 「Channel.Complete 後」以外は常に true を返す。 古いものが捨てられたかは TryWrite の戻り値だけでは
+        // 判定できないため、 write の直前に reader.Count が capacity (SendChannelCapacity=30) に達しているか
+        // をチェックし、 達していれば「次の write で古いものが捨てられる」= ドロップ発生としてカウントする。
+        // (厳密には reader.Count を読んでから writer.TryWrite するまでの間に reader が消費する race 余地が
+        //  あるが、 集計用メトリクスなので 1〜2 件の誤差は許容。 旧実装は常時 0 で診断が完全に死んでいた。)
+        if (reader.Count >= SendChannelCapacity)
+        {
+            Interlocked.Increment(ref _totalDroppedAudioChunks);
+        }
         if (!writer.TryWrite(pcm16Audio))
         {
-            // BoundedChannel(100, DropOldest) で最古チャンクが捨てられた場合に到達する経路。
-            // TryWrite 自体は DropOldest でも true を返すのが通常だが、Channel が Complete されていると false。
-            // どちらにせよ書けなかった事実をメトリクス化する。
+            // Channel.Complete 後 (DisconnectAsync / Dispose 中) はここに到達する。
+            // capacity チェックで既に +1 した分との二重計上を避けるため、 ここでは +1 しない設計も可能だが、
+            // Complete 中の write は本来呼ばれないはずなので二重計上の影響は実運用上ゼロ。
+            // 安全側で +1 して「書けなかった事実」を可視化する。
             Interlocked.Increment(ref _totalDroppedAudioChunks);
         }
     }
@@ -905,7 +921,7 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
                     await CleanupAsync().ConfigureAwait(false);
 
                     _cts = new CancellationTokenSource();
-                    _sendChannel = Channel.CreateBounded<byte[]>(new BoundedChannelOptions(30)
+                    _sendChannel = Channel.CreateBounded<byte[]>(new BoundedChannelOptions(SendChannelCapacity)
                     {
                         FullMode = BoundedChannelFullMode.DropOldest,
                         SingleReader = true
