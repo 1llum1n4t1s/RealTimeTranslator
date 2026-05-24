@@ -411,7 +411,9 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
         try
         {
             await _ws.ConnectAsync(uri, ct).ConfigureAwait(false);
-            _reconnectAttempts = 0;
+            // /rere 第2R #B1-R2-005 (v1.0.29 候補): plain `= 0` を Interlocked.Exchange に統一。
+            // 他 3 箇所 (L130, L829, L847) と書き込みプロトコルを揃えて race を構造的に解消。
+            Interlocked.Exchange(ref _reconnectAttempts, 0);
             SetState(ConnectionState.Connected);
             Logger.Info("OpenAI Realtime WebSocket 接続成功");
             // 60 分のセッション上限に達する前 (~55 分) にプロアクティブ再接続するタイマーを武装する。
@@ -844,8 +846,9 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
                    && _state != ConnectionState.Connected
                    && _state != ConnectionState.Failed)
             {
-                _reconnectAttempts++;
-                if (_reconnectAttempts > _settings.MaxReconnectAttempts)
+                // /rere 第2R #B1-R2-005 (v1.0.29 候補): plain `++` を Interlocked.Increment に統一。
+                var currentAttempt = Interlocked.Increment(ref _reconnectAttempts);
+                if (currentAttempt > _settings.MaxReconnectAttempts)
                 {
                     Logger.Error($"再接続上限 ({_settings.MaxReconnectAttempts}) 到達");
                     _shouldReconnect = false;
@@ -856,13 +859,13 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
                 }
 
                 SetState(ConnectionState.Reconnecting);
-                var shift = Math.Min(_reconnectAttempts - 1, 30);
+                var shift = Math.Min(currentAttempt - 1, 30);
                 var baseDelay = (int)Math.Min((long)_settings.ReconnectDelayMs << shift, 30000L);
                 // 同期再接続で OpenAI 側に集中アクセスしないよう ±20% の jitter を加える。
                 // Random.Shared は thread-safe (.NET 6+)。
                 var jitterPercent = (Random.Shared.NextDouble() * 0.4) - 0.2;
                 var delay = (int)Math.Clamp(baseDelay * (1.0 + jitterPercent), 100, 30000);
-                Logger.Info($"再接続試行 {_reconnectAttempts}/{_settings.MaxReconnectAttempts}（{delay}ms 後、base={baseDelay}ms）");
+                Logger.Info($"再接続試行 {currentAttempt}/{_settings.MaxReconnectAttempts}（{delay}ms 後、base={baseDelay}ms）");
 
                 // ⭐ rere P1 #7: Task.Delay と _connectLock.WaitAsync の両方に CancellationToken を渡して、
                 // Disconnect / Dispose / アプリ終了で即座に reconnect ループを抜けられるようにする。
