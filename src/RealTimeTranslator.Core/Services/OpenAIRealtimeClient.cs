@@ -186,19 +186,22 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
         // /rere #C2-005 修正 (v1.0.28): BoundedChannelFullMode.DropOldest 仕様では writer.TryWrite が
         // 「Channel.Complete 後」以外は常に true を返す。 古いものが捨てられたかは TryWrite の戻り値だけでは
         // 判定できないため、 write の直前に reader.Count が capacity (SendChannelCapacity=30) に達しているか
-        // をチェックし、 達していれば「次の write で古いものが捨てられる」= ドロップ発生としてカウントする。
-        // (厳密には reader.Count を読んでから writer.TryWrite するまでの間に reader が消費する race 余地が
-        //  あるが、 集計用メトリクスなので 1〜2 件の誤差は許容。 旧実装は常時 0 で診断が完全に死んでいた。)
-        if (reader.Count >= SendChannelCapacity)
-        {
-            Interlocked.Increment(ref _totalDroppedAudioChunks);
-        }
+        // をチェックする。
+        // /rere 第2R #B1-R2-004 (v1.0.29 候補): 二重カウント解消 either-or 構造化。
+        // 旧実装は ① capacity 到達で +1、 ② TryWrite false で +1 の独立 2 段で、 Disconnect/Channel.Complete
+        // 直後の write が capacity 到達状態のまま失敗すると同じ 1 件で +2 される race があった。
+        // either-or にして、 通常運転 (Connected) は capacity チェックのみ、 Complete 経路の TryWrite=false は
+        // 別カウントとして区別する。
+        bool wasFull = reader.Count >= SendChannelCapacity;
         if (!writer.TryWrite(pcm16Audio))
         {
-            // Channel.Complete 後 (DisconnectAsync / Dispose 中) はここに到達する。
-            // capacity チェックで既に +1 した分との二重計上を避けるため、 ここでは +1 しない設計も可能だが、
-            // Complete 中の write は本来呼ばれないはずなので二重計上の影響は実運用上ゼロ。
-            // 安全側で +1 して「書けなかった事実」を可視化する。
+            // Channel.Complete 後 (DisconnectAsync / Dispose 中) のみここに到達する。
+            // capacity 到達は二度カウントしない (wasFull は無視) — Complete による失敗として 1 件カウント。
+            Interlocked.Increment(ref _totalDroppedAudioChunks);
+        }
+        else if (wasFull)
+        {
+            // DropOldest 発動 = 古い 1 件が捨てられた。
             Interlocked.Increment(ref _totalDroppedAudioChunks);
         }
     }

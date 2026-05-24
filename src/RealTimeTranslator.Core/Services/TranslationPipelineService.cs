@@ -67,6 +67,12 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     // 切替えるための補助。 同内容の再 emit は出さない (= 1.3 件/秒の delta 流入で爆発させない)。
     // ShouldLogAtCount の間引きより情報量が多く、 全件出力より節度がある中間ログ密度を実現。
     private int _lastLoggedPartialLength = -1;
+    // /rere 第2R #C1-R2-002 (v1.0.29 候補): 同長 & 同 SegmentId の partial 再 emit を抑止するためのキャッシュ。
+    // 内容が変わってない再 emit (throttle 再発火等) で ToString + SubtitleGenerated + UI binding equality を skip。
+    // 60 分セッション 60k emit のうち重複分を概ね 1/3 削減見込み (GC pressure 低減)。
+    // SegmentId 切替 (新セグメント) では length=0 から始まるので自動的に invalid 化される。
+    private int _lastEmittedPartialLength = -1;
+    private string _lastEmittedPartialSegmentId = string.Empty;
 
     // 直前の ConnectionState を保持。 Reconnecting → Connected 遷移を検出して
     // 字幕状態 (_lastFinalizedTranscript / _currentSegmentId) をリセットするため (rere P0 #1)。
@@ -661,6 +667,18 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
 
         var partialText = _accumulatedText.ToString();
         var segmentId = _currentSegmentId;
+
+        // /rere 第2R #C1-R2-002 (v1.0.29 候補): 同長 & 同 SegmentId の partial 再 emit を skip する。
+        // 30ms throttle + OnThrottleTimerElapsed の組み合わせで「内容が変わってないのに再 emit」が発火する
+        // ケース (D-7 fallback で partial 経路増加した v1.0.28 以降特に顕著) で、 ToString() の O(L) コピー +
+        // SubtitleGenerated 発火 + 下流 UI binding equality 比較 (フル走査) を全部 skip して GC pressure を削減。
+        // 60 分セッション 60k emit のうち重複分を概ね 1/3 削減見込み。
+        if (partialText.Length == _lastEmittedPartialLength && segmentId == _lastEmittedPartialSegmentId)
+        {
+            return;
+        }
+        _lastEmittedPartialLength = partialText.Length;
+        _lastEmittedPartialSegmentId = segmentId;
 
         var subtitle = new SubtitleItem
         {
