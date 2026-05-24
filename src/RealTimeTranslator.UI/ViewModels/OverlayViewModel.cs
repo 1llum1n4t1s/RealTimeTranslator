@@ -270,7 +270,17 @@ public partial class SubtitleDisplayItem : ObservableObject
         {
             TextBrush = newBrush;
         }
-        _displayEndTime = DateTime.Now.AddSeconds(settings.DisplayDuration);
+        // ⭐ v1.0.24 partial 連結方式: partial (IsFinal=false) は画面上で永続表示する。
+        //    次の delta で Update が呼ばれて DisplayText が成長していくか、
+        //    最終的に IsFinal=true で確定 → DisplayDuration カウントダウン開始、 という流れ。
+        //
+        //    旧実装は partial も final も同じく `Now + DisplayDuration` で消える期限を設定していたため、
+        //    OpenAI Realtime Translate API の server-side delta が DisplayDuration (5 秒) 以上 silence した場合
+        //    partial が画面から消えてしまうバグ (2026-05-24 ゆろさん観察: 「そ」が 5 秒後に消える) があった。
+        //    TranslationPipelineService 側は最大寿命 45 秒で連結を維持していても、 UI 側が消すと意味がない。
+        _displayEndTime = item.IsFinal
+            ? DateTime.Now.AddSeconds(settings.DisplayDuration)
+            : DateTime.MaxValue;
         Opacity = 1.0;
     }
 

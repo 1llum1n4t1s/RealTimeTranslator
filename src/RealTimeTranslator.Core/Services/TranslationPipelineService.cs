@@ -74,6 +74,10 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     // 「字幕が来ない」「文が切れない」「字幕が成長し続ける」系の調査で経路を可視化する。
     private long _partialEmitCount;
     private long _completedEmitCount;
+    // v1.0.25 デバッグ用: 直前 partial emit 時の累積長を覚えておき、 「累積長が伸びた時のみ Info ログ」に
+    // 切替えるための補助。 同内容の再 emit は出さない (= 1.3 件/秒の delta 流入で爆発させない)。
+    // ShouldLogAtCount の間引きより情報量が多く、 全件出力より節度がある中間ログ密度を実現。
+    private int _lastLoggedPartialLength = -1;
 
     // 直前の ConnectionState を保持。 Reconnecting → Connected 遷移を検出して
     // 字幕状態 (_lastFinalizedTranscript / _currentSegmentId) をリセットするため (rere P0 #1)。
@@ -496,6 +500,10 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
             if (appendStart == 0 && totalLen > 0 && _segmentStartUtc == DateTime.MinValue)
             {
                 _segmentStartUtc = DateTime.UtcNow;
+                // v1.0.25 デバッグ用: 新セグメント開始 (= 連結ウィンドウ開始) を明示ログ。
+                // これと「完結文 emit」「最大寿命タイマー発火」を組み合わせれば 1 セグメントのライフサイクルが全部追える。
+                _lastLoggedPartialLength = -1; // 新セグメントで partial ログをリセット
+                Logger.Info($"新セグメント開始: SegmentId={ShortSegmentId(_currentSegmentId)} 最大寿命={GetSafeMaxSegmentLifetimeSec():F0}秒");
             }
 
             if (!_latencyStopwatch.IsRunning)
@@ -667,12 +675,15 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
 
         SubtitleGenerated?.Invoke(this, subtitle);
 
-        // 頻度抑制: partial は throttle (DeltaThrottle、 現在 30ms) ごとに発火するので全件 Info にすると爆発する。
-        // 1, 10, 50, 100, ... と間引いて累積長と SegmentId 推移を観測できるようにする。
+        // v1.0.25 デバッグ用ログ密度: 「累積長が伸びた時のみ Info」+「ShouldLogAtCount に該当する節目」も合わせて出力。
+        // partial 連結方式の挙動 (「そ → そし → そして → ...」の成長過程) を画面 ↔ ログで突き合わせ可能にする。
+        // 同内容の再 emit (throttle で再発火など) はログから除外して爆発を防止。
         var count = Interlocked.Increment(ref _partialEmitCount);
-        if (ShouldLogAtCount(count))
+        bool grew = partialText.Length != _lastLoggedPartialLength;
+        if (grew || ShouldLogAtCount(count))
         {
             Logger.Info($"partial emit #{count}: SegmentId={ShortSegmentId(segmentId)} 累積長={partialText.Length} 内容='{TruncateForLog(partialText)}'");
+            _lastLoggedPartialLength = partialText.Length;
         }
     }
 
@@ -687,25 +698,32 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         double lifetimeSec;
         double elapsed;
         bool shouldFinalize;
+        string segmentIdSnapshot;
+        int trailingLen;
         lock (_textLock)
         {
             if (_accumulatedText.Length == 0 || _segmentStartUtc == DateTime.MinValue)
             {
                 // 既に確定済み / セグメント開始時刻がリセット済み → 何もしない。
+                Logger.Info("最大寿命タイマー発火: 早期 return (trailing 空 or セグメント未開始)");
                 return;
             }
             lifetimeSec = GetSafeMaxSegmentLifetimeSec();
             elapsed = (DateTime.UtcNow - _segmentStartUtc).TotalSeconds;
             shouldFinalize = elapsed >= lifetimeSec;
+            segmentIdSnapshot = _currentSegmentId;
+            trailingLen = _accumulatedText.Length;
         }
 
         if (shouldFinalize)
         {
+            Logger.Info($"最大寿命タイマー発火: 寿命超過 → 強制確定 SegmentId={ShortSegmentId(segmentIdSnapshot)} 経過={elapsed:F1}秒 / 寿命={lifetimeSec:F0}秒 trailing長={trailingLen}");
             FinalizePendingPartial($"最大寿命超過 ({lifetimeSec:F0}秒)");
         }
         else
         {
             // 寿命が伸びたケース (設定 hot reload 等) → 残時間でリスケジュール
+            Logger.Info($"最大寿命タイマー発火: 寿命未到達 → リスケ SegmentId={ShortSegmentId(segmentIdSnapshot)} 経過={elapsed:F1}秒 / 寿命={lifetimeSec:F0}秒 残り={lifetimeSec - elapsed:F1}秒");
             SyncIdleFinalizeTimer();
         }
     }
