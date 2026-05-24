@@ -586,7 +586,13 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                 var forcedSentence = _accumulatedText.ToString(0, splitIdx);
                 if (string.IsNullOrWhiteSpace(forcedSentence))
                 {
-                    // 空白のみの fragment は emit せず捨てる
+                    // 空白のみの fragment は emit せず捨てる。
+                    // /rere 第2R #B1-R2-003 (v1.0.29 候補): _lastFinalizedTranscript.Append を必ず実行する。
+                    // 旧実装は emit skip と同時に Append も skip していたが、 server transcript には空白も含まれて
+                    // 累積されているため、 client 側で append しないと OnTranscriptCompleted の prefix 比較で
+                    // StringBuilderIsPrefixOf が false → done 経路全 skip → 字幕完全停止リスク。
+                    // emit はしないが累積整合性のため Append は必須。
+                    _lastFinalizedTranscript.Append(forcedSentence);
                     _accumulatedText.Remove(0, splitIdx);
                     continue;
                 }
@@ -901,6 +907,18 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         var previousState = _lastConnectionState;
         _lastConnectionState = state;
 
+        // /rere 第2R #D-R2-012 (v1.0.29 候補、 シナリオ X1 対策): Reconnecting 遷移時に _silenceStartUtc をリセットする。
+        // 背景: VAD Silence 中の無音 PCM (SilencePaddingMs=5000ms 内) は SendAudio の `State != Connected` 経路で
+        // silently drop されるため (OpenAIRealtimeClient.cs:177)、 wall-clock ベースの padding 経過判定が偽陽性になる。
+        // 例: Wi-Fi 3 秒切断 → 再接続復帰 → 直後の Silence 判定で `silenceMs > paddingMs` → 無音 PCM 送信即停止
+        //     → #D-001 戦略 (server gap 対策) が無効化される。
+        // 修正: Reconnecting 遷移時に _silenceStartUtc をリセットして、 復帰後の次の Silence 突入で padding をやり直し。
+        if (state == ConnectionState.Reconnecting && previousState != ConnectionState.Reconnecting)
+        {
+            _silenceStartUtc = DateTime.MinValue;
+            Logger.Info($"OnConnectionStateChanged: Reconnecting 遷移 ({previousState} → Reconnecting) — _silenceStartUtc リセット (#D-R2-012 padding 偽陽性予防)");
+        }
+
         // /rere #D-002 (v1.0.28 拡張): Connected 遷移時に字幕状態をリセットする。
         //
         // 旧 v1.0.27 実装は `Reconnecting → Connected` 経路でのみリセットしていたが、
@@ -917,6 +935,13 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         // 既に空のため Clear() は no-op で問題なし。
         if (state == ConnectionState.Connected && previousState != ConnectionState.Connected)
         {
+            // /rere 第2R #B1-R2-006 (v1.0.29 候補): Clear 前に partial 表示中の文を確定 emit して UX 損失を防ぐ。
+            // 55 分プロアクティブ再接続 (_sessionRefreshTimer) 中の発話中央で「partial 字幕が消える」UX 違和感を回避。
+            // FinalizePendingPartial は内部で _textLock を取って lock 外 emit するので、 ここから lock 外呼び出しで安全。
+            // 確定 emit 後の _lastFinalizedTranscript.Append は直後の Clear() で消えるが副作用なし。
+            // 「空 partial」(IsNullOrWhiteSpace) のときは早期 return するので通常時は no-op。
+            FinalizePendingPartial("再接続前確定");
+
             lock (_textLock)
             {
                 Logger.Info($"OnConnectionStateChanged: Connected 遷移 ({previousState} → Connected) — 字幕状態をリセット (旧 finalized 長={_lastFinalizedTranscript.Length})");
