@@ -901,16 +901,25 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         var previousState = _lastConnectionState;
         _lastConnectionState = state;
 
-        // 再接続成功時 (Reconnecting → Connected) に字幕状態をリセットする (rere P0 #1)。
-        // 新セッションの transcript.done は累積カウンタゼロから始まるため、 旧セッションの
-        // _lastFinalizedTranscript を保持したままだと StartsWith 仮定が崩れて、 done 経路で
-        // 重複字幕や欠落が発生する経路がある。 OnTranscriptCompleted の skip 防御だけでは
-        // 不十分なので、 ここでも明示的にリセットしてゼロから累積し直す。
-        if (state == ConnectionState.Connected && previousState == ConnectionState.Reconnecting)
+        // /rere #D-002 (v1.0.28 拡張): Connected 遷移時に字幕状態をリセットする。
+        //
+        // 旧 v1.0.27 実装は `Reconnecting → Connected` 経路でのみリセットしていたが、
+        // NW スタック種別 (Wi-Fi/有線/VPN) によっては `Disconnected → Connected` /
+        // `Failed → Connected` / `Connecting → Connected` のように Reconnecting を経由しない
+        // 直接遷移パターンが存在する。 これらの経路ではリセットされず、 旧セッションの
+        // `_lastFinalizedTranscript` が残ったままで新セッションの累積 0 始まりと
+        // prefix mismatch → OnTranscriptCompleted で skip 連発 → **字幕完全停止 + 再起動以外復旧不能**
+        // という最悪シナリオを起こしうる。
+        //
+        // 修正: `state == Connected` で `previousState != Connected` なら **常時 Clear**。
+        // 接続瞬間は必ずリセットして「server transcript の累積 0 始まり」と整合させる。
+        // 初回接続 (Disconnected → Connecting → Connected) でも走るが、 _lastFinalizedTranscript は
+        // 既に空のため Clear() は no-op で問題なし。
+        if (state == ConnectionState.Connected && previousState != ConnectionState.Connected)
         {
             lock (_textLock)
             {
-                Logger.Info($"OnConnectionStateChanged: 再接続成功 — 字幕状態をリセット (旧 finalized 長={_lastFinalizedTranscript.Length})");
+                Logger.Info($"OnConnectionStateChanged: Connected 遷移 ({previousState} → Connected) — 字幕状態をリセット (旧 finalized 長={_lastFinalizedTranscript.Length})");
                 _lastFinalizedTranscript.Clear();
                 _accumulatedText.Clear();
                 _recentEmittedSentences.Clear();

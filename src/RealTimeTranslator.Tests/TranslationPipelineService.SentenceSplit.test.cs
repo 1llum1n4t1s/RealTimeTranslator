@@ -249,6 +249,96 @@ public sealed class TranslationPipelineServiceSentenceSplitTests
         Assert.AreEqual("新セッションの文。", emitted.First(x => x.IsFinal).TranslatedText);
     }
 
+    /// <test rere="#D-002 (v1.0.28 拡張)" />
+    [TestMethod]
+    [TestCategory("SentenceSplit")]
+    public void OnConnectionStateChanged_DisconnectedToConnected_ResetsFinalizedTranscript()
+    {
+        // /rere #D-002: NW スタック種別によっては Reconnecting を経由せず
+        // Disconnected → Connected の直接遷移が発生する。 旧 v1.0.27 はこの経路で
+        // _lastFinalizedTranscript が残り字幕完全停止していた (再起動以外復旧不能)。
+        var (pipeline, transcriber, emitted) = CreatePipeline();
+        transcriber.RaiseDelta("旧セッションの文。");
+        Assert.AreEqual(1, emitted.Count(x => x.IsFinal), "旧セッションで 1 件 emit");
+
+        // Disconnected → Connected 直接遷移 (Reconnecting を経由しない)
+        transcriber.RaiseStateChanged(ConnectionState.Disconnected);
+        transcriber.RaiseStateChanged(ConnectionState.Connected);
+
+        emitted.Clear();
+        transcriber.RaiseDelta("新セッションの文。");
+
+        Assert.AreEqual(1, emitted.Count(x => x.IsFinal),
+            "Disconnected → Connected 直接遷移でも _lastFinalizedTranscript はリセットされるべき (#D-002)");
+        Assert.AreEqual("新セッションの文。", emitted.First(x => x.IsFinal).TranslatedText);
+    }
+
+    /// <test rere="#D-002 (v1.0.28 拡張)" />
+    [TestMethod]
+    [TestCategory("SentenceSplit")]
+    public void OnConnectionStateChanged_FailedToConnected_ResetsFinalizedTranscript()
+    {
+        // /rere #D-002: Failed → Connected の経路 (NW 復帰ハンドラからの直接再接続) でもリセット必須
+        var (pipeline, transcriber, emitted) = CreatePipeline();
+        transcriber.RaiseDelta("旧セッションの文。");
+        Assert.AreEqual(1, emitted.Count(x => x.IsFinal));
+
+        transcriber.RaiseStateChanged(ConnectionState.Failed);
+        transcriber.RaiseStateChanged(ConnectionState.Connected);
+
+        emitted.Clear();
+        transcriber.RaiseDelta("新セッションの文。");
+
+        Assert.AreEqual(1, emitted.Count(x => x.IsFinal),
+            "Failed → Connected でも _lastFinalizedTranscript はリセットされるべき (#D-002)");
+        Assert.AreEqual("新セッションの文。", emitted.First(x => x.IsFinal).TranslatedText);
+    }
+
+    /// <test rere="#D-002 (v1.0.28 拡張)" />
+    [TestMethod]
+    [TestCategory("SentenceSplit")]
+    public void OnConnectionStateChanged_ConnectingToConnected_ResetsFinalizedTranscript()
+    {
+        // /rere #D-002: 初回接続 (Disconnected → Connecting → Connected) もリセットを通す。
+        // 初回は _lastFinalizedTranscript が空のため Clear() は no-op だが、 後続の挙動を統一する。
+        var (pipeline, transcriber, emitted) = CreatePipeline();
+        transcriber.RaiseDelta("旧セッションの文。");
+        Assert.AreEqual(1, emitted.Count(x => x.IsFinal));
+
+        transcriber.RaiseStateChanged(ConnectionState.Connecting);
+        transcriber.RaiseStateChanged(ConnectionState.Connected);
+
+        emitted.Clear();
+        transcriber.RaiseDelta("新セッションの文。");
+
+        Assert.AreEqual(1, emitted.Count(x => x.IsFinal),
+            "Connecting → Connected でも _lastFinalizedTranscript はリセットされるべき (#D-002)");
+        Assert.AreEqual("新セッションの文。", emitted.First(x => x.IsFinal).TranslatedText);
+    }
+
+    /// <test rere="#D-002 (v1.0.28 拡張)" />
+    [TestMethod]
+    [TestCategory("SentenceSplit")]
+    public void OnConnectionStateChanged_ConnectedToConnected_DoesNotReset()
+    {
+        // Connected → Connected (idle 再通知) では Clear しない (リセット過剰防止)
+        var (pipeline, transcriber, emitted) = CreatePipeline();
+        // 初回接続トリガー
+        transcriber.RaiseStateChanged(ConnectionState.Connected);
+        transcriber.RaiseDelta("文1。");
+        Assert.AreEqual(1, emitted.Count(x => x.IsFinal));
+
+        // 同一 Connected 再通知 (StateChanged ハンドラで idle イベント発火するケース想定)
+        transcriber.RaiseStateChanged(ConnectionState.Connected);
+        // 続きの delta が prefix mismatch にならず emit されるはず
+        emitted.Clear();
+        transcriber.RaiseDelta("文2。");
+
+        Assert.AreEqual(1, emitted.Count(x => x.IsFinal),
+            "Connected → Connected (idle) ではリセットしないため、 連続した delta は正常に emit されるはず");
+        Assert.AreEqual("文2。", emitted.First(x => x.IsFinal).TranslatedText);
+    }
+
     // v1.0.27 棚卸しで一度削除されたが、 2026-05-24 ARC Raiders 実機ログで
     // 「partial が 127 文字まで育って完結文 emit=0」が観測されたため v1.0.28 で復活。
     // /rere レビュー #D-005 (句点なしコンテンツで _accumulatedText 無限成長) の安全弁。
