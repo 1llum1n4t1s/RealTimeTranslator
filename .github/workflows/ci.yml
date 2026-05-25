@@ -28,7 +28,9 @@ jobs:
           restore-keys: ${{ runner.os }}-nuget-
       - name: Restore
         # WASAPI Process Loopback が必要なため Windows / x64 専用ビルド。
-        run: dotnet restore RealTimeTranslator.slnx -p:Configuration=Release -p:Platform=x64
+        # -r win-x64 は packages.lock.json の RID 情報と整合させるため必須
+        # (build.yml の publish -r win-x64 と統一して NU1004 lockfile drift を防止)。
+        run: dotnet restore RealTimeTranslator.slnx -p:Configuration=Release -p:Platform=x64 -r win-x64
       - name: Build
         run: dotnet build RealTimeTranslator.slnx -c Release -p:Platform=x64 --no-restore
       - name: Test
