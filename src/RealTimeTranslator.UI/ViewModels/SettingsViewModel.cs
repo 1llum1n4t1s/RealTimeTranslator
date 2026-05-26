@@ -82,17 +82,21 @@ public partial class SettingsViewModel : ObservableObject
         });
         VadPresetOptions = new ReadOnlyCollection<VadPresetOption>(new VadPresetOption[]
         {
-            // Balanced (デフォルト): Silero VAD 公式推奨 threshold=0.5 を維持して BGM/効果音の誤判定を抑えつつ、
+            // v1.0.30 で全プリセットの threshold を -0.2 ずつシフト (Silero VAD 公式推奨 0.5 → 0.3 基調)。
+            // 「遠くの声が小さくて拾えない」シーン対策。 副作用 (BGM 誤検出) は入力プリプロセス DSP
+            // (Normalizer / NightMode / AntiClip) と組み合わせて補う運用想定。
+
+            // Balanced (デフォルト): threshold=0.3 で遠距離小音量の声も拾いつつ、
             // preroll/hangover をやや厚めに取って発話冒頭の子音 / 語尾の無声子音の取りこぼしを防ぐ。
-            // 課金影響は発話前後に +600/+400ms 余分に送るだけ (= 1 発話あたり数 % 増) で、 BGM 全部送信のような事故は起きない。
-            new("Balanced",          "ふつう (推奨)",                    0.5f, 600, 400),
-            // PrioritizeEdges: threshold=0.4 で短い発話 (「はい」「うん」等) を取りこぼさず、
+            // 課金影響は発話前後に +600/+400ms 余分に送るだけで、 BGM 全部送信のような事故は起きない。
+            new("Balanced",          "ふつう (推奨)",                    0.3f, 600, 400),
+            // PrioritizeEdges: threshold=0.2 で更に小さい発話 (「はい」「うん」等) を取りこぼさず、
             // preroll=800 / hangover=600 で文の頭・尻尾の音素切れを更に強く抑える。 通話・会議・コマンド発話向け。
             // BGM 混入で課金 10-30% 増のリスクあり (ゆろさんの体感確認後に調整可)。
-            new("PrioritizeEdges",   "頭と尻尾を取りこぼさない",         0.4f, 800, 600),
-            // AggressiveSavings: threshold=0.6 で誤検出 (BGM のドラム/拍手等を speech 扱い) を抑え、
+            new("PrioritizeEdges",   "頭と尻尾を取りこぼさない",         0.2f, 800, 600),
+            // AggressiveSavings: threshold=0.4 で誤検出 (BGM のドラム/拍手等を speech 扱い) を抑え、
             // preroll/hangover を短くして送信秒数を最小化。 長時間視聴で課金を切り詰めたい時向け。
-            new("AggressiveSavings", "ガッツリ節約",                      0.6f, 300, 150),
+            new("AggressiveSavings", "ガッツリ節約",                      0.4f, 300, 150),
             // Custom は下の詳細スライダーで個別調整するモード。 setter で 3 値は上書きしないため、
             // ここの 3 値は実際には参照されない (rere B2-007 対応: 死コード相当だったので 0/0/0 に)。
             new("Custom",            "カスタム (詳細設定)",               0f,   0,   0)
@@ -629,6 +633,88 @@ public partial class SettingsViewModel : ObservableObject
             }
         }
     }
+
+    // ───── 入力プリプロセス DSP (v1.0.30 新規) ─────
+    // WASAPI capture 直後・リサンプル前に挟む 4 段 DSP の有効化フラグと入力ゲイン。
+    // 全部 false / InputGainDb=0 が default で、 完全 bypass 動作 (v1.0.29 以前と同一)。
+
+    /// <summary>
+    /// 自動ラウドネス正規化 (LoudnessNormalizer) を有効化する。
+    /// 短時間 RMS で -24 dBFS に揃え、 ゲーム音量小 / 遠距離小音量の声を底上げする。
+    /// </summary>
+    public bool EnableNormalizer
+    {
+        get => _settings.AudioCapture.Preprocessing.EnableNormalizer;
+        set
+        {
+            if (_settings.AudioCapture.Preprocessing.EnableNormalizer != value)
+            {
+                _settings.AudioCapture.Preprocessing.EnableNormalizer = value;
+                OnPropertyChanged();
+                ScheduleAutoSave();
+            }
+        }
+    }
+
+    /// <summary>
+    /// ナイトモード DRC (NightModeCompressor) を有効化する。
+    /// 大音 BGM/SFX を抑え、 ささやき声を相対持ち上げ。 threshold=-30dBFS / ratio=4:1。
+    /// </summary>
+    public bool EnableNightMode
+    {
+        get => _settings.AudioCapture.Preprocessing.EnableNightMode;
+        set
+        {
+            if (_settings.AudioCapture.Preprocessing.EnableNightMode != value)
+            {
+                _settings.AudioCapture.Preprocessing.EnableNightMode = value;
+                OnPropertyChanged();
+                ScheduleAutoSave();
+            }
+        }
+    }
+
+    /// <summary>
+    /// 最終段クリップ防止リミッタ (AntiClipLimiter) を有効化する。
+    /// 入力ゲインや前段 DSP でピーク超過する可能性があるときに ON 推奨。
+    /// </summary>
+    public bool EnableAntiClip
+    {
+        get => _settings.AudioCapture.Preprocessing.EnableAntiClip;
+        set
+        {
+            if (_settings.AudioCapture.Preprocessing.EnableAntiClip != value)
+            {
+                _settings.AudioCapture.Preprocessing.EnableAntiClip = value;
+                OnPropertyChanged();
+                ScheduleAutoSave();
+            }
+        }
+    }
+
+    /// <summary>
+    /// ユーザー手動の入力ゲイン (dB)。 範囲 -24〜+24、 default 0。
+    /// 0 dB ピッタリ (差 ±0.01dB 以内) は <see cref="InputGainStage"/> が完全 bypass する。
+    /// </summary>
+    public float InputGainDb
+    {
+        get => _settings.AudioCapture.Preprocessing.InputGainDb;
+        set
+        {
+            // 範囲制約 + 微小差は無視 (Slider 連続値での書き込み頻度抑制)
+            float clamped = Math.Clamp(value, -24f, 24f);
+            if (Math.Abs(_settings.AudioCapture.Preprocessing.InputGainDb - clamped) > 0.05f)
+            {
+                _settings.AudioCapture.Preprocessing.InputGainDb = clamped;
+                OnPropertyChanged();
+                ScheduleAutoSave();
+            }
+        }
+    }
+
+    /// <summary>入力ゲインを 0 dB にリセットする (UI のゼロボタン用)。</summary>
+    [RelayCommand]
+    private void ResetInputGain() => InputGainDb = 0f;
 
     /// <summary>
     /// 翻訳ログの保持期間 ComboBox。 0 = 無制限、 7/30/90/180/365 日。

@@ -537,7 +537,7 @@
                                 <TextBlock Text="検出しきい値 (Silero VAD speech probability)" FontSize="12" Margin="0,4,0,2"/>
                                 <Slider Minimum="0.1" Maximum="0.9" Value="{Binding VadThreshold, Mode=TwoWay}"
                                         TickFrequency="0.05" IsSnapToTickEnabled="True"/>
-                                <TextBlock Text="{Binding VadThreshold, StringFormat='現在: {0:F2} (公式推奨 0.50、 上げるほど判定が厳しくなり送信量減)'}"
+                                <TextBlock Text="{Binding VadThreshold, StringFormat='現在: {0:F2} (本アプリ既定 0.30、 Silero VAD 公式推奨 0.50、 上げるほど判定が厳しくなり送信量減)'}"
                                            FontSize="11" Foreground="{DynamicResource Brush.FG2}" Margin="0,0,0,8"/>
 
                                 <TextBlock Text="プリロール時間 (ms) — 発話冒頭の取りこぼし防止" FontSize="12" Margin="0,4,0,2"/>
@@ -564,6 +564,64 @@
                                     </ComboBox.ItemTemplate>
                                 </ComboBox>
                                 <TextBlock Text="この時間ずっと speech が検出されないとキャプチャを自動停止します。 席を離れた間の token 垂れ流し事故防止用。 VAD 有効時のみ機能します。"
+                                           FontSize="11" Foreground="{DynamicResource Brush.FG2}"
+                                           TextWrapping="Wrap" Margin="0,4,0,0"/>
+                            </StackPanel>
+                        </HeaderedContentControl>
+
+                        <!-- ═══ 入力プリプロセス DSP (v1.0.30 新規) ═══ -->
+                        <TextBlock Text="入力プリプロセス" FontSize="16" FontWeight="Bold" Margin="0,24,0,8"/>
+                        <TextBlock Text="ゲーム音量が小さいときや遠くの声を拾えないときに、 入力音声を底上げ・整形する DSP チェーンです。 全部オフ・ゲイン 0 dB で現状動作と同じ (完全 bypass)。"
+                                   FontSize="12"
+                                   Foreground="{DynamicResource Brush.FG2}"
+                                   TextWrapping="Wrap"
+                                   Margin="0,0,0,16"/>
+
+                        <HeaderedContentControl Header="音量正規化 (Loudness Normalizer)">
+                            <StackPanel>
+                                <CheckBox IsChecked="{Binding EnableNormalizer, Mode=TwoWay}"
+                                          Content="音量を自動で -24 dBFS 付近に揃える"/>
+                                <TextBlock Text="短時間 RMS を測って小音源を持ち上げ・大音源を抑えます。 ゲーム音量が小さい人 / 遠くの声を拾いたい人向け。 BGM の隙間ノイズを上げないよう silence gate -38 dBFS で保護されています。"
+                                           FontSize="11" Foreground="{DynamicResource Brush.FG2}"
+                                           TextWrapping="Wrap" Margin="0,4,0,0"/>
+                            </StackPanel>
+                        </HeaderedContentControl>
+
+                        <HeaderedContentControl Header="ナイトモード (Dynamic Range Compression)" Margin="0,16,0,0">
+                            <StackPanel>
+                                <CheckBox IsChecked="{Binding EnableNightMode, Mode=TwoWay}"
+                                          Content="大音 (BGM/SFX) を抑えて、 ささやき声を相対的に持ち上げる"/>
+                                <TextBlock Text="TV やサウンドバーの「ナイトモード」と同等の動的レンジ圧縮。 threshold=-30 dBFS / knee=12 dB / ratio=4:1 / attack=20 ms / release=1.0 s。 爆発音と会話の音量差で会話が埋もれるシーンに有効。"
+                                           FontSize="11" Foreground="{DynamicResource Brush.FG2}"
+                                           TextWrapping="Wrap" Margin="0,4,0,0"/>
+                            </StackPanel>
+                        </HeaderedContentControl>
+
+                        <HeaderedContentControl Header="入力ゲイン (Input Gain)" Margin="0,16,0,0">
+                            <StackPanel>
+                                <Grid ColumnDefinitions="*,Auto" Margin="0,0,0,4">
+                                    <Slider Grid.Column="0"
+                                            Minimum="-24" Maximum="24"
+                                            Value="{Binding InputGainDb, Mode=TwoWay}"
+                                            TickFrequency="1" IsSnapToTickEnabled="True"
+                                            VerticalAlignment="Center"/>
+                                    <Button Grid.Column="1" Content="0 dB に戻す"
+                                            Command="{Binding ResetInputGainCommand}"
+                                            VerticalAlignment="Center" Margin="8,0,0,0"/>
+                                </Grid>
+                                <TextBlock Text="{Binding InputGainDb, StringFormat='現在: {0:+0;-0;0} dB (-24 〜 +24 dB、 既定 0 dB で完全 bypass)'}"
+                                           FontSize="11" Foreground="{DynamicResource Brush.FG2}" Margin="0,0,0,4"/>
+                                <TextBlock Text="単純な掛け算で全帯域を底上げします。 +6 dB で 2 倍音量。 上げすぎるとクリップするので下のリミッタも一緒に ON 推奨。"
+                                           FontSize="11" Foreground="{DynamicResource Brush.FG2}"
+                                           TextWrapping="Wrap"/>
+                            </StackPanel>
+                        </HeaderedContentControl>
+
+                        <HeaderedContentControl Header="クリップ防止リミッタ (Anti-Clip Limiter)" Margin="0,16,0,0">
+                            <StackPanel>
+                                <CheckBox IsChecked="{Binding EnableAntiClip, Mode=TwoWay}"
+                                          Content="-3 dBFS で頭打ちにする brick-wall リミッタ"/>
+                                <TextBlock Text="threshold=-3 dBFS / ratio=12:1 / attack=1 ms / release=50 ms。 入力ゲインや前段 DSP でピーク超過するときに ON すると、 PCM16 変換時のクリップ歪みを防げます。"
                                            FontSize="11" Foreground="{DynamicResource Brush.FG2}"
                                            TextWrapping="Wrap" Margin="0,4,0,0"/>
                             </StackPanel>

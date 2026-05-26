@@ -109,12 +109,18 @@ public class AudioCaptureSettings
     /// </summary>
     public string VadPreset { get; set; } = "Balanced";
 
-    /// <summary>speech probability のしきい値 (0.0-1.0, default: 0.5 = Silero VAD 公式推奨)。</summary>
-    public float VadThreshold { get; set; } = 0.5f;
+    /// <summary>
+    /// speech probability のしきい値 (0.0-1.0, default: 0.3)。
+    /// v1.0.30 で Silero VAD 公式推奨 0.5 から **0.3 にシフト** (遠距離小音量の声を取りこぼさない方針に変更)。
+    /// 全プリセットの threshold も -0.2 ずつ連動シフト (Balanced 0.3 / PrioritizeEdges 0.2 / AggressiveSavings 0.4)。
+    /// 副作用: BGM/SE による誤検出が増える方向 → 入力プリプロセス DSP (<see cref="AudioPreprocessingSettings"/>) と
+    /// 組み合わせて運用想定。
+    /// </summary>
+    public float VadThreshold { get; set; } = 0.3f;
 
     /// <summary>
     /// 発話冒頭の取りこぼし防止用にリングバッファに保持する直近音声の長さ (ms)。
-    /// Balanced プリセットの推奨値は 600ms (threshold=0.5 維持で頭の子音を確実に拾うバランス値)。
+    /// Balanced プリセットの推奨値は 600ms (頭の子音を確実に拾うバランス値)。
     /// </summary>
     public int VadPreRollMs { get; set; } = 600;
 
@@ -131,6 +137,56 @@ public class AudioCaptureSettings
     /// 「席を離れた間に token 垂れ流し」事故防止用。 VAD 有効時のみ機能する。
     /// </summary>
     public int AutoPauseOnSilenceSec { get; set; } = 0;
+
+    // ────────── 入力プリプロセス DSP (v1.0.30 新規) ──────────
+
+    /// <summary>
+    /// WASAPI capture 直後・リサンプル前に挟まる 4 段プリプロセス DSP の設定。
+    /// VAD パス / API 送信パス両方に同じ前処理が乗る。 すべてのフラグが false かつ
+    /// InputGainDb=0 なら完全 bypass で現状動作 (v1.0.29 以前) と一致。
+    /// </summary>
+    public AudioPreprocessingSettings Preprocessing { get; set; } = new();
+}
+
+/// <summary>
+/// 入力プリプロセス DSP の設定 (v1.0.30 新規)。
+///
+/// 信号フロー (有効化されたものだけ実効):
+/// <code>
+/// WASAPI 48kHz mono float32
+///   → [LoudnessNormalizer] → [NightModeCompressor] → [InputGainStage] → [AntiClipLimiter]
+///   → 既存の 48k→16k リサンプル (VAD 判定 + 24k リサンプル → OpenAI 送信)
+/// </code>
+///
+/// パラメータ値は WebRestrictionRemoval (Chrome 拡張音量ブースター) で動画運用実証済みのものを移植。
+/// 詳細な根拠は各 DSP クラスの XML doc を参照。
+/// </summary>
+public class AudioPreprocessingSettings
+{
+    /// <summary>
+    /// 自動ラウドネス正規化を有効化する (default: false)。 短時間 RMS で -24 dBFS に揃える。
+    /// 小音量ソース (ゲーム音量小 / 遠くの声) の認識率底上げ目的。
+    /// </summary>
+    public bool EnableNormalizer { get; set; } = false;
+
+    /// <summary>
+    /// ナイトモード DRC を有効化する (default: false)。 大音 BGM/SFX を抑え、 小音 (ささやき声) を相対持ち上げ。
+    /// 設定: threshold=-30dBFS / knee=12dB / ratio=4:1 / attack=20ms / release=1.0s。
+    /// </summary>
+    public bool EnableNightMode { get; set; } = false;
+
+    /// <summary>
+    /// 最終段クリップ防止リミッタを有効化する (default: false)。 threshold=-3dBFS / ratio=12:1。
+    /// 入力ゲインや前段 DSP でピーク超過する可能性があるときに ON 推奨。
+    /// </summary>
+    public bool EnableAntiClip { get; set; } = false;
+
+    /// <summary>
+    /// ユーザー手動の入力ゲイン (dB)。 範囲 -24〜+24 (UI 側で制約)、 default 0 (= no-op)。
+    /// 0 dB ピッタリ (差 ±0.01dB 以内) のときは <see cref="Services.Audio.InputGainStage"/> が
+    /// 完全 bypass する (CPU オーバーヘッドゼロ)。
+    /// </summary>
+    public float InputGainDb { get; set; } = 0f;
 }
 
 public class OpenAIRealtimeSettings
