@@ -24,16 +24,6 @@ public class AudioPreprocessingTests
     // これが破れると default 設定 (現状動作と互換) の保証が崩れる。
 
     [TestMethod]
-    public void LoudnessNormalizer_Disabled_DoesNotMutateBuffer()
-    {
-        var n = new LoudnessNormalizer(SampleRate, enabled: false);
-        var samples = new float[] { 0.1f, -0.2f, 0.3f, -0.4f, 0.5f };
-        var original = (float[])samples.Clone();
-        n.Process(samples);
-        CollectionAssert.AreEqual(original, samples);
-    }
-
-    [TestMethod]
     public void NightModeCompressor_Disabled_DoesNotMutateBuffer()
     {
         var c = new NightModeCompressor(SampleRate, enabled: false);
@@ -118,59 +108,6 @@ public class AudioPreprocessingTests
 
         g.GainDb = 0f;
         Assert.IsFalse(g.IsEnabled, "0dB に戻すと再び bypass");
-    }
-
-    // ═════════════════ LoudnessNormalizer ═════════════════
-
-    [TestMethod]
-    public void LoudnessNormalizer_LowLevelSignal_BoostsAmplitude()
-    {
-        // -30 dBFS peak のサイン波 (RMS = peak/√2 で -33 dBFS RMS、 silence gate -38 dBFS RMS は余裕通過)。
-        // target -24 dBFS まで +9 dB 上げたい。 UP τ=4s なので 3τ=12s で 95% 追従する設計。
-        // (-36 dBFS peak だと RMS が -39 dBFS で silence gate 直下に落ちて gain=1 維持される罠あり)
-        var n = new LoudnessNormalizer(SampleRate, enabled: true);
-        const float inputAmp = 0.0316f; // 10^(-30/20)
-        var samples = GenerateSineWave(440f, inputAmp, SampleRate, durationSec: 12.0);
-        var initialPeak = MaxAbs(samples);
-        n.Process(samples);
-
-        // 後半 1/3 (8〜12 秒) を抽出 (envelope が target に十分追従した領域)
-        var tailPeak = MaxAbs(samples.AsSpan(samples.Length * 2 / 3).ToArray());
-        Assert.IsTrue(tailPeak > initialPeak * 2.0f,
-            $"低音量は normalizer によって持ち上げられるべき (initial={initialPeak:F4}, tail={tailPeak:F4})");
-    }
-
-    [TestMethod]
-    public void LoudnessNormalizer_SilenceInput_StaysSilent()
-    {
-        // silence gate (-38 dBFS) 以下の入力は gain=1.0 を維持し、 ノイズフロアを増幅しない
-        var n = new LoudnessNormalizer(SampleRate, enabled: true);
-        var samples = new float[SampleRate * 2]; // 2 秒の完全無音
-        n.Process(samples);
-        foreach (var s in samples)
-        {
-            Assert.AreEqual(0f, s, "無音入力は無音のまま (gain=1.0 でも 0×1=0)");
-        }
-    }
-
-    [TestMethod]
-    public void LoudnessNormalizer_Reset_ClearsInternalState()
-    {
-        // 長時間信号を流して gain を変動させた後、 Reset 後は初期 (gain=1.0) に戻ることを確認
-        var n = new LoudnessNormalizer(SampleRate, enabled: true);
-        var loudSamples = GenerateSineWave(440f, 0.1f, SampleRate, durationSec: 2.0);
-        n.Process(loudSamples);
-
-        n.Reset();
-
-        // measurement buffer サイズ (400ms = 19200 サンプル) 未満の chunk なら、
-        // Reset 直後の最初の chunk は gain=1.0 のままで pass-through する
-        var probe = new float[100];
-        for (int i = 0; i < probe.Length; i++) probe[i] = 0.1f;
-        n.Process(probe);
-        // Reset 直後 ≈ unity gain
-        Assert.AreEqual(0.1f, probe[0], 0.001f);
-        Assert.AreEqual(0.1f, probe[99], 0.001f);
     }
 
     // ═════════════════ NightModeCompressor ═════════════════

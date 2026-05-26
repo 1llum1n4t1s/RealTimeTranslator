@@ -13,7 +13,8 @@ namespace RealTimeTranslator.Core.Services.Audio;
 /// - ratio 4:1: 放送向け圧縮の標準値 (aggressive すぎず dynamic range を確実に潰す)
 /// - attack 20 ms / release 1.0 s: 句末ポンピング抑制を最優先 (release を長くする)
 ///
-/// 信号フロー上は <see cref="LoudnessNormalizer"/> の後段、 <see cref="InputGainStage"/> の前段。
+/// 信号フロー上は最前段 (<see cref="InputGainStage"/> の前段)。
+/// v1.0.32 で LoudnessNormalizer を削除し、 大音抑制 + 小音持ち上げの責務は NightMode 単独に集約。
 /// </summary>
 public sealed class NightModeCompressor : IAudioPreprocessor
 {

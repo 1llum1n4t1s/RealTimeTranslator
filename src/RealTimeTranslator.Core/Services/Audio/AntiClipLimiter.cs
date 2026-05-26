@@ -4,8 +4,8 @@ namespace RealTimeTranslator.Core.Services.Audio;
 /// 最終段クリップ防止用の高速ピークリミッタ (brick-wall 風)。
 ///
 /// 高 ratio (12:1) + 高速 attack (1 ms) で「実質的なハードリミッタ」として動作。
-/// 前段の <see cref="LoudnessNormalizer"/> / <see cref="NightModeCompressor"/> /
-/// <see cref="InputGainStage"/> でピークが threshold (-3 dBFS) を超えた場合だけ受け止め、
+/// 前段の <see cref="NightModeCompressor"/> / <see cref="InputGainStage"/> で
+/// ピークが threshold (-3 dBFS) を超えた場合だけ受け止め、
 /// PCM16 変換時のクリップ歪みを防ぐ。
 ///
 /// 設計の根拠 (WebRestrictionRemoval ANTI_CLIP_PRESET 移植):

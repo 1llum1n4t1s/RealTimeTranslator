@@ -635,27 +635,10 @@ public partial class SettingsViewModel : ObservableObject
         }
     }
 
-    // ───── 入力プリプロセス DSP (v1.0.30 新規) ─────
-    // WASAPI capture 直後・リサンプル前に挟む 4 段 DSP の有効化フラグと入力ゲイン。
+    // ───── 入力プリプロセス DSP (v1.0.30 新規、 v1.0.32 で 4 段 → 3 段) ─────
+    // WASAPI capture 直後・リサンプル前に挟む 3 段 DSP の有効化フラグと入力ゲイン。
     // 全部 false / InputGainDb=0 が default で、 完全 bypass 動作 (v1.0.29 以前と同一)。
-
-    /// <summary>
-    /// 自動ラウドネス正規化 (LoudnessNormalizer) を有効化する。
-    /// 短時間 RMS で -24 dBFS に揃え、 ゲーム音量小 / 遠距離小音量の声を底上げする。
-    /// </summary>
-    public bool EnableNormalizer
-    {
-        get => _settings.AudioCapture.Preprocessing.EnableNormalizer;
-        set
-        {
-            if (_settings.AudioCapture.Preprocessing.EnableNormalizer != value)
-            {
-                _settings.AudioCapture.Preprocessing.EnableNormalizer = value;
-                OnPropertyChanged();
-                ScheduleAutoSave();
-            }
-        }
-    }
+    // v1.0.32: LoudnessNormalizer は NightMode (DRC) と機能重複のため削除。
 
     /// <summary>
     /// ナイトモード DRC (NightModeCompressor) を有効化する。

@@ -577,17 +577,7 @@
                                    TextWrapping="Wrap"
                                    Margin="0,0,0,16"/>
 
-                        <HeaderedContentControl Header="音量正規化 (Loudness Normalizer)">
-                            <StackPanel>
-                                <CheckBox IsChecked="{Binding EnableNormalizer, Mode=TwoWay}"
-                                          Content="音量を自動で -24 dBFS 付近に揃える"/>
-                                <TextBlock Text="短時間 RMS を測って小音源を持ち上げ・大音源を抑えます。 ゲーム音量が小さい人 / 遠くの声を拾いたい人向け。 BGM の隙間ノイズを上げないよう silence gate -38 dBFS で保護されています。"
-                                           FontSize="11" Foreground="{DynamicResource Brush.FG2}"
-                                           TextWrapping="Wrap" Margin="0,4,0,0"/>
-                            </StackPanel>
-                        </HeaderedContentControl>
-
-                        <HeaderedContentControl Header="ナイトモード (Dynamic Range Compression)" Margin="0,16,0,0">
+                        <HeaderedContentControl Header="ナイトモード (Dynamic Range Compression)">
                             <StackPanel>
                                 <CheckBox IsChecked="{Binding EnableNightMode, Mode=TwoWay}"
                                           Content="大音 (BGM/SFX) を抑えて、 ささやき声を相対的に持ち上げる"/>

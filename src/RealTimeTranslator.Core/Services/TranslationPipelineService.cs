@@ -114,14 +114,13 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     private readonly StreamingResampler _vadResampler = new(48000, 16000);
     private readonly StreamingResampler _sendResampler = new(16000, 24000);
 
-    // ───────── 入力プリプロセス DSP 4 段 (v1.0.30 新規) ─────────
+    // ───────── 入力プリプロセス DSP 3 段 (v1.0.30 新規、 v1.0.32 で LoudnessNormalizer 削除) ─────────
     // WASAPI 48kHz mono float32 を受け取った直後・リサンプル前に挟まる前処理チェーン。
     // 全 IsEnabled=false / InputGainDb=0 がデフォルトで、 完全 bypass 動作 (v1.0.29 以前と同一)。
-    // 信号フロー: WASAPI → [Normalizer] → [NightMode] → [InputGain] → [AntiClip] → _vadResampler →...
+    // 信号フロー: WASAPI → [NightMode] → [InputGain] → [AntiClip] → _vadResampler →...
     // ステートフルなので _vadResampler と同じくシングルインスタンスで保持 + StartCoreAsync で Reset
     // (詳細は _global/systemPatterns.md の DSP 教訓と各 DSP クラスの XML doc 参照)。
     private const int CaptureSampleRate = 48000;
-    private readonly LoudnessNormalizer _normalizer = new(CaptureSampleRate);
     private readonly NightModeCompressor _nightMode = new(CaptureSampleRate);
     private readonly InputGainStage _inputGain = new(0f);
     private readonly AntiClipLimiter _limiter = new(CaptureSampleRate);
@@ -268,9 +267,8 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         // 2 系統リサンプラのフィルタ状態 + 未消費入力を完全クリア (前セッションの残響を持ち越さない)。
         _vadResampler.Reset();
         _sendResampler.Reset();
-        // 入力プリプロセス DSP の envelope follower / running gain も同様にクリア
+        // 入力プリプロセス DSP の envelope follower を同様にクリア
         // (前セッション末尾の大音量に追従していた gain が新セッションに漏れないように)。
-        _normalizer.Reset();
         _nightMode.Reset();
         _inputGain.Reset();
         _limiter.Reset();
@@ -454,17 +452,15 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                 {
                     var audioCaptureSettings = _settingsMonitor.CurrentValue.AudioCapture;
 
-                    // ─── 入力プリプロセス DSP (v1.0.30 新規) ───
+                    // ─── 入力プリプロセス DSP (v1.0.30 新規、 v1.0.32 で 4 段 → 3 段に削減) ───
                     // 設定 IsEnabled / InputGainDb を毎 chunk 同期 (hot-reload 対応)。
                     // 全 default (false / 0dB) なら各 Process は内部の IsEnabled で即 return するため
-                    // CPU オーバーヘッドはチェック分のみ。 信号フローは Normalizer → NightMode → InputGain → AntiClip。
+                    // CPU オーバーヘッドはチェック分のみ。 信号フローは NightMode → InputGain → AntiClip。
                     var preproc = audioCaptureSettings.Preprocessing;
-                    _normalizer.IsEnabled = preproc.EnableNormalizer;
                     _nightMode.IsEnabled = preproc.EnableNightMode;
                     _inputGain.GainDb = preproc.InputGainDb;
                     _limiter.IsEnabled = preproc.EnableAntiClip;
                     var preprocSpan = audioData.AsSpan();
-                    _normalizer.Process(preprocSpan);
                     _nightMode.Process(preprocSpan);
                     _inputGain.Process(preprocSpan);
                     _limiter.Process(preprocSpan);
