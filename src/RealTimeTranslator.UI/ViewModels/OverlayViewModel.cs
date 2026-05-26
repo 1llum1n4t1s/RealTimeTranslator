@@ -50,22 +50,22 @@ public partial class OverlayViewModel : ObservableObject, IDisposable
     [ObservableProperty]
     public partial double BottomMarginPercent { get; set; } = 10;
 
-    public OverlayViewModel(IOptionsMonitor<AppSettings>? optionsMonitor = null)
+    /// <summary>
+    /// /opop N1-003: コンストラクタ引数を required (non-nullable) に変更 (v1.0.33)。
+    /// 旧実装は `optionsMonitor = null` フォールバックで OverlaySettings 空インスタンスを作る経路があり、
+    /// 「テスト用に new OverlayViewModel() できる」ためのワークアラウンドだった。 実際の呼び出し元は DI のみ
+    /// (App.axaml.cs で IOptionsMonitor 必ず注入) で、 テストも new していない (Grep 確認済) ため required 化で安全。
+    /// </summary>
+    public OverlayViewModel(IOptionsMonitor<AppSettings> optionsMonitor)
     {
-        if (optionsMonitor != null)
+        ArgumentNullException.ThrowIfNull(optionsMonitor);
+        _settings = optionsMonitor.CurrentValue.Overlay;
+        _settingsChangeSubscription = optionsMonitor.OnChange(newSettings =>
         {
-            _settings = optionsMonitor.CurrentValue.Overlay;
-            _settingsChangeSubscription = optionsMonitor.OnChange(newSettings =>
-            {
-                LoggerService.LogInfo("Settings updated detected in OverlayViewModel.");
-                _settings = newSettings.Overlay;
-                ReloadSettings();
-            });
-        }
-        else
-        {
-            _settings = new OverlaySettings();
-        }
+            LoggerService.LogInfo("Settings updated detected in OverlayViewModel.");
+            _settings = newSettings.Overlay;
+            ReloadSettings();
+        });
         FontFamily = ResolveFontFamily(_settings.FontFamily);
         FontSize = _settings.FontSize;
         FontWeight = ResolveFontWeight(_settings.FontWeight);

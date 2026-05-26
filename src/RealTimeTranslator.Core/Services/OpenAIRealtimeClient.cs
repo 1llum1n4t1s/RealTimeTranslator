@@ -367,7 +367,15 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
             {
                 Logger.Warn("送受信ループ停止がタイムアウト");
             }
-            catch { /* best effort */ }
+            catch (Exception ex) when (ex is OperationCanceledException or System.Net.WebSockets.WebSocketException or ObjectDisposedException)
+            {
+                // /opop N4-001: 想定内の cleanup 例外は Debug に降格、 想定外は below の catch で Warn。
+                Logger.Debug($"送受信ループ停止中の想定内例外: {ex.GetType().Name}: {ex.Message}");
+            }
+            catch (Exception ex)
+            {
+                Logger.Warn($"送受信ループ停止中の想定外例外: {ex.GetType().Name}: {ex.Message}");
+            }
         }
 
         _receiveTask = null;
@@ -381,7 +389,15 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
                 await _ws.CloseAsync(WebSocketCloseStatus.NormalClosure, null, closeCts.Token)
                     .ConfigureAwait(false);
             }
-            catch { /* best effort */ }
+            catch (Exception ex) when (ex is OperationCanceledException or System.Net.WebSockets.WebSocketException or ObjectDisposedException)
+            {
+                // /opop N4-001: WebSocket.CloseAsync 失敗 (相手側既切断 / dispose 並行) は想定内、 Debug に降格。
+                Logger.Debug($"WebSocket.CloseAsync 想定内例外: {ex.GetType().Name}: {ex.Message}");
+            }
+            catch (Exception ex)
+            {
+                Logger.Warn($"WebSocket.CloseAsync 想定外例外: {ex.GetType().Name}: {ex.Message}");
+            }
         }
 
         _ws?.Dispose();

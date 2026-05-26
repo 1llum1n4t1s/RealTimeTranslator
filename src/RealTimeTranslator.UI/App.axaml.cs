@@ -192,12 +192,11 @@ public partial class App : Application
 
             if (_overlayWindow != null)
             {
-                // OverlayViewModel.Dispose を明示呼び出し。 ServiceProvider.DisposeAsync の
-                // 2 秒タイムアウト経路では Singleton Dispose が走らないことがあるため、
-                // DispatcherTimer / settings subscription の解放をここで保証する (rere P1 #13)。
-                try { (_overlayWindow.DataContext as IDisposable)?.Dispose(); }
-                catch (Exception ex) { LoggerService.LogWarning($"OnExit: OverlayViewModel Dispose 失敗: {ex.Message}"); }
-
+                // /opop N1-001: 旧実装は DataContext as IDisposable で OverlayViewModel.Dispose を明示呼び出ししていたが、
+                // Singleton ライフタイムの責務を ServiceProvider.DisposeAsync に完全委譲するよう変更 (v1.0.33)。
+                // OverlayViewModel.Dispose は _isDisposed (近日 _disposed Interlocked 化予定) で冪等ガード済みのため、
+                // 後段の ServiceProvider.DisposeAsync が 2 秒タイムアウト内で Singleton を Dispose する経路で十分。
+                // タイムアウト時の保険として、 _serviceProvider の最終 fallback (line ~225) + 5 秒後 Process.Kill タイマーで保証。
                 _overlayWindow.Close();
                 _overlayWindow = null;
             }
