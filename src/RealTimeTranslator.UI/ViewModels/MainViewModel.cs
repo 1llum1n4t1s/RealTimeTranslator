@@ -303,41 +303,45 @@ public partial class MainViewModel : ObservableObject, IDisposable
     }
 
     /// <summary>
-    /// 字幕が生成されたときのハンドラー
+    /// 字幕が生成されたときのハンドラー。
+    ///
+    /// /opop P2-MEM-F (v1.0.33): partial (delta) は AddOrUpdateSubtitle 内部で Dispatcher.UIThread.Post
+    /// するので、 外側の RunOnUiThread closure を 1 段削減 (旧: 2 段 dispatch、 新: 1 段)。
+    /// 50Hz partial で 60 分 = 約 8 MB / 60min Gen0 圧を削減。
+    /// 確定字幕 (item.IsFinal) のみログ + 翻訳ログタブ追加で UI thread が必要なので RunOnUiThread 維持。
     /// </summary>
     private void OnSubtitleGenerated(object? sender, SubtitleItem item)
     {
+        _overlayViewModel.AddOrUpdateSubtitle(item);
+        if (!item.IsFinal) return;
+        // partial(delta) は OverlayWindow に既にリアルタイム反映されているので、
+        // UI Log タブには確定字幕 (done) のみ流す (rere C2-008 / C2-009 対応)。
+        // 旧実装は 30ms 周期の partial 全部を UI Log に流して 80KB chunk × 33Hz = MB/sec の Gen0 通過を発生させていた。
+        // /opop P2-MEM-F: ここで早期 return 済みのため、 RunOnUiThread 内の `if (item.IsFinal)` ガードは冗長で削除。
         RunOnUiThread(() =>
         {
-            _overlayViewModel.AddOrUpdateSubtitle(item);
-            // partial(delta) は OverlayWindow に既にリアルタイム反映されているので、
-            // UI Log タブには確定字幕 (done) のみ流す (rere C2-008 / C2-009 対応)。
-            // 旧実装は 30ms 周期の partial 全部を UI Log に流して 80KB chunk × 33Hz = MB/sec の Gen0 通過を発生させていた。
-            if (item.IsFinal)
-            {
-                var text = item.TranslatedText;
-                var logMessage = $"[確定] →{_settings.OpenAIRealtime.OutputLanguage} {text}";
-                // ⭐ rere P1 #2 / A3-001 / F-3 修正: PII 漏洩経路を抑制。
-                // 翻訳テキスト全文をログファイル化すると、 Issue 添付時に視聴コンテンツのセリフ
-                // や会議の機微発話が公開リポに残る経路がある。 Core 側 (TranslationPipelineService /
-                // OpenAIRealtimeClient) と同じ 40 文字 truncate をここでも適用する。
-                // UI Log() (Logs タブ) はフル文字列のまま (画面表示のみで永続化されない)。
-                var truncated = text.Length <= 40 ? text : text[..40] + "...";
-                LoggerService.LogInfo($"[確定] →{_settings.OpenAIRealtime.OutputLanguage} {truncated}");
-                Log(logMessage);
+            var text = item.TranslatedText;
+            var logMessage = $"[確定] →{_settings.OpenAIRealtime.OutputLanguage} {text}";
+            // ⭐ rere P1 #2 / A3-001 / F-3 修正: PII 漏洩経路を抑制。
+            // 翻訳テキスト全文をログファイル化すると、 Issue 添付時に視聴コンテンツのセリフ
+            // や会議の機微発話が公開リポに残る経路がある。 Core 側 (TranslationPipelineService /
+            // OpenAIRealtimeClient) と同じ 40 文字 truncate をここでも適用する。
+            // UI Log() (Logs タブ) はフル文字列のまま (画面表示のみで永続化されない)。
+            var truncated = text.Length <= 40 ? text : text[..40] + "...";
+            LoggerService.LogInfo($"[確定] →{_settings.OpenAIRealtime.OutputLanguage} {truncated}");
+            Log(logMessage);
 
-                // 翻訳ログタブ用にフル文字列を永続化 (TSV にファイル追記 + ObservableCollection に追加)。
-                // 確定字幕のみ。 partial は対象外 (1 セグメントの中間状態を残しても意味がない)。
-                var processName = SelectedProcess is { ProductName: { Length: > 0 } pn } ? pn
-                                : SelectedProcess?.Name ?? string.Empty;
-                var entry = new TranslationLogEntry(
-                    Timestamp: DateTime.Now,
-                    Language: _settings.OpenAIRealtime.OutputLanguage ?? string.Empty,
-                    SessionId: _currentSessionId,
-                    ProcessName: processName,
-                    Text: text);
-                _translationLogViewModel.AddEntry(entry);
-            }
+            // 翻訳ログタブ用にフル文字列を永続化 (TSV にファイル追記 + ObservableCollection に追加)。
+            // 確定字幕のみ。 partial は対象外 (1 セグメントの中間状態を残しても意味がない)。
+            var processName = SelectedProcess is { ProductName: { Length: > 0 } pn } ? pn
+                            : SelectedProcess?.Name ?? string.Empty;
+            var entry = new TranslationLogEntry(
+                Timestamp: DateTime.Now,
+                Language: _settings.OpenAIRealtime.OutputLanguage ?? string.Empty,
+                SessionId: _currentSessionId,
+                ProcessName: processName,
+                Text: text);
+            _translationLogViewModel.AddEntry(entry);
         });
     }
 

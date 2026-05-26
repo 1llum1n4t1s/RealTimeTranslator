@@ -612,7 +612,11 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
 
     private async Task ReceiveLoopAsync(CancellationToken ct)
     {
-        var buffer = new byte[65536];
+        // /opop P1-MEM-C: 旧 `new byte[65536]` を ArrayPool 化 (v1.0.33)。
+        // ReceiveLoopAsync は接続あたり 1 回確保だが、 55 分プロアクティブ再接続 + 反応的再接続で
+        // 数時間配信時に数 MB の Gen2 候補圧。 ArrayPool 標準バケットに 65536 が入るので再利用可能。
+        // 機微性は audio JSON のみで、 受信後即 JsonDocument に Parse されるため clearArray:false で OK。
+        var buffer = System.Buffers.ArrayPool<byte>.Shared.Rent(65536);
         var messageStream = new MemoryStream();
 
         try
@@ -660,6 +664,8 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
         {
             // rere M-4: messageStream は using var → var に変更したので明示 Dispose
             messageStream.Dispose();
+            // /opop P1-MEM-C (v1.0.33): ArrayPool で借りた buffer を返却。 audio JSON のみで機微性低、 clearArray:false。
+            System.Buffers.ArrayPool<byte>.Shared.Return(buffer);
         }
 
         if (!ct.IsCancellationRequested)

@@ -93,7 +93,12 @@ public partial class OverlayViewModel : ObservableObject, IDisposable
         {
             lock (_subtitlesLock)
             {
-                var existing = Subtitles.FirstOrDefault(s => s.SegmentId == item.SegmentId);
+                // /opop P2-MEM-E (v1.0.33): partial 字幕の連続更新は **常に末尾要素** が同 SegmentId に当たる
+                // (新 SegmentId 発行ごとに Add → MaxLines 超過で先頭側 RemoveAt 設計のため、 更新対象は必ず末尾)。
+                // 旧 LINQ FirstOrDefault は per-call closure alloc + enumerator alloc を発生させていた
+                // (50Hz partial = 60 min で ~9 MB Gen0)。 末尾 indexer 直接参照で alloc ゼロ化。
+                var existing = Subtitles.Count > 0 && Subtitles[^1].SegmentId == item.SegmentId
+                    ? Subtitles[^1] : null;
                 if (existing != null)
                 {
                     existing.Update(item, _settings);
