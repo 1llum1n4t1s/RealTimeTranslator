@@ -37,3 +37,61 @@ internal sealed class StubOptionsMonitor : IOptionsMonitor<AppSettings>
     public AppSettings Get(string? name) => CurrentValue;
     public IDisposable? OnChange(Action<AppSettings, string?> listener) => null;
 }
+
+/// <summary>
+/// IRealtimeTranscriber のテスト用 mock。 rere /opop Cleaner v1.0.32 #B2-004 対応で
+/// SentenceSplit / Happy / Adversarial の 3 テストファイルから共通化した。
+/// 状態変更は ConnectAsync / DisconnectAsync 内で行い、 transcript / error event は
+/// RaiseDelta / RaiseDone / RaiseStateChanged メソッドで明示的に発火する。
+/// </summary>
+internal sealed class TestRealtimeTranscriber : IRealtimeTranscriber
+{
+    public ConnectionState State { get; private set; } = ConnectionState.Disconnected;
+    public long TotalAudioInputSamples24kHz => 0;
+    public long ServerReportedAudioInputTokens => 0;
+#pragma warning disable CS0067
+    public event Action<string>? TranscriptDeltaReceived;
+    public event Action<string>? TranscriptCompleted;
+    public event Action<Exception>? ErrorReceived;
+    public event Action<ConnectionState>? StateChanged;
+#pragma warning restore CS0067
+
+    public Task ConnectAsync(OpenAIRealtimeSettings settings, CancellationToken ct = default)
+    {
+        State = ConnectionState.Connected;
+        StateChanged?.Invoke(State);
+        return Task.CompletedTask;
+    }
+    public void SendAudio(byte[] pcm16Audio) { }
+    public Task DisconnectAsync()
+    {
+        State = ConnectionState.Disconnected;
+        StateChanged?.Invoke(State);
+        return Task.CompletedTask;
+    }
+    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    public void Dispose() { }
+
+    public void RaiseDelta(string delta) => TranscriptDeltaReceived?.Invoke(delta);
+    public void RaiseDone(string transcript) => TranscriptCompleted?.Invoke(transcript);
+    public void RaiseStateChanged(ConnectionState newState)
+    {
+        State = newState;
+        StateChanged?.Invoke(newState);
+    }
+}
+
+/// <summary>
+/// IVoiceActivityDetector の no-op テスト mock (常に prob=0)。 rere /opop Cleaner v1.0.32 #B2-004 対応で
+/// SentenceSplit / Happy / Adversarial の 3 テストファイルから共通化した。
+/// 多くのテストは RaiseDelta / RaiseDone を直接呼ぶため DetectSpeechProb は実行されないが、
+/// DI 注入用に必要 (TranslationPipelineService が IVoiceActivityDetector を要求するため)。
+/// </summary>
+internal sealed class TestVoiceActivityDetector : IVoiceActivityDetector
+{
+    public int RequiredFrameSize => 512;
+    public int SampleRate => 16000;
+    public float DetectSpeechProb(ReadOnlySpan<float> frame16kHz) => 0f;
+    public void Reset() { }
+    public void Dispose() { }
+}

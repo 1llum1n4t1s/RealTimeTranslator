@@ -14,40 +14,8 @@ namespace RealTimeTranslator.Tests;
 [TestClass]
 public sealed class TranslationPipelineServiceSentenceSplitTests
 {
-    private sealed class TestRealtimeTranscriber : IRealtimeTranscriber
-    {
-        public ConnectionState State { get; private set; } = ConnectionState.Disconnected;
-        public long TotalAudioInputSamples24kHz => 0;
-        public long ServerReportedAudioInputTokens => 0;
-        public event Action<string>? TranscriptDeltaReceived;
-        public event Action<string>? TranscriptCompleted;
-        public event Action<Exception>? ErrorReceived;
-        public event Action<ConnectionState>? StateChanged;
-
-        public Task ConnectAsync(OpenAIRealtimeSettings settings, CancellationToken ct = default)
-        {
-            State = ConnectionState.Connected;
-            StateChanged?.Invoke(State);
-            return Task.CompletedTask;
-        }
-        public void SendAudio(byte[] pcm16Audio) { }
-        public Task DisconnectAsync()
-        {
-            State = ConnectionState.Disconnected;
-            StateChanged?.Invoke(State);
-            return Task.CompletedTask;
-        }
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
-        public void Dispose() { }
-
-        public void RaiseDelta(string delta) => TranscriptDeltaReceived?.Invoke(delta);
-        public void RaiseDone(string transcript) => TranscriptCompleted?.Invoke(transcript);
-        public void RaiseStateChanged(ConnectionState newState)
-        {
-            State = newState;
-            StateChanged?.Invoke(newState);
-        }
-    }
+    // TestRealtimeTranscriber / TestVoiceActivityDetector / TestAudioCaptureService /
+    // TestSettingsService / StubOptionsMonitor は TestDoubles.cs に共通化 (rere v1.0.32 #B2-004)。
 
     // ═══════════════════════════════════════════════════════════════
     // IsSentenceBoundaryAt の単体テスト (数字小数点の誤分割対策)
@@ -139,20 +107,6 @@ public sealed class TranslationPipelineServiceSentenceSplitTests
         // 「価格は5.」 done 文脈: index 4 の '.' 前=5 末尾 → done なので区切る
         Assert.IsTrue(TranslationPipelineService.IsSentenceBoundaryAt("価格は5.", 4, isFinalContext: true));
     }
-
-    // VAD ゲート統合後、 TranslationPipelineService が IVoiceActivityDetector を要求するための
-    // no-op 実装。 既存テストは ProcessAudioLoopAsync を経由しない (RaiseDelta/RaiseDone 直接呼び)
-    // ので DetectSpeechProb は呼ばれない。
-    private sealed class TestVoiceActivityDetector : IVoiceActivityDetector
-    {
-        public int RequiredFrameSize => 512;
-        public int SampleRate => 16000;
-        public float DetectSpeechProb(ReadOnlySpan<float> frame16kHz) => 0f;
-        public void Reset() { }
-        public void Dispose() { }
-    }
-
-    // TestAudioCaptureService / TestSettingsService / StubOptionsMonitor は TestDoubles.cs に共通化。
 
     private static (TranslationPipelineService pipeline, TestRealtimeTranscriber transcriber, List<SubtitleItem> emitted) CreatePipeline()
     {

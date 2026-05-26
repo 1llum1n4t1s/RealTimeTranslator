@@ -13,39 +13,7 @@ namespace RealTimeTranslator.Tests;
 [TestClass]
 public sealed class TranslationPipelineServiceHappyTests
 {
-    private sealed class TestRealtimeTranscriber : IRealtimeTranscriber
-    {
-        public ConnectionState State { get; private set; } = ConnectionState.Disconnected;
-        public long TotalAudioInputSamples24kHz => 0;
-        public long ServerReportedAudioInputTokens => 0;
-        public event Action<string>? TranscriptDeltaReceived;
-        public event Action<string>? TranscriptCompleted;
-#pragma warning disable CS0067
-        public event Action<Exception>? ErrorReceived;
-#pragma warning restore CS0067
-        public event Action<ConnectionState>? StateChanged;
-
-        public Task ConnectAsync(OpenAIRealtimeSettings settings, CancellationToken ct = default)
-        { State = ConnectionState.Connected; StateChanged?.Invoke(State); return Task.CompletedTask; }
-        public void SendAudio(byte[] pcm16Audio) { }
-        public Task DisconnectAsync()
-        { State = ConnectionState.Disconnected; StateChanged?.Invoke(State); return Task.CompletedTask; }
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
-        public void Dispose() { }
-
-        public void RaiseDelta(string delta) => TranscriptDeltaReceived?.Invoke(delta);
-        public void RaiseDone(string transcript) => TranscriptCompleted?.Invoke(transcript);
-        public void RaiseStateChanged(ConnectionState newState) { State = newState; StateChanged?.Invoke(newState); }
-    }
-
-    private sealed class TestVoiceActivityDetector : IVoiceActivityDetector
-    {
-        public int RequiredFrameSize => 512;
-        public int SampleRate => 16000;
-        public float DetectSpeechProb(ReadOnlySpan<float> frame16kHz) => 0f;
-        public void Reset() { }
-        public void Dispose() { }
-    }
+    // TestRealtimeTranscriber / TestVoiceActivityDetector は TestDoubles.cs に共通化 (rere v1.0.32 #B2-004)。
 
     private static (TranslationPipelineService pipeline, TestRealtimeTranscriber transcriber, List<SubtitleItem> emitted) CreatePipeline()
     {
