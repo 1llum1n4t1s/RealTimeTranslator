@@ -576,13 +576,22 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                 }
             }
 
-            if (completedSentences is { Count: > 0 })
+            // v1.0.31 fix: 文境界が見つかった (start > 0) なら、 emit / 抑制問わず必ず
+            // _accumulatedText から「処理済み区間」を削除する。
+            //
+            // 旧実装は `if (completedSentences is { Count: > 0 })` の中でだけ Remove していたため、
+            // **類似重複抑制 only** で完結文が 1 件も emit されないケースで _accumulatedText に
+            // 「抑制された文」が残り、 次回 delta で「抑制文 + 続きの partial」が新 SegmentId の
+            // partial として漏れる UX バグになっていた (2026-05-26 23:53 実機観測、
+            // 音量正規化 ON で server VAD が短い発話を複数イベントで返す頻度上昇により顕在化:
+            // 「ベン・ウォルターズでさえ、...限度がある。」を 3 連続抑制してから「言い...」と続き、
+            // 字幕として「同じ翻訳が複数 SegmentId で重複表示」される状態だった)。
+            //
+            // D-7 fallback 経路 (下の while ループ) は line 653 で常時 Remove しているため
+            // 同型バグなし。 本ブロックを D-7 と同じ流儀に揃える。
+            if (start > 0)
             {
-                // 完結文を切り出した → trailing だけ _accumulatedText に残す。
-                if (start > 0)
-                {
-                    _accumulatedText.Remove(0, start);
-                }
+                _accumulatedText.Remove(0, start);
                 _lastEmitTime = DateTime.UtcNow;
                 _hasPendingDelta = false;
                 _throttleTimer.Change(Timeout.Infinite, Timeout.Infinite);
@@ -590,7 +599,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
             }
             else
             {
-                // 完結文無し → 従来の throttled partial emit 経路
+                // 文境界が一つも見つからなかった → 従来の throttled partial emit 経路
                 var now = DateTime.UtcNow;
                 if (now - _lastEmitTime >= DeltaThrottle)
                 {

@@ -503,6 +503,44 @@ public sealed class TranslationPipelineServiceAdversarialTests
             $"v1.0.28 D-7 fallback: 同種文字繰り返しは類似抑制で 1 件以下に収束 (実際 {finals.Count})");
     }
 
+    /// <adversarial category="state-machine" severity="high" />
+    /// <test rere="v1.0.31 hotfix: 類似重複抑制の _accumulatedText 削除漏れ" />
+    [TestMethod]
+    [TestCategory("SentenceSplitBoundary")]
+    public void OnTranscriptDelta_SuppressedDuplicate_DoesNotLeakIntoNextPartial()
+    {
+        // 2026-05-26 23:53 実機ログ再現:
+        //   1) 1 回目: 文 X を delta で送信 → 完結文 emit、 RecordEmission
+        //   2) 2 回目: 同じ文 X を delta で送信 → 類似重複抑制 (Bigram Jaccard >= 0.7)
+        //      旧実装 (v1.0.30) は抑制 only のとき _accumulatedText.Remove() が走らず、
+        //      内部の累積バッファに X が残り続けた。
+        //   3) 3 回目: 続きの delta「Y」を送信 → 「X + Y」が partial として漏れる UX バグになる。
+        // 修正 (v1.0.31) で抑制 only でも _accumulatedText を削除するようにし、 3 回目の partial は
+        // 「Y」だけが見えるのが正解。
+        var (pipeline, transcriber, emitted) = CreatePipeline();
+
+        // 1) 完結文 X を emit させる (RecordEmission で _recentEmittedSentences に登録)
+        transcriber.RaiseDelta("制限時間です。");
+        var firstFinals = emitted.Where(x => x.IsFinal).Select(x => x.TranslatedText).ToList();
+        Assert.AreEqual(1, firstFinals.Count, "1 回目: 完結文 X を emit");
+        Assert.AreEqual("制限時間です。", firstFinals[0]);
+
+        // 2) 同一文 X を再送 → 類似抑制で IsFinal=true は増えない
+        transcriber.RaiseDelta("制限時間です。");
+        var secondFinals = emitted.Where(x => x.IsFinal).Select(x => x.TranslatedText).ToList();
+        Assert.AreEqual(1, secondFinals.Count, "2 回目: 抑制で完結文 emit は増えない");
+
+        // 3) 続きの delta「Y。」(句点付き) を送信 → 完結文として emit、 prefix に抑制 X を含まないこと
+        // (partial 経路はタイマー throttle に依存するため、 完結文経路の方が決定的に検証できる)
+        emitted.Clear();
+        transcriber.RaiseDelta("続きです。");
+        var finalsAfter = emitted.Where(x => x.IsFinal).Select(x => x.TranslatedText).ToList();
+        Assert.AreEqual(1, finalsAfter.Count, "3 回目: 完結文として 1 件 emit されるはず");
+        Assert.IsFalse(finalsAfter[0].StartsWith("制限時間です。"),
+            $"v1.0.31 修正: 抑制された前文が新完結文に prefix として漏れていない (実際: '{finalsAfter[0]}')");
+        Assert.AreEqual("続きです。", finalsAfter[0], "3 回目の完結文は Y のみで構成される");
+    }
+
     /// <adversarial category="boundary" severity="med" />
     [TestMethod]
     [TestCategory("SentenceSplitBoundary")]
