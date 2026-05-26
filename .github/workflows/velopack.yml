@@ -30,10 +30,10 @@ jobs:
           name: realtimetranslator.win-x64
           path: publish
       - name: Install Velopack CLI
-        # vpk のバージョンを NuGet パッケージ (Velopack 0.0.1298) に合わせて固定する。
+        # vpk のバージョンを NuGet パッケージ (Velopack 1.0.1) に合わせて固定する。
         # サプライチェーン保護: 浮動バージョンだと vpk 側が侵害・更新された場合に気付けない。
         # Velopack 本体を更新したら、この --version も合わせて更新すること。
-        run: dotnet tool install --global vpk --version 0.0.1298
+        run: dotnet tool install --global vpk --version 1.0.1
       - name: Create Velopack package
         run: >
           vpk pack

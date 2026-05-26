@@ -30,7 +30,7 @@
     <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="10.0.8" />
     <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="10.0.8" />
     <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.8" />
-    <PackageReference Include="Velopack" Version="0.0.1298" />
+    <PackageReference Include="Velopack" Version="1.0.1" />
     <PackageReference Include="VelopackUpdateDialog.Avalonia" Version="1.0.3" />
   </ItemGroup>
 

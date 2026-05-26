@@ -446,11 +446,6 @@
         "resolved": "13.0.3",
         "contentHash": "HrC5BXdl00IP9zeV+0Z848QWPAoCr9P3bDEZguI+gkLcBKAOxix/tLEAAHC+UvDNPv4a2d18lOReHMOagPa+zQ=="
       },
-      "NuGet.Versioning": {
-        "type": "Transitive",
-        "resolved": "6.14.0",
-        "contentHash": "4v4blkhCv8mpKtfx+z0G/X0daVCzdIaHSC51GkUspugi5JIMn2Bo8xm5PdZYF0U68gOBfz/+aPWMnpRd85Jbow=="
-      },
       "SkiaSharp": {
         "type": "Transitive",
         "resolved": "3.119.4-preview.1.1",
@@ -501,11 +496,8 @@
       },
       "Velopack": {
         "type": "Transitive",
-        "resolved": "0.0.1298",
-        "contentHash": "PJ6Nm28qJ4ChsHYzgHUJ8g+DGyyHes2+bwxY709+znMhgi8fMp8M1FTF8x6pZMjnsPCWVwoMlxVEyq0NLeRZtA==",
-        "dependencies": {
-          "NuGet.Versioning": "6.14.0"
-        }
+        "resolved": "1.0.1",
+        "contentHash": "LlmymFeEYBGNQfNiG89buDUT6C09MgqJnLzkvQz997fk/+KfmlyXlwbxOBFxt24HL4B8TQAFmNa6Oy9K4XlH0Q=="
       },
       "VelopackUpdateDialog.Avalonia": {
         "type": "Transitive",
@@ -539,7 +531,7 @@
           "Microsoft.Extensions.Options": "[10.0.8, )",
           "Microsoft.Extensions.Options.ConfigurationExtensions": "[10.0.8, )",
           "RealTimeTranslator.Core": "[1.0.32, )",
-          "Velopack": "[0.0.1298, )",
+          "Velopack": "[1.0.1, )",
           "VelopackUpdateDialog.Avalonia": "[1.0.3, )"
         }
       }
