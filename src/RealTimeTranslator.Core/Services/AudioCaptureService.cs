@@ -8,6 +8,7 @@ using RealTimeTranslator.Core.Services;
 
 using System.Buffers;
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 // System.Linq / System.Threading は GlobalUsings に含まれるため明示 using 不要 (rere /opop Cleaner #4)。
 
 namespace RealTimeTranslator.Core.Services;
@@ -488,7 +489,28 @@ public class AudioCaptureService : IAudioCaptureService
         _isCapturing = false;
         if (e.Exception != null)
         {
-            LoggerService.LogError($"Recording stopped with error: {e.Exception.Message}");
+            // rere v1.0.32 #F-001 + #F-003:
+            // 旧実装は `LogError(e.Exception.Message)` だけで CaptureStatusChanged を発火せず、
+            // 対象プロセスが終了した時に UI が「実行中」緑表示のまま固まり、 ユーザーは「字幕が来ない」
+            // 原因を切り分けられなかった。 さらに `Message` だけでは COMException の HResult が
+            // 落ちて WASAPI 系のトラブルシュートに必要な情報が消えていた。
+            //
+            // 改修:
+            // 1. `LogException` で型・メッセージ・StackTrace + COMException 専用に HResult を 16 進で記録
+            // 2. `OnCaptureStatusChanged` 経由で UI に終了を通知 (緑のまま固まる UX バグ解消)
+            //    typical 原因: 対象プロセス終了 / デバイス切替 / アクセス拒否 等
+            string hresultText = string.Empty;
+            if (e.Exception is COMException comEx)
+            {
+                hresultText = $" HResult=0x{comEx.HResult:X8}";
+            }
+            LoggerService.LogException(
+                $"WASAPI キャプチャスレッドが例外で停止しました ({e.Exception.GetType().Name}{hresultText})",
+                e.Exception);
+
+            OnCaptureStatusChanged(
+                $"音声キャプチャが停止しました (対象プロセス終了 / デバイス切替の可能性: {e.Exception.GetType().Name}{hresultText})",
+                isWaiting: false);
         }
     }
 

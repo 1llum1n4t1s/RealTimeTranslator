@@ -426,9 +426,20 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
         }
         catch (WebSocketException ex) when (ex.InnerException is HttpRequestException httpEx)
         {
+            // rere v1.0.32 #F-002: 旧実装は `new InvalidOperationException(friendlyMsg, ex)` を
+            // ErrorReceived で投げており、 MainViewModel.OnPipelineError の
+            // `ex is OpenAIApiException apiEx && apiEx.IsFatal` 分岐に入らず、
+            // 致命エラーバナー (ErrorBannerMessage) が更新されなかった。
+            // 401/403 は OpenAIApiException(InvalidApiKey / Forbidden) として投げ直して、
+            // server error event 経由 (L797) と同じバナー表示インフラに乗せる。
             var statusCode = httpEx.StatusCode;
-            var isFatal = statusCode is System.Net.HttpStatusCode.Unauthorized
-                or System.Net.HttpStatusCode.Forbidden;
+            var kind = statusCode switch
+            {
+                System.Net.HttpStatusCode.Unauthorized      => OpenAIApiErrorKind.InvalidApiKey,
+                System.Net.HttpStatusCode.Forbidden          => OpenAIApiErrorKind.Forbidden,
+                System.Net.HttpStatusCode.TooManyRequests    => OpenAIApiErrorKind.RateLimit,
+                _                                            => OpenAIApiErrorKind.Unknown,
+            };
             var friendlyMsg = statusCode switch
             {
                 System.Net.HttpStatusCode.Unauthorized =>
@@ -440,8 +451,17 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
                 _ => $"WebSocket接続エラー: HTTP {(int?)statusCode} {statusCode}"
             };
             Logger.Error(friendlyMsg, ex);
+            // kind != Unknown のときだけ OpenAIApiException に詰める (IsFatal が拾えるパス)。
+            // それ以外 (HTTP 5xx 等) は WebSocketException をそのまま伝播 (一時的エラー扱い)。
+            if (kind != OpenAIApiErrorKind.Unknown)
+            {
+                var apiEx = new OpenAIApiException(kind, friendlyMsg, ex.Message);
+                ErrorReceived?.Invoke(apiEx);
+                SetState(apiEx.IsFatal ? ConnectionState.Failed : ConnectionState.Disconnected);
+                throw apiEx;
+            }
             ErrorReceived?.Invoke(new InvalidOperationException(friendlyMsg, ex));
-            SetState(isFatal ? ConnectionState.Failed : ConnectionState.Disconnected);
+            SetState(ConnectionState.Disconnected);
             throw;
         }
         catch (Exception ex)
@@ -796,7 +816,12 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
                     var friendly = OpenAIApiException.FriendlyMessageFor(kind, originalMessage);
                     var ex = new OpenAIApiException(kind, friendly, originalMessage);
 
-                    Logger.Error($"OpenAI API エラー (kind={kind} code='{errorCode}'): {originalMessage}");
+                    // rere v1.0.32 #A2-001: server-controlled originalMessage を直貼りでログに残すと
+                    // (a) OpenAI が返すエラー文に API キー部分文字列が含まれるケースで漏洩拡張面
+                    // (b) ログサイズ膨張で disk 圧迫の攻撃面、 の 2 点でリスクがある。
+                    // 既存の他ログ (transcript.delta / .done 等) は TruncateForLog(40) 経由なので、
+                    // ここだけ無防備だったポリシー不整合を解消。
+                    Logger.Error($"OpenAI API エラー (kind={kind} code='{errorCode}'): {TruncateForLog(originalMessage)}");
 
                     if (ex.IsFatal)
                     {

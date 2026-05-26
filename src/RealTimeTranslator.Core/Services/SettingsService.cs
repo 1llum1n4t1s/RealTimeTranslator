@@ -177,6 +177,13 @@ public class SettingsService : ISettingsService
             Endpoint = source.OpenAIRealtime.Endpoint,
             ReconnectDelayMs = source.OpenAIRealtime.ReconnectDelayMs,
             MaxReconnectAttempts = source.OpenAIRealtime.MaxReconnectAttempts,
+            // rere v1.0.32 #C2-001: 旧版で SilencePaddingMs / MaxPartialChars がコピー対象に
+            // 入っていなかったため、 SaveAsync 経由で settings.json に書き出されるたびに
+            // 該当 2 値が default (5000 / 50) に静かにリセットされる致命バグだった。
+            // ユーザーが settings.json を手動編集して MaxPartialChars=120 等にしても、
+            // UI 設定変更時の autosave で消える経路。 ここに追加して保全する。
+            SilencePaddingMs = source.OpenAIRealtime.SilencePaddingMs,
+            MaxPartialChars = source.OpenAIRealtime.MaxPartialChars,
         },
         LastSelectedProcessName = source.LastSelectedProcessName,
         LastSelectedProcessId = source.LastSelectedProcessId,
