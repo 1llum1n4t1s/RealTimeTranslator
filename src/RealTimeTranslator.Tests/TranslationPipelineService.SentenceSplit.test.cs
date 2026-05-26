@@ -165,7 +165,10 @@ public sealed class TranslationPipelineServiceSentenceSplitTests
                 ApiKey = "test-key",
                 Endpoint = "wss://api.openai.com/v1/realtime/translations",
                 Model = "gpt-realtime-translate",
-                OutputLanguage = "ja"
+                OutputLanguage = "ja",
+                // 既存テストは MaxPartialChars=80 ベースの境界値で書かれているため、
+                // default 変更 (v1.0.31 で 80→50) に追従させず specific value で固定する。
+                MaxPartialChars = 80,
             }
         };
         var monitor = new StubOptionsMonitor(settings);

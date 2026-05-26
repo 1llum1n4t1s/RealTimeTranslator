@@ -10,23 +10,36 @@ RealTimeTranslator is a Windows desktop app for real-time subtitle translation. 
 
 ## Build & Test Commands
 
-```bash
-# Restore + Build (x64 only, always specify platform)
-rtk dotnet restore RealTimeTranslator.slnx
-rtk dotnet build RealTimeTranslator.slnx -c Release -p:Platform=x64
+⚠️ **lockfile RID を維持する正規手順** (v1.0.29 / v1.0.30 で 2 回踏んだ罠の構造的回避):
 
-# Run tests (MSTest)
-rtk dotnet test RealTimeTranslator.slnx -c Release -p:Platform=x64
+```bash
+# 1 回だけ実行 (lockfile を win-x64 RID 込みで生成)
+rtk dotnet restore RealTimeTranslator.slnx -r win-x64 --force-evaluate
+
+# 以降は必ず --no-restore を付ける (暗黙 restore が lockfile から RID を消すのを抑止)
+rtk dotnet build RealTimeTranslator.slnx -c Release -p:Platform=x64 --no-restore
+
+# Run tests (MSTest)、 --no-restore + --no-build で再ビルドも抑止
+rtk dotnet test RealTimeTranslator.slnx -c Release -p:Platform=x64 --no-restore --no-build
 
 # Run unit tests only (exclude integration)
-rtk dotnet test RealTimeTranslator.slnx -c Release -p:Platform=x64 --filter "TestCategory!=Integration"
+rtk dotnet test RealTimeTranslator.slnx -c Release -p:Platform=x64 --no-restore --no-build --filter "TestCategory!=Integration"
 
 # Run the app
-rtk dotnet run --project src/RealTimeTranslator.UI -c Release -p:Platform=x64
+rtk dotnet run --project src/RealTimeTranslator.UI -c Release -p:Platform=x64 --no-restore
 
 # Publish (self-contained, win-x64)
-rtk dotnet publish src/RealTimeTranslator.UI -c Release -r win-x64 --self-contained
+rtk dotnet publish src/RealTimeTranslator.UI -c Release -r win-x64 --self-contained --no-restore
 ```
+
+**なぜ `--no-restore` が必須か**: `dotnet build` / `dotnet test` を裸で実行すると暗黙 restore が走り、
+**RID 指定なしで lockfile を書き換える**。 これにより `packages.lock.json` から RID 情報が消失して、
+CI の `dotnet publish -r win-x64` が NU1004 (lockfile inconsistent) で落ちる。 v1.0.29 と v1.0.30 で
+**完全に同じパターンで 2 回踏んだ**ため、 ローカル restore は **1 回だけ + 以降は --no-restore** で
+lockfile を CI 用に維持するのが正規手順。
+
+⚠️ **`-r win-x64` は solution に対しては禁止** (NETSDK1134)。 restore コマンドにのみ指定する。
+build / test は solution 単位で OK、 lockfile を読み取って RID を解決する。
 
 Platform is **always x64** — there is no x86 support.
 

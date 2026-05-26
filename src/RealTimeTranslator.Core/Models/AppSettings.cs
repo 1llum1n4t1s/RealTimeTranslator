@@ -110,13 +110,15 @@ public class AudioCaptureSettings
     public string VadPreset { get; set; } = "Balanced";
 
     /// <summary>
-    /// speech probability のしきい値 (0.0-1.0, default: 0.3)。
-    /// v1.0.30 で Silero VAD 公式推奨 0.5 から **0.3 にシフト** (遠距離小音量の声を取りこぼさない方針に変更)。
-    /// 全プリセットの threshold も -0.2 ずつ連動シフト (Balanced 0.3 / PrioritizeEdges 0.2 / AggressiveSavings 0.4)。
-    /// 副作用: BGM/SE による誤検出が増える方向 → 入力プリプロセス DSP (<see cref="AudioPreprocessingSettings"/>) と
-    /// 組み合わせて運用想定。
+    /// speech probability のしきい値 (0.0-1.0, default: 0.4)。
+    /// v1.0.30 で 0.5 → 0.3 にシフトしたら、 BGM/SE の継続送信で OpenAI server VAD が
+    /// 発話境界を引けなくなり「字幕が句点なしで繋がる」回帰が発生 (実機ログ 23:40 セッションで
+    /// 111 partial に対し完結文 emit=1 のみ、 D-7 fallback で 5 文連結を確認)。
+    /// v1.0.31 で **0.4** に戻り気味調整。 全プリセットも +0.1 連動シフト
+    /// (Balanced 0.4 / PrioritizeEdges 0.3 / AggressiveSavings 0.5)。
+    /// 遠距離小音量の声拾いは入力プリプロセス DSP (<see cref="AudioPreprocessingSettings"/>) に任せる方針。
     /// </summary>
-    public float VadThreshold { get; set; } = 0.3f;
+    public float VadThreshold { get; set; } = 0.4f;
 
     /// <summary>
     /// 発話冒頭の取りこぼし防止用にリングバッファに保持する直近音声の長さ (ms)。
@@ -239,8 +241,10 @@ public class OpenAIRealtimeSettings
     //   切った部分を完結文として emit + 新 SegmentId 発行。
     //
     // 値が 0 以下なら機能を無効化する (= 句点が来るまで永遠に partial が伸びる、 v1.0.27 と同じ挙動)。
-    // 80 文字は字幕として 2-3 行に収まる読みやすい長さの目安。
-    public int MaxPartialChars { get; set; } = 80;
+    // v1.0.31 で 80 → **50** に短縮。 v1.0.30 の VAD threshold 0.3 で BGM 連続送信時に
+    // 「複数文が句点なしで繋がる」現象 (実機 23:40 セッションで 5 文連結を確認) が顕在化した対策。
+    // 50 文字なら字幕として 2 行に収まる読みやすい長さで、 連結バグの可視被害も最小化する。
+    public int MaxPartialChars { get; set; } = 50;
 }
 
 // GameProfile / GameProfiles は旧 Whisper+LLM ローカル翻訳時代の設定。

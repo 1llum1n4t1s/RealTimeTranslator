@@ -537,7 +537,7 @@
                                 <TextBlock Text="検出しきい値 (Silero VAD speech probability)" FontSize="12" Margin="0,4,0,2"/>
                                 <Slider Minimum="0.1" Maximum="0.9" Value="{Binding VadThreshold, Mode=TwoWay}"
                                         TickFrequency="0.05" IsSnapToTickEnabled="True"/>
-                                <TextBlock Text="{Binding VadThreshold, StringFormat='現在: {0:F2} (本アプリ既定 0.30、 Silero VAD 公式推奨 0.50、 上げるほど判定が厳しくなり送信量減)'}"
+                                <TextBlock Text="{Binding VadThreshold, StringFormat='現在: {0:F2} (本アプリ既定 0.40、 Silero VAD 公式推奨 0.50、 上げるほど判定が厳しくなり送信量減)'}"
                                            FontSize="11" Foreground="{DynamicResource Brush.FG2}" Margin="0,0,0,8"/>
 
                                 <TextBlock Text="プリロール時間 (ms) — 発話冒頭の取りこぼし防止" FontSize="12" Margin="0,4,0,2"/>

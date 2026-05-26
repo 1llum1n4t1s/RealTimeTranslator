@@ -82,22 +82,22 @@ public partial class SettingsViewModel : ObservableObject
         });
         VadPresetOptions = new ReadOnlyCollection<VadPresetOption>(new VadPresetOption[]
         {
-            // v1.0.30 で全プリセットの threshold を -0.2 ずつシフト (Silero VAD 公式推奨 0.5 → 0.3 基調)。
-            // v1.0.31 で全プリセットの preroll/hangover を一律 +200ms ずつシフト (発話冒頭・末尾の取りこぼし減らす方針)。
-            // 「遠くの声が小さくて拾えない」シーン対策。 副作用 (BGM 誤検出) は入力プリプロセス DSP
-            // (Normalizer / NightMode / AntiClip) と組み合わせて補う運用想定。
+            // v1.0.30 で全プリセット threshold を -0.2 シフト (0.5→0.3 基調) → BGM/SE 継続送信で
+            // OpenAI server VAD が発話境界を引けず「字幕が句点なしで繋がる」回帰が発生。
+            // v1.0.31 で全プリセット threshold を +0.1 シフト (回帰緩和) + MaxPartialChars 80→50 で
+            // D-7 fallback も早めに発火するよう調整。 遠距離小音量の声拾いは入力プリプロセス DSP に委ねる方針。
+            // preroll/hangover は v1.0.31 開始時の 800/600 ベースで全プリセット +200ms シフト済を維持。
 
-            // Balanced (デフォルト): threshold=0.3 で遠距離小音量の声も拾いつつ、
+            // Balanced (デフォルト): threshold=0.4 で BGM 誤検出を適度に抑えつつ短い発話も拾う。
             // preroll=800 / hangover=600 で発話冒頭の子音 / 語尾の無声子音の取りこぼしを強めに防ぐ。
-            // 課金影響は発話前後に +800/+600ms 余分に送るだけで、 BGM 全部送信のような事故は起きない。
-            new("Balanced",          "ふつう (推奨)",                    0.3f, 800, 600),
-            // PrioritizeEdges: threshold=0.2 で更に小さい発話 (「はい」「うん」等) を取りこぼさず、
+            new("Balanced",          "ふつう (推奨)",                    0.4f, 800, 600),
+            // PrioritizeEdges: threshold=0.3 で更に小さい発話 (「はい」「うん」等) も拾い、
             // preroll=1000 / hangover=800 で文の頭・尻尾の音素切れを更に強く抑える。 通話・会議・コマンド発話向け。
             // BGM 混入で課金 10-30% 増のリスクあり (ゆろさんの体感確認後に調整可)。
-            new("PrioritizeEdges",   "頭と尻尾を取りこぼさない",         0.2f, 1000, 800),
-            // AggressiveSavings: threshold=0.4 で誤検出 (BGM のドラム/拍手等を speech 扱い) を抑え、
+            new("PrioritizeEdges",   "頭と尻尾を取りこぼさない",         0.3f, 1000, 800),
+            // AggressiveSavings: threshold=0.5 (公式推奨値) で誤検出 (BGM のドラム/拍手等) を抑え、
             // preroll=500 / hangover=350 で送信秒数を最小化。 長時間視聴で課金を切り詰めたい時向け。
-            new("AggressiveSavings", "ガッツリ節約",                      0.4f, 500, 350),
+            new("AggressiveSavings", "ガッツリ節約",                      0.5f, 500, 350),
             // Custom は下の詳細スライダーで個別調整するモード。 setter で 3 値は上書きしないため、
             // ここの 3 値は実際には参照されない (rere B2-007 対応: 死コード相当だったので 0/0/0 に)。
             new("Custom",            "カスタム (詳細設定)",               0f,   0,   0)
