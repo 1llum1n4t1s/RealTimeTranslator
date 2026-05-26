@@ -220,7 +220,12 @@ public class OpenAIRealtimeSettings
     //   - 時間超過したら送信停止 (token 節約、 Silero VAD が次の発話を検知するまで完全停止)
     //   - Silence → InSpeech 再遷移でカウントリセット
     // 値が 0 以下なら機能を無効化する (= VAD Silence 中は完全に送信停止、 v1.0.25 以前と同じ)。
-    public int SilencePaddingMs { get; set; } = 5000;
+    //
+    // v1.0.33 で 5000 → 8000 に延長 (ゆろさん要望「翻訳が遅れているときに 5 秒だと足りない感じ」)。
+    // 3 秒延長で server が delta 保留している間の「入力継続中」アピールを強化し、 保留 delta の flush を促進。
+    // 副作用: 完全 silence 区間が 3 秒長く送信されるため、 1 silence 周期あたり ~3 秒分の token 増。
+    // 1 silence 区間 = 5 秒以上の沈黙場面で課金影響あり (典型ゲームプレイで分単位の沈黙は稀なため軽微)。
+    public int SilencePaddingMs { get; set; } = 8000;
 
     // ⭐ D-7 fallback: 句点なし partial の最大累積文字数 (v1.0.28 復活)。
     //

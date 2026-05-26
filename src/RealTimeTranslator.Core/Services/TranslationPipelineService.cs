@@ -13,10 +13,11 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
 {
     private static readonly ILog Logger = LogManager.GetLogger<TranslationPipelineService>();
     // partial 表示の更新頻度。 短いほど字幕が機敏になるが UI スレッド負荷が増える。
-    // ゆろさんの「翻訳が遅れているときに加速」要望で 100ms → 50ms → 30ms と段階的に短縮。
+    // ゆろさんの「翻訳が遅れているときに加速」要望で 100ms → 50ms → 30ms → 20ms と段階的に短縮 (v1.0.33)。
     // OpenAI Realtime API のサーバー側 VAD 律速 (silence_duration_ms はクライアント設定不可) は
     // 越えられないので、ここで詰められるのは partial 描画間隔だけ。
-    private static readonly TimeSpan DeltaThrottle = TimeSpan.FromMilliseconds(30);
+    // 20ms = 50Hz は人間の知覚閾値 (CFF ~60Hz) に近く、 これ以上の高速化は体感差ゼロでコストだけ増える境界値。
+    private static readonly TimeSpan DeltaThrottle = TimeSpan.FromMilliseconds(20);
 
     private readonly IAudioCaptureService _audioCaptureService;
     private readonly IRealtimeTranscriber _realtimeClient;
