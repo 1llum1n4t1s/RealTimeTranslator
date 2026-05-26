@@ -25,8 +25,10 @@ public partial class MainViewModel : ObservableObject, IDisposable
 {
     private bool _disposed;
     private const int MaxLogLines = 1000;
-    private static readonly System.Text.RegularExpressions.Regex s_numericPattern =
-        new(@"[\d.]+%?", System.Text.RegularExpressions.RegexOptions.Compiled);
+    // /opop M-002: RegexOptions.Compiled (JIT 実行時生成) を [GeneratedRegex] (ビルド時ソース生成) へ。
+    // 静的 IL を吐くため起動時の JIT パスを削減 + AOT (PublishReadyToRun=true) 互換。
+    [System.Text.RegularExpressions.GeneratedRegex(@"[\d.]+%?")]
+    private static partial System.Text.RegularExpressions.Regex NumericPattern();
 
     private readonly ITranslationPipelineService _pipelineService;
     private readonly IAudioCaptureService _audioCaptureService;
@@ -45,13 +47,13 @@ public partial class MainViewModel : ObservableObject, IDisposable
     private string _lastOutputLanguage;
     private readonly IDisposable? _settingsChangeSubscription;
     private readonly Queue<string> _logLines = new();
-    private readonly object _logLock = new();
+    private readonly System.Threading.Lock _logLock = new();
     // Log() の StringBuilder を field 化して再利用 (rere C2-008 対応)。
     // 旧実装は毎呼び出しで `new StringBuilder(_logLines.Count * 80)` を確保 → MaxLogLines=1000 で
     // 約 80KB chunk が LOH 境界ぎりに乗り、 partial 字幕の 30Hz 連発で MB/sec の Gen0 通過が発生していた。
     // Clear() は capacity を保持するため、 1 回確保すれば以後 alloc 0 で同じ buffer を使い回せる。
     private readonly StringBuilder _logBuilder = new(MaxLogLines * 80);
-    private readonly object _cancellationLock = new();
+    private readonly System.Threading.Lock _cancellationLock = new();
     private string? _lastLogMessage;
     private CancellationTokenSource? _processingCancellation;
 
@@ -962,7 +964,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
     /// </summary>
     private static string ExtractBaseMessage(string message)
     {
-        return s_numericPattern.Replace(message, "").Trim();
+        return NumericPattern().Replace(message, "").Trim();
     }
 
 

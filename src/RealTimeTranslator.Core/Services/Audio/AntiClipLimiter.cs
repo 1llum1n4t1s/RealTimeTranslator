@@ -23,22 +23,21 @@ public sealed class AntiClipLimiter : IAudioPreprocessor
     private const float Ratio = 12f;
     private const float AttackSec = 0.001f;
     private const float ReleaseSec = 0.05f;
-    private const float FloorDb = -120f;
 
     /// <summary>最終ハードクランプの上限値 (0.999 ≈ -0.01 dBFS、 PCM16 変換時の正側オーバーフロー防止)。</summary>
     private const float HardClipMax = 0.999f;
 
     private readonly float _attackCoeff;
     private readonly float _releaseCoeff;
-    private float _envelopeDb = FloorDb;
+    private float _envelopeDb = DspMath.FloorDb;
 
     public bool IsEnabled { get; set; }
 
     public AntiClipLimiter(int sampleRate, bool enabled = false)
     {
         if (sampleRate <= 0) throw new ArgumentOutOfRangeException(nameof(sampleRate));
-        _attackCoeff = 1f - MathF.Exp(-1f / (AttackSec * sampleRate));
-        _releaseCoeff = 1f - MathF.Exp(-1f / (ReleaseSec * sampleRate));
+        _attackCoeff = DspMath.ExpEnvCoeff(AttackSec, sampleRate);
+        _releaseCoeff = DspMath.ExpEnvCoeff(ReleaseSec, sampleRate);
         IsEnabled = enabled;
     }
 
@@ -48,7 +47,7 @@ public sealed class AntiClipLimiter : IAudioPreprocessor
         for (int i = 0; i < samples.Length; i++)
         {
             float s = samples[i];
-            float absDb = AmplitudeToDb(MathF.Abs(s));
+            float absDb = DspMath.AmplitudeToDb(MathF.Abs(s));
             float coeff = absDb > _envelopeDb ? _attackCoeff : _releaseCoeff;
             _envelopeDb += (absDb - _envelopeDb) * coeff;
             float grDb = _envelopeDb > ThresholdDb
@@ -63,11 +62,5 @@ public sealed class AntiClipLimiter : IAudioPreprocessor
         }
     }
 
-    public void Reset() => _envelopeDb = FloorDb;
-
-    private static float AmplitudeToDb(float amp)
-    {
-        if (amp < 1e-6f) return FloorDb;
-        return 20f * MathF.Log10(amp);
-    }
+    public void Reset() => _envelopeDb = DspMath.FloorDb;
 }

@@ -43,7 +43,7 @@ public sealed class SileroVadDetector : IVoiceActivityDetector
     // using で作り直して再代入する (CreateTensorValueFromMemory は参照保持だが破棄後の上書きで問題なし)。
     private readonly Dictionary<string, OrtValue> _inputs = new(3);
     private readonly RunOptions _runOptions = new();
-    private readonly object _lock = new();
+    private readonly System.Threading.Lock _lock = new();
     private bool _disposed;
 
     public int RequiredFrameSize => FrameSizeValue;

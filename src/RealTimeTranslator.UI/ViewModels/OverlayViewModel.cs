@@ -20,7 +20,7 @@ public partial class OverlayViewModel : ObservableObject, IDisposable
 
     private OverlaySettings _settings;
     private readonly DispatcherTimer _cleanupTimer;
-    private readonly object _subtitlesLock = new();
+    private readonly System.Threading.Lock _subtitlesLock = new();
     private bool _isDisposed;
     private readonly IDisposable? _settingsChangeSubscription;
 

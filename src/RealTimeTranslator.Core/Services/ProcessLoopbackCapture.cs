@@ -73,7 +73,7 @@ internal sealed class ProcessLoopbackCapture : IWaveIn, IDisposable
 
     private readonly IAudioClient _audioClient;
     private readonly IAudioCaptureClient _captureClient;
-    private readonly object _captureLock = new();
+    private readonly System.Threading.Lock _captureLock = new();
     private Thread? _captureThread;
     private bool _isCapturing;
     private readonly int _targetProcessId;

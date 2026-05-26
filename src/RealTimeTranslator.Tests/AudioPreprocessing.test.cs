@@ -4,7 +4,7 @@ using RealTimeTranslator.Core.Services.Audio;
 namespace RealTimeTranslator.Tests;
 
 /// <summary>
-/// v1.0.30 入力プリプロセス DSP 4 クラスのユニットテスト。
+/// 入力プリプロセス DSP 3 クラス (v1.0.30 で 4 段導入 → v1.0.32 で LoudnessNormalizer 削除) のユニットテスト。
 ///
 /// 各 DSP の検証ポイント:
 /// - IsEnabled=false で完全 bypass (入力配列を一切変更しない)

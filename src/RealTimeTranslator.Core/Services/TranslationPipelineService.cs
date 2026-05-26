@@ -28,7 +28,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
 
     private string _currentSegmentId = Guid.NewGuid().ToString();
     private readonly StringBuilder _accumulatedText = new();
-    private readonly object _textLock = new();
+    private readonly System.Threading.Lock _textLock = new();
     private DateTime _lastEmitTime = DateTime.MinValue;
     private bool _hasPendingDelta;
     private readonly Timer _throttleTimer;
@@ -59,7 +59,10 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     // 「、」(読点) は文の区切りではないので含めない (一文の中で複数現れるため)。
     // 注意: 半角ピリオド '.' は IsSentenceBoundaryAt で小数点保護 (例: 「6.3インチ」「3.14」)
     //       を行うため、 直接 IndexOf するのではなく必ず IsSentenceBoundaryAt 経由で判定する。
-    private static readonly char[] SentenceTerminators = ['。', '！', '？', '!', '?', '.'];
+    // /opop M-003: char[] + Array.IndexOf を SearchValues<char> + Contains に置換 (v1.0.33)。
+    // 内部 bit-table で O(1) lookup、 ホットパス (IsSentenceBoundaryAt の per-char 呼び出し) で効く。
+    private static readonly System.Buffers.SearchValues<char> SentenceTerminators =
+        System.Buffers.SearchValues.Create(['。', '！', '？', '!', '?', '.']);
 
     // 観測用カウンタ: partial / 完結文 emit の累計回数を頻度抑制ログで間引きながら吐く。
     // 「字幕が来ない」「文が切れない」「字幕が成長し続ける」系の調査で経路を可視化する。
@@ -1124,7 +1127,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     {
         if (i < 0 || i >= text.Length) return false;
         char c = text[i];
-        if (Array.IndexOf(SentenceTerminators, c) < 0) return false;
+        if (!SentenceTerminators.Contains(c)) return false;
 
         // ピリオド以外 (。 ！ ？ ! ?) は問答無用で区切り
         if (c != '.') return true;
@@ -1152,7 +1155,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     {
         if (i < 0 || i >= length) return false;
         char c = sb[i];
-        if (Array.IndexOf(SentenceTerminators, c) < 0) return false;
+        if (!SentenceTerminators.Contains(c)) return false;
 
         if (c != '.') return true;
 

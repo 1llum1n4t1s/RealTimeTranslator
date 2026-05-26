@@ -7,7 +7,8 @@ namespace RealTimeTranslator.Tests;
 
 // 複数テストファイル (VadGate.test.cs / TranslationPipelineService.SentenceSplit.test.cs)
 // で共有する test double 群。 重複定義の解消が目的 (rere /opop Cleaner #1)。
-// CS0067 (未使用 event) は mock 実装の都合上避けられないため、 ここで一括抑制する。
+// TestAudioCaptureService の event は実際に未使用 (mock 実装上避けられない) なので CS0067 抑制。
+// TestRealtimeTranscriber の event は RaiseDelta / RaiseDone / RaiseStateChanged 経由で発火するので抑制不要。
 
 internal sealed class TestAudioCaptureService : IAudioCaptureService
 {
@@ -49,12 +50,12 @@ internal sealed class TestRealtimeTranscriber : IRealtimeTranscriber
     public ConnectionState State { get; private set; } = ConnectionState.Disconnected;
     public long TotalAudioInputSamples24kHz => 0;
     public long ServerReportedAudioInputTokens => 0;
-#pragma warning disable CS0067
     public event Action<string>? TranscriptDeltaReceived;
     public event Action<string>? TranscriptCompleted;
+#pragma warning disable CS0067 // ErrorReceived は Raise ヘルパーがなく未使用 (将来 error 発火 mock が必要になったら RaiseError を追加して解除)
     public event Action<Exception>? ErrorReceived;
-    public event Action<ConnectionState>? StateChanged;
 #pragma warning restore CS0067
+    public event Action<ConnectionState>? StateChanged;
 
     public Task ConnectAsync(OpenAIRealtimeSettings settings, CancellationToken ct = default)
     {

@@ -27,7 +27,7 @@ public class UpdateService : IUpdateService
     // 事故を防ぐため 30 秒で打ち切る。 手動チェックはユーザーがダイアログ前で待てるのでタイムアウト無し。
     private static readonly TimeSpan AutoCheckTimeout = TimeSpan.FromSeconds(30);
 
-    private readonly object _syncLock = new();
+    private readonly System.Threading.Lock _syncLock = new();
     // Velopack の Check / Download / Apply 操作はプロセス内で直列化する。
     // .velopack_lock ファイルは Velopack 側がプロセス間排他のために確保するが、
     // 同一プロセスから並走させると AcquireLockFailedException が出るので、

@@ -30,7 +30,7 @@ public class AudioCaptureService : IAudioCaptureService
     // Queue&lt;float&gt; を使うことで先頭からの Dequeue が O(1) になる。
     // 旧 List&lt;float&gt;.RemoveRange(0, N) は内部 memmove で O(残量) だった。
     private readonly Queue<float> _audioBuffer = new();
-    private readonly object _bufferLock = new();
+    private readonly System.Threading.Lock _bufferLock = new();
     private bool _isCapturing;
     private bool _isDisposed;
     private int _targetProcessId;
@@ -40,7 +40,7 @@ public class AudioCaptureService : IAudioCaptureService
     // バックグラウンド実行する設計なので、 3 秒タイムアウト後にユーザーが急いで「再開」を
     // 押すと、 旧 StopCapture 完了前に新 StartCapture が走り _capture フィールドが race する。
     // _isStopping フラグで「stop 進行中」を明示し、 新 Start は完了を待つ。
-    private readonly object _stopLock = new();
+    private readonly System.Threading.Lock _stopLock = new();
     private volatile bool _isStopping;
     private int _dataAvailableCallCount;
     private int _packetCount;

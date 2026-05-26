@@ -23,22 +23,21 @@ public sealed class NightModeCompressor : IAudioPreprocessor
     private const float Ratio = 4f;
     private const float AttackSec = 0.02f;
     private const float ReleaseSec = 1.0f;
-    private const float FloorDb = -120f; // log10(0) を避けるための床値
 
     private readonly float _attackCoeff;
     private readonly float _releaseCoeff;
     private readonly float _kneeStartDb;
     private readonly float _kneeEndDb;
 
-    private float _envelopeDb = FloorDb;
+    private float _envelopeDb = DspMath.FloorDb;
 
     public bool IsEnabled { get; set; }
 
     public NightModeCompressor(int sampleRate, bool enabled = false)
     {
         if (sampleRate <= 0) throw new ArgumentOutOfRangeException(nameof(sampleRate));
-        _attackCoeff = 1f - MathF.Exp(-1f / (AttackSec * sampleRate));
-        _releaseCoeff = 1f - MathF.Exp(-1f / (ReleaseSec * sampleRate));
+        _attackCoeff = DspMath.ExpEnvCoeff(AttackSec, sampleRate);
+        _releaseCoeff = DspMath.ExpEnvCoeff(ReleaseSec, sampleRate);
         _kneeStartDb = ThresholdDb - KneeDb / 2f;
         _kneeEndDb = ThresholdDb + KneeDb / 2f;
         IsEnabled = enabled;
@@ -51,7 +50,7 @@ public sealed class NightModeCompressor : IAudioPreprocessor
         {
             float s = samples[i];
             // peak envelope follower: 絶対値を attack/release 別係数で追従
-            float absDb = AmplitudeToDb(MathF.Abs(s));
+            float absDb = DspMath.AmplitudeToDb(MathF.Abs(s));
             float coeff = absDb > _envelopeDb ? _attackCoeff : _releaseCoeff;
             _envelopeDb += (absDb - _envelopeDb) * coeff;
             // soft knee で gain reduction 計算
@@ -61,7 +60,7 @@ public sealed class NightModeCompressor : IAudioPreprocessor
         }
     }
 
-    public void Reset() => _envelopeDb = FloorDb;
+    public void Reset() => _envelopeDb = DspMath.FloorDb;
 
     /// <summary>
     /// ソフトニーつきコンプレッサーの gain reduction を計算する。
@@ -78,11 +77,5 @@ public sealed class NightModeCompressor : IAudioPreprocessor
         // knee 内 (二次曲線で滑らかに)
         float t = (inputDb - _kneeStartDb) / KneeDb; // 0..1
         return fullGr * t * t;
-    }
-
-    private static float AmplitudeToDb(float amp)
-    {
-        if (amp < 1e-6f) return FloorDb;
-        return 20f * MathF.Log10(amp);
     }
 }
