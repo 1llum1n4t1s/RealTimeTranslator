@@ -120,15 +120,17 @@ public class AudioCaptureSettings
 
     /// <summary>
     /// 発話冒頭の取りこぼし防止用にリングバッファに保持する直近音声の長さ (ms)。
-    /// Balanced プリセットの推奨値は 600ms (頭の子音を確実に拾うバランス値)。
+    /// Balanced プリセットの推奨値は **800ms** (v1.0.31 で 600 → 800 に拡張)。
+    /// 頭の子音 + 立ち上がりを確実に拾うため、 既定をやや厚めに取る方針。
     /// </summary>
-    public int VadPreRollMs { get; set; } = 600;
+    public int VadPreRollMs { get; set; } = 800;
 
     /// <summary>
     /// 発話末尾の切れ防止用に speech 終了判定後も送信を継続する長さ (ms)。
-    /// Balanced プリセットの推奨値は 400ms (語尾の無声子音 / 息継ぎ込みの「、」を取りこぼさない)。
+    /// Balanced プリセットの推奨値は **600ms** (v1.0.31 で 400 → 600 に拡張)。
+    /// 語尾の無声子音 / 息継ぎ込みの「、」を取りこぼさないため、 既定をやや厚めに取る方針。
     /// </summary>
-    public int VadHangoverMs { get; set; } = 400;
+    public int VadHangoverMs { get; set; } = 600;
 
     // ────────── 自動 Pause 保険 ──────────
 
