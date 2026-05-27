@@ -4,6 +4,15 @@ on:
     branches:
       - 'release/**'
 
+# 複数の release/** push が overlap した場合の race condition 防止。
+# 古い run の cleanup step が新しい run が upload した nupkg を `manifest 外` として
+# 削除する事故を構造的に防ぐため、 release ジョブを直列化する。
+# cancel-in-progress: false ← 削除途中の中断はオブジェクト整合性を壊すので、 走っている run を
+# 完走させて次の run を queue する設計。
+concurrency:
+  group: release-r2
+  cancel-in-progress: false
+
 permissions:
   contents: read
 
@@ -59,7 +68,8 @@ jobs:
         # サプライチェーン保護のため明示的にバージョン固定 (Velopack 同様、浮動バージョンは使わない)。
         run: npm install -g wrangler@4.93.0
       - name: Upload to R2 bucket (realtimetranslator-updates)
-        # 同名 releases.win-x64.json は冪等に上書き、過去バージョンの nupkg は触らず維持 (delta 更新のため残す)。
+        # 同名 releases.win-x64.json は冪等に上書き、 リリース完了後に旧バージョン nupkg は
+        # 自動削除する (後段の cleanup step が manifest 外を Aggressive 戦略で掃除)。
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -113,3 +123,112 @@ jobs:
             exit 1
           fi
           echo "✅ 配信検証完了: 全 $(ls packages/ | wc -l) ファイルが R2 から到達可能"
+
+      # 旧バージョン nupkg のクリーンアップ (Aggressive 戦略):
+      # - releases.<channel>.json (manifest) に含まれない *.nupkg を削除
+      # - Setup.exe / Portable.zip / RELEASES / assets.*.json / releases.*.json は
+      #   固定ファイル名で毎リリース上書きされる Velopack 内部 & ランディング DL 用なので保護
+      # - 削除対象を「.nupkg かつ manifest 外」に絞ることで、 想定外のファイル (誰かが手動 put した
+      #   object) を誤って消さない安全側設計
+      # - 配信確認 step の後に走る (manifest 取得不能なら手前で fail し cleanup は走らない)
+      # - API: Cloudflare V4 で完結 (CLOUDFLARE_API_TOKEN だけで動く / R2 S3 互換 Access Key 不要)
+      # - keep_map はローカル artifact (packages/releases.*.json) から読む。 public endpoint から
+      #   fetch すると CDN/R2 の伝播タイミング次第で「アップロード前の旧 manifest」が返り、
+      #   新 nupkg が keep_map に入らずに削除される race condition がある (transfer-cf SKILL Codex P1 対応)。
+      - name: Cleanup old nupkg (manifest 外を削除)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          api="https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/r2/buckets/realtimetranslator-updates"
+          auth_header="Authorization: Bearer ${CLOUDFLARE_API_TOKEN}"
+
+          # 1. ローカル packages/ の manifest から keep set を構築 (伝播遅延に依存しない)
+          declare -A keep_map
+          shopt -s nullglob
+          local_manifests=(packages/releases.*.json)
+          shopt -u nullglob
+
+          if [[ "${#local_manifests[@]}" -eq 0 ]]; then
+            echo "::error::packages/releases.*.json が見つかりません。 Velopack 成果物のダウンロードに失敗している可能性があります。"
+            exit 1
+          fi
+
+          for manifest_path in "${local_manifests[@]}"; do
+            echo "Reading local manifest: $manifest_path"
+            while IFS= read -r filename; do
+              if [[ -n "$filename" && "$filename" != "null" ]]; then
+                keep_map["$filename"]=1
+              fi
+            done < <(jq -r '.Assets[]?.FileName // empty' "$manifest_path")
+          done
+
+          echo "::group::manifest 内の保持対象 nupkg (${#keep_map[@]} files)"
+          for k in "${!keep_map[@]}"; do echo "  $k"; done | sort
+          echo "::endgroup::"
+
+          # 2. R2 上の全 object を cursor ページネーション付きで取得
+          all_keys=()
+          cursor=""
+          while true; do
+            if [[ -n "$cursor" ]]; then
+              resp=$(curl --fail --silent --max-time 30 "${api}/objects?per_page=1000&cursor=${cursor}" -H "$auth_header")
+            else
+              resp=$(curl --fail --silent --max-time 30 "${api}/objects?per_page=1000" -H "$auth_header")
+            fi
+            while IFS= read -r k; do
+              [[ -n "$k" ]] && all_keys+=("$k")
+            done < <(echo "$resp" | jq -r '.result[]?.key')
+            truncated=$(echo "$resp" | jq -r '.result_info.is_truncated // false')
+            [[ "$truncated" != "true" ]] && break
+            cursor=$(echo "$resp" | jq -r '.result_info.cursor // ""')
+            [[ -z "$cursor" || "$cursor" == "null" ]] && break
+          done
+
+          echo "::group::R2 内全オブジェクト (${#all_keys[@]} files)"
+          printf '  %s\n' "${all_keys[@]}"
+          echo "::endgroup::"
+
+          # 3. 削除対象判定: 拡張子 .nupkg のもののみ対象 + keep_map 外
+          to_delete=()
+          for key in "${all_keys[@]}"; do
+            [[ "$key" != *.nupkg ]] && continue
+            [[ -n "${keep_map[$key]:-}" ]] && continue
+            to_delete+=("$key")
+          done
+
+          if [[ "${#to_delete[@]}" -eq 0 ]]; then
+            echo "✅ 削除対象なし - R2 上の全 nupkg が manifest に含まれています"
+            exit 0
+          fi
+
+          echo "::group::削除対象 (${#to_delete[@]} files)"
+          printf '  %s\n' "${to_delete[@]}"
+          echo "::endgroup::"
+
+          # 4. 一個ずつ DELETE
+          deleted=0
+          failed=0
+          for key in "${to_delete[@]}"; do
+            encoded=$(jq -nr --arg k "$key" '$k|@uri')
+            resp=$(curl --silent --max-time 30 -X DELETE "${api}/objects/${encoded}" -H "$auth_header")
+            success=$(echo "$resp" | jq -r '.success')
+            if [[ "$success" == "true" ]]; then
+              echo "  🗑️  Deleted: $key"
+              deleted=$((deleted + 1))
+            else
+              echo "  ❌ Failed: $key"
+              echo "$resp" | jq -r '.errors[]?.message' | sed 's/^/      /'
+              failed=$((failed + 1))
+            fi
+          done
+
+          echo ""
+          echo "🧹 R2 クリーンアップ完了: $deleted / ${#to_delete[@]} 削除  (失敗: $failed)"
+          # 失敗があってもリリース自体は成功扱い (削除失敗は次回リリースで再試行される)
+          # ただし全件失敗の場合はワークフロー失敗にして気付けるようにする
+          if [[ "$failed" -gt 0 && "$deleted" -eq 0 ]]; then
+            echo "::error::すべての削除が失敗しました。 API token の権限・bucket 名を確認してください。"
+            exit 1
+          fi
