@@ -325,7 +325,18 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
             // 書き込み失敗 (ディスク full / 権限不足 / AV ブロック) を UI バナーに伝播するため購読。
             // StopCoreAsync で必ず -= して event leak を防ぐ (Singleton 寿命 vs セッション寿命のミスマッチ対策)。
             _debugAudioRecorder.WriteFailed += OnDebugRecorderWriteFailed;
-            _debugAudioRecorder.StartSession(Guid.NewGuid().ToString("N")[..8]);
+            // 防御的 try-catch (CodeRabbit 指摘対応): DebugAudioRecorder.StartSession は silent-fail
+            // 設計だが、 将来 IDebugAudioRecorder の別実装が例外を投げる可能性に備えて、 デバッグ録音失敗が
+            // 翻訳パイプライン全体を止めないようガードする。 失敗してもログを残して継続する。
+            try
+            {
+                _debugAudioRecorder.StartSession(Guid.NewGuid().ToString("N")[..8]);
+            }
+            catch (Exception ex)
+            {
+                Logger.Warn("DebugAudioRecorder 開始中の例外 (翻訳は継続)", ex);
+                ErrorOccurred?.Invoke(this, ex);
+            }
         }
 
         StatsUpdated?.Invoke(this, new PipelineStatsEventArgs

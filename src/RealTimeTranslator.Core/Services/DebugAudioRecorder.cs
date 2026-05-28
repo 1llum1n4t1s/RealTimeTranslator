@@ -74,7 +74,10 @@ public sealed class DebugAudioRecorder : IDebugAudioRecorder, IDisposable
             try
             {
                 Directory.CreateDirectory(DebugDirectory);
-                var safeSessionId = string.IsNullOrWhiteSpace(sessionId) ? "session" : sessionId;
+                // sessionId の path traversal / 無効文字を防御的にサニタイズ (CodeRabbit 指摘対応)。
+                // 現在の呼び出し元 (TranslationPipelineService) は Guid.ToString("N")[..8] で英数字限定だが、
+                // public interface として将来別の呼び出し元が追加されたときの安全性を確保する。
+                var safeSessionId = SanitizeSessionId(sessionId);
                 var fileName = $"SentAudio_{DateTime.Now:yyyyMMdd_HHmmss}_{safeSessionId}.wav";
                 _currentFilePath = Path.Combine(DebugDirectory, fileName);
                 _innerFile = new FileStream(_currentFilePath, FileMode.Create, FileAccess.Write, FileShare.Read);
@@ -257,5 +260,28 @@ public sealed class DebugAudioRecorder : IDebugAudioRecorder, IDisposable
         stream.Write(buf);
         // Seek を末尾に戻しておく (後続 Write が EOF に追記できるように)。
         stream.Seek(0, SeekOrigin.End);
+    }
+
+    /// <summary>
+    /// sessionId をファイル名に埋め込む前に、 Path.GetInvalidFileNameChars() ベースで無効文字を除去する。
+    /// path traversal (`..\\`) や path separator (`\` / `/`) も同時に弾かれる (これらは GetInvalidFileNameChars
+    /// に含まれる Windows 仕様)。 結果が空文字なら "session" にフォールバック。
+    /// テスト容易化のため internal (InternalsVisibleTo=RealTimeTranslator.Tests)。
+    /// </summary>
+    internal static string SanitizeSessionId(string? sessionId)
+    {
+        if (string.IsNullOrWhiteSpace(sessionId)) return "session";
+        var invalid = Path.GetInvalidFileNameChars();
+        Span<char> buf = stackalloc char[sessionId.Length];
+        int written = 0;
+        foreach (var c in sessionId)
+        {
+            if (Array.IndexOf(invalid, c) < 0 && c != '.' && c != ' ')
+            {
+                buf[written++] = c;
+            }
+        }
+        var result = written == 0 ? "session" : new string(buf[..written]);
+        return result;
     }
 }
