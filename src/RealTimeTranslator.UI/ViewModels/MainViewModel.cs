@@ -286,6 +286,13 @@ public partial class MainViewModel : ObservableObject, IDisposable
             warnings.Add(vadFallbackMessage);
             LoggerService.LogError(vadFallbackMessage);
         }
+        // /rere #F-002 対応: DebugRecordSentAudio が ON のままセッションを開始すると 170MB/h の
+        // ディスク消費が起きる。 ユーザーが「字幕が来ない」調査の途中で ON にしたまま忘れる事故を
+        // 構造的に防ぐため、 起動時に明示バナーで通知する (NullVoiceActivityDetector 経路と同型)。
+        if (_settings.AudioCapture.DebugRecordSentAudio)
+        {
+            warnings.Add("📼 デバッグ録音が ON です (約 170MB/h のディスク消費中)。 確認が終わったら「音声処理」タブで OFF に戻してください。");
+        }
         if (warnings.Count > 0)
         {
             ErrorBannerMessage = string.Join(" / ", warnings);

@@ -145,7 +145,7 @@ public class AudioCaptureSettings
     // ────────── 入力プリプロセス DSP (v1.0.30 新規) ──────────
 
     /// <summary>
-    /// WASAPI capture 直後・リサンプル前に挟まる 4 段プリプロセス DSP の設定。
+    /// WASAPI capture 直後・リサンプル前に挟まる 2 段プリプロセス DSP の設定 (InputGain → AntiClip)。
     /// VAD パス / API 送信パス両方に同じ前処理が乗る。 すべてのフラグが false かつ
     /// InputGainDb=0 なら完全 bypass で現状動作 (v1.0.29 以前) と一致。
     /// </summary>
@@ -162,23 +162,6 @@ public class AudioCaptureSettings
     public bool DebugRecordSentAudio { get; set; } = false;
 }
 
-/// <summary>
-/// 入力プリプロセス DSP の設定 (v1.0.30 新規、 v1.0.32 で LoudnessNormalizer 削除)。
-///
-/// 信号フロー (有効化されたものだけ実効):
-/// <code>
-/// WASAPI 48kHz mono float32
-///   → [NightModeCompressor] → [InputGainStage] → [AntiClipLimiter]
-///   → 既存の 48k→16k リサンプル (VAD 判定 + 24k リサンプル → OpenAI 送信)
-/// </code>
-///
-/// パラメータ値は WebRestrictionRemoval (Chrome 拡張音量ブースター) で動画運用実証済みのものを移植。
-/// 詳細な根拠は各 DSP クラスの XML doc を参照。
-///
-/// v1.0.32: LoudnessNormalizer を削除。 NightModeCompressor (DRC) で「大音抑制 + 小音持ち上げ」を
-/// より反応性高く実現できるため機能重複と判断。 v1.0.30 で導入したが ON 時に server VAD が句点を
-/// 返さなくなる経路を誘発しやすく、 多層防御パラメータ相互依存を増やすデメリットも除去。
-/// </summary>
 /// <summary>
 /// 入力プリプロセス DSP の設定 (v1.0.30 新規、 v1.0.32 で LoudnessNormalizer 削除、 v1.0.36 で NightModeCompressor 削除)。
 ///

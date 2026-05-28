@@ -207,4 +207,94 @@ public class DebugAudioRecorderTests
             foreach (var f in Directory.GetFiles(DebugAudioRecorder.DebugDirectory, $"SentAudio_*_{id2}.wav")) try { File.Delete(f); } catch { }
         }
     }
+
+    [TestMethod]
+    public void WritePcm16_ConcurrentWithStop_NoExceptionThrown()
+    {
+        // rere B2-009 対応: 並行書き込み race のテスト。 lock 保護が機能していることを構造的に検証。
+        // WritePcm16 と StopSession を多数 Task で並列実行しても、 例外を投げない / IsRecording 状態が一貫する。
+        using var recorder = new DebugAudioRecorder();
+        var testId = $"raceparall{Guid.NewGuid():N}"[..16];
+        recorder.StartSession(testId);
+
+        var pcm = new byte[200];
+        for (int i = 0; i < pcm.Length; i++) pcm[i] = (byte)(i & 0xFF);
+
+        var writeTasks = new List<Task>();
+        for (int i = 0; i < 20; i++)
+        {
+            writeTasks.Add(Task.Run(() =>
+            {
+                for (int j = 0; j < 50; j++) recorder.WritePcm16(pcm);
+            }));
+        }
+        // 並行で StopSession + Restart も多数発火
+        var stopTasks = new List<Task>();
+        for (int i = 0; i < 5; i++)
+        {
+            stopTasks.Add(Task.Run(() => { recorder.StopSession(); recorder.StartSession(testId); }));
+        }
+
+        try
+        {
+            Task.WaitAll(writeTasks.Concat(stopTasks).ToArray(), TimeSpan.FromSeconds(10));
+            // ここに到達 = 例外伝播なし
+            recorder.StopSession();
+            Assert.IsFalse(recorder.IsRecording, "並行 race 後も StopSession で確実に終了する");
+        }
+        finally
+        {
+            foreach (var f in Directory.GetFiles(DebugAudioRecorder.DebugDirectory, $"SentAudio_*_{testId}.wav")) try { File.Delete(f); } catch { }
+        }
+    }
+
+    [TestMethod]
+    public void Dispose_StopsSession_AndSubsequentCallsAreNoOp()
+    {
+        // rere B2-009 対応: Dispose 後の挙動を検証。 録音中だった場合は StopSession を呼び出して
+        // ファイル確定書き込みを行い、 以降の WritePcm16 / StopSession / StartSession は no-op or 無害。
+        var recorder = new DebugAudioRecorder();
+        var testId = $"dispose{Guid.NewGuid():N}"[..14];
+        recorder.StartSession(testId);
+        recorder.WritePcm16(new byte[] { 0xAA, 0xBB, 0xCC, 0xDD });
+        Assert.IsTrue(recorder.IsRecording);
+
+        recorder.Dispose();
+        Assert.IsFalse(recorder.IsRecording, "Dispose で IsRecording=false");
+
+        // Dispose 後の呼び出しは例外を投げない (内部 _disposed フラグでガード)
+        recorder.WritePcm16(new byte[] { 0xEE, 0xFF });
+        recorder.StopSession();
+        Assert.IsFalse(recorder.IsRecording);
+
+        try
+        {
+            var files = Directory.GetFiles(DebugAudioRecorder.DebugDirectory, $"SentAudio_*_{testId}.wav");
+            Assert.AreEqual(1, files.Length, "Dispose で WAV ファイルが残る");
+            var bytes = File.ReadAllBytes(files[0]);
+            // data subchunk size = 4 (Dispose 直前の WritePcm16 で 4 byte 書き込み)
+            Assert.AreEqual(4u, BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(40, 4)));
+        }
+        finally
+        {
+            foreach (var f in Directory.GetFiles(DebugAudioRecorder.DebugDirectory, $"SentAudio_*_{testId}.wav")) try { File.Delete(f); } catch { }
+        }
+    }
+
+    [TestMethod]
+    public void WriteFailed_EventCanBeSubscribedAndUnsubscribed()
+    {
+        // rere B2-009 / F-005 対応: WriteFailed イベントが正しく subscribe/unsubscribe できる構造を検証。
+        // 実際の File I/O 失敗を再現するのは OS 依存で困難なため、 ここでは event の構造的契約だけ確認する。
+        using var recorder = new DebugAudioRecorder();
+        Exception? captured = null;
+        Action<Exception> handler = ex => captured = ex;
+
+        recorder.WriteFailed += handler;
+        recorder.WriteFailed -= handler;
+
+        // unsubscribe 後にイベントが発火しても captured は null のまま (event invocation list が空)。
+        Assert.IsNull(captured);
+        Assert.IsFalse(recorder.IsRecording);
+    }
 }

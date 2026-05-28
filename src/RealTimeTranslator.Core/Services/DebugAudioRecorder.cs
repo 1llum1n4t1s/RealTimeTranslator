@@ -10,13 +10,20 @@ namespace RealTimeTranslator.Core.Services;
 /// </summary>
 /// <remarks>
 /// <para>
-/// セッション開始時に WAV ヘッダ (44 bytes) を仮値で書き込み、 <see cref="StopSession"/> で
-/// RIFF chunk size と data subchunk size を実値に書き直す。 途中クラッシュで Stop が呼ばれなくても、
-/// header の placeholder 36 / 0 だけはそのまま残る (多くの WAV プレーヤは data chunk 末尾まで再生してくれる)。
+/// セッション開始時に WAV ヘッダ (44 bytes) を仮値で書き込み、 1 秒周期 checkpoint で
+/// RIFF chunk size と data subchunk size を直近値に書き直す + flush する。 これにより
+/// 途中クラッシュで <see cref="StopSession"/> が呼ばれなくても、 直近 1 秒前までの WAV は
+/// **再生可能ファイル**として残る (旧設計では data subchunk size=0 の placeholder で再生不能だった)。
+/// </para>
+/// <para>
+/// <see cref="WritePcm16"/> は <c>BufferedStream(_, 64 KB)</c> 経由で書き込み、 OS syscall 頻度を
+/// 1 秒あたり ~12 回 → ~1 回に削減 (24kHz Mono PCM16 = 48 KB/sec)。 OneDrive / Windows Defender
+/// CFA / ネットワークドライブ配下でも hot path への影響を抑える。
 /// </para>
 /// <para>
 /// スレッドセーフ: <see cref="WritePcm16"/> は 1 つのオーディオ処理タスクから呼ばれる想定だが、
-/// Start/Stop は UI スレッドから呼ばれるため、 内部の lock で完全直列化する。
+/// Start/Stop は UI スレッドから / checkpoint Timer は ThreadPool から呼ばれるため、 内部の lock で
+/// 完全直列化する。
 /// </para>
 /// </remarks>
 public sealed class DebugAudioRecorder : IDebugAudioRecorder, IDisposable
@@ -27,22 +34,36 @@ public sealed class DebugAudioRecorder : IDebugAudioRecorder, IDisposable
     private const int Channels = 1;
     private const int BitsPerSample = 16;
     private const int WavHeaderSize = 44;
+    private const int BufferSize = 65536; // 64 KB = 約 1.3 秒分の PCM (24kHz/Mono/PCM16 = 48 KB/sec)
+    private static readonly TimeSpan CheckpointInterval = TimeSpan.FromSeconds(1);
+    private static readonly long[] SizeWarningThresholds = { 1_000_000_000L, 2_000_000_000L, 3_000_000_000L };
 
     private readonly object _lock = new();
-    private FileStream? _file;
+    private readonly Timer _checkpointTimer;
+    private FileStream? _innerFile;
+    private BufferedStream? _file;
     private long _dataBytesWritten;
     private string? _currentFilePath;
+    private int _nextSizeWarningIndex;
+    private int _disposed;
 
     public bool IsRecording
     {
         get { lock (_lock) return _file is not null; }
     }
 
+    public event Action<Exception>? WriteFailed;
+
     /// <summary>録音先ディレクトリ (%APPDATA%/RealTimeTranslator/debug/)。 UI の「フォルダを開く」ボタン用に公開。</summary>
     public static string DebugDirectory => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
         "RealTimeTranslator",
         "debug");
+
+    public DebugAudioRecorder()
+    {
+        _checkpointTimer = new Timer(OnCheckpointTimerElapsed, null, Timeout.Infinite, Timeout.Infinite);
+    }
 
     public void StartSession(string sessionId)
     {
@@ -56,16 +77,21 @@ public sealed class DebugAudioRecorder : IDebugAudioRecorder, IDisposable
                 var safeSessionId = string.IsNullOrWhiteSpace(sessionId) ? "session" : sessionId;
                 var fileName = $"SentAudio_{DateTime.Now:yyyyMMdd_HHmmss}_{safeSessionId}.wav";
                 _currentFilePath = Path.Combine(DebugDirectory, fileName);
-                _file = new FileStream(_currentFilePath, FileMode.Create, FileAccess.Write, FileShare.Read);
+                _innerFile = new FileStream(_currentFilePath, FileMode.Create, FileAccess.Write, FileShare.Read);
+                _file = new BufferedStream(_innerFile, BufferSize);
                 WriteWavHeaderPlaceholder(_file);
                 _dataBytesWritten = 0;
+                _nextSizeWarningIndex = 0;
+                _checkpointTimer.Change(CheckpointInterval, CheckpointInterval);
                 Logger.Info($"DebugAudioRecorder 開始: {_currentFilePath}");
             }
             catch (Exception ex)
             {
                 Logger.Warn("DebugAudioRecorder 開始失敗", ex);
                 try { _file?.Dispose(); } catch { }
+                try { _innerFile?.Dispose(); } catch { }
                 _file = null;
+                _innerFile = null;
                 _currentFilePath = null;
                 _dataBytesWritten = 0;
             }
@@ -75,6 +101,7 @@ public sealed class DebugAudioRecorder : IDebugAudioRecorder, IDisposable
     public void WritePcm16(ReadOnlySpan<byte> pcm16)
     {
         if (pcm16.IsEmpty) return;
+        Exception? failure = null;
         lock (_lock)
         {
             if (_file is null) return;
@@ -82,12 +109,19 @@ public sealed class DebugAudioRecorder : IDebugAudioRecorder, IDisposable
             {
                 _file.Write(pcm16);
                 _dataBytesWritten += pcm16.Length;
+                CheckSizeWarning();
             }
             catch (Exception ex)
             {
+                failure = ex;
                 Logger.Warn("DebugAudioRecorder 書き込み失敗、 セッション終了", ex);
                 StopSessionInternal();
             }
+        }
+        if (failure is not null)
+        {
+            // 購読者の例外は録音側に伝播させない (try-catch でガード)。
+            try { WriteFailed?.Invoke(failure); } catch (Exception ex) { Logger.Warn("WriteFailed handler 例外", ex); }
         }
     }
 
@@ -104,9 +138,11 @@ public sealed class DebugAudioRecorder : IDebugAudioRecorder, IDisposable
         if (_file is null) return;
         var path = _currentFilePath;
         var bytes = _dataBytesWritten;
+        _checkpointTimer.Change(Timeout.Infinite, Timeout.Infinite);
         try
         {
-            FinalizeWavHeader(_file, bytes);
+            _file.Flush();
+            if (_innerFile is not null) FinalizeWavHeader(_innerFile, bytes);
             _file.Flush();
             Logger.Info($"DebugAudioRecorder 停止: {path} ({bytes:N0} bytes PCM データ)");
         }
@@ -117,13 +153,60 @@ public sealed class DebugAudioRecorder : IDebugAudioRecorder, IDisposable
         finally
         {
             try { _file.Dispose(); } catch { }
+            try { _innerFile?.Dispose(); } catch { }
             _file = null;
+            _innerFile = null;
             _currentFilePath = null;
             _dataBytesWritten = 0;
+            _nextSizeWarningIndex = 0;
         }
     }
 
-    public void Dispose() => StopSession();
+    /// <summary>
+    /// 1 秒周期で呼ばれる checkpoint。 BufferedStream を flush して WAV ヘッダを直近値に更新することで、
+    /// 途中クラッシュ時も直近 1 秒前までは再生可能ファイルとして残す (C2-001 / B1-004 対応)。
+    /// 失敗してもセッションは継続 (致命的ではない、 次回 checkpoint で再試行)。
+    /// </summary>
+    private void OnCheckpointTimerElapsed(object? state)
+    {
+        if (Interlocked.CompareExchange(ref _disposed, 0, 0) != 0) return;
+        lock (_lock)
+        {
+            if (_file is null || _innerFile is null) return;
+            try
+            {
+                _file.Flush();
+                FinalizeWavHeader(_innerFile, _dataBytesWritten);
+                _innerFile.Flush();
+                // FinalizeWavHeader が underlying FileStream を末尾に Seek-back するが、
+                // BufferedStream の内部 position と underlying の position が乖離する可能性があるため、
+                // BufferedStream 側でも明示的に末尾に seek し直しておく (subsequent Write が EOF append であることを保証)。
+                _file.Seek(0, SeekOrigin.End);
+            }
+            catch (Exception ex)
+            {
+                Logger.Warn("DebugAudioRecorder checkpoint 失敗 (継続)", ex);
+            }
+        }
+    }
+
+    private void CheckSizeWarning()
+    {
+        while (_nextSizeWarningIndex < SizeWarningThresholds.Length
+               && _dataBytesWritten >= SizeWarningThresholds[_nextSizeWarningIndex])
+        {
+            var threshold = SizeWarningThresholds[_nextSizeWarningIndex];
+            Logger.Warn($"DebugAudioRecorder: 録音サイズが {threshold / 1_000_000_000.0:F1} GB を超えました ({_dataBytesWritten:N0} bytes)。 24 時間で WAV format の uint32 chunk size 上限 (4 GB) に達して再生不能になるため、 必要なら録音を停止してください。");
+            _nextSizeWarningIndex++;
+        }
+    }
+
+    public void Dispose()
+    {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+        StopSession();
+        _checkpointTimer.Dispose();
+    }
 
     internal static void WriteWavHeaderPlaceholder(Stream stream)
     {

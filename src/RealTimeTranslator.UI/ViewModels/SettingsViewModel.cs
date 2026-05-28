@@ -329,6 +329,16 @@ public partial class SettingsViewModel : ObservableObject
             changed = true;
         }
 
+        // /rere F-003 対応: SilencePaddingMs の旧 default (v1.0.33-35: 8000ms) を新 default (v1.0.36: 5000ms) に
+        // 1 度限り migration する。 8000ms ぴったりは旧 default の名残と判定し、 他の値 (7000 / 10000 等) は
+        // ユーザーが明示的に設定した可能性があるためそのまま維持する。
+        if (_settings.OpenAIRealtime.SilencePaddingMs == 8000)
+        {
+            LoggerService.LogInfo("SettingsViewModel.Sanitize: SilencePaddingMs=8000 (v1.0.33-35 旧 default) を 5000 (v1.0.36 新 default) に migration");
+            _settings.OpenAIRealtime.SilencePaddingMs = 5000;
+            changed = true;
+        }
+
         if (changed)
         {
             // 矯正結果を settings.json に永続化 (次回起動時の再矯正を避ける)

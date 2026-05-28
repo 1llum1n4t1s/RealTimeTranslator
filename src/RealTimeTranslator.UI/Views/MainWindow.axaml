@@ -614,7 +614,7 @@
                             <StackPanel>
                                 <CheckBox IsChecked="{Binding DebugRecordSentAudio, Mode=TwoWay}"
                                           Content="OpenAI に送信する PCM16 (24kHz / Mono) を WAV に保存する"/>
-                                <TextBlock Text="VAD ゲート通過後・サイレンス padding 含めて、 実送信と完全一致するバイト列を記録します。 セッションごとに 1 ファイル (SentAudio_YYYYMMDD_HHmmss_xxxx.wav)。 24kHz / Mono / PCM16 で 1 時間あたり約 170 MB のディスクを消費するため、 必要なときだけ ON にしてください。"
+                                <TextBlock Text="VAD ゲート通過後・サイレンス padding 含めて、 送信を試みたバイト列 (NW 詰まりで DropOldest された分も含む) を記録します。 セッションごとに 1 ファイル (SentAudio_YYYYMMDD_HHmmss_xxxx.wav)。 24kHz / Mono / PCM16 で 1 時間あたり約 170 MB のディスクを消費するため、 必要なときだけ ON にしてください。"
                                            FontSize="11" Foreground="{DynamicResource Brush.FG2}"
                                            TextWrapping="Wrap" Margin="0,4,0,8"/>
                                 <Button Content="録音フォルダを開く"
