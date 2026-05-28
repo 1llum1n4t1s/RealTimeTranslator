@@ -42,7 +42,7 @@ public partial class SettingsViewModel : ObservableObject
             "Zen Maru Gothic",
             "M PLUS Rounded 1c"
         });
-        FontSizes = new ReadOnlyCollection<double>(new[] { 12d, 14d, 16d, 18d, 20d, 24d, 28d, 32d, 36d, 40d });
+        FontSizes = new ReadOnlyCollection<double>(new[] { 12d, 14d, 16d, 18d, 20d, 24d, 28d, 32d, 36d, 40d, 48d, 56d, 64d, 72d, 80d, 96d });
         TextColorOptions = new ReadOnlyCollection<ColorOption>(new ColorOption[]
         {
             new("白",             "#FFFFFFFF"),
@@ -189,8 +189,8 @@ public partial class SettingsViewModel : ObservableObject
 
         if (!FontSizes.Contains(_settings.Overlay.FontSize))
         {
-            LoggerService.LogInfo($"SettingsViewModel.Sanitize: FontSize={_settings.Overlay.FontSize} が一覧外 → 24 に矯正");
-            _settings.Overlay.FontSize = 24d;
+            LoggerService.LogInfo($"SettingsViewModel.Sanitize: FontSize={_settings.Overlay.FontSize} が一覧外 → 32 に矯正");
+            _settings.Overlay.FontSize = 32d;
             changed = true;
         }
 
@@ -326,6 +326,16 @@ public partial class SettingsViewModel : ObservableObject
         {
             LoggerService.LogInfo($"SettingsViewModel.Sanitize: OutputLanguage='{_settings.OpenAIRealtime.OutputLanguage}' が一覧外 → 'ja' に矯正");
             _settings.OpenAIRealtime.OutputLanguage = "ja";
+            changed = true;
+        }
+
+        // /rere F-003 対応: SilencePaddingMs の旧 default (v1.0.33-35: 8000ms) を新 default (v1.0.36: 5000ms) に
+        // 1 度限り migration する。 8000ms ぴったりは旧 default の名残と判定し、 他の値 (7000 / 10000 等) は
+        // ユーザーが明示的に設定した可能性があるためそのまま維持する。
+        if (_settings.OpenAIRealtime.SilencePaddingMs == 8000)
+        {
+            LoggerService.LogInfo("SettingsViewModel.Sanitize: SilencePaddingMs=8000 (v1.0.33-35 旧 default) を 5000 (v1.0.36 新 default) に migration");
+            _settings.OpenAIRealtime.SilencePaddingMs = 5000;
             changed = true;
         }
 
@@ -495,7 +505,7 @@ public partial class SettingsViewModel : ObservableObject
     public OpacityOption? SelectedBackgroundOpacityOption
     {
         get => OpacityOptions.FirstOrDefault(o => o.Percent == _settings.Overlay.BackgroundOpacityPercent)
-               ?? OpacityOptions[2]; // default = 標準 (50%)
+               ?? OpacityOptions[3]; // default = 濃い (75%)
         set
         {
             if (value != null && _settings.Overlay.BackgroundOpacityPercent != value.Percent)
@@ -618,6 +628,45 @@ public partial class SettingsViewModel : ObservableObject
         }
     }
 
+    /// <summary>
+    /// OpenAI に送信される PCM16 (24kHz / Mono) を %APPDATA%/RealTimeTranslator/debug/ に
+    /// WAV 録音するデバッグ機能。 セッションごとに 1 ファイル。 サイレンス padding 含めて
+    /// 「実送信と完全一致」のバイト列を記録するので、 字幕が来ないときに「何が送られているか」を
+    /// 後から再生して確認できる。 token / 容量を消費するので恒常 ON は推奨しない。
+    /// </summary>
+    public bool DebugRecordSentAudio
+    {
+        get => _settings.AudioCapture.DebugRecordSentAudio;
+        set
+        {
+            if (_settings.AudioCapture.DebugRecordSentAudio != value)
+            {
+                _settings.AudioCapture.DebugRecordSentAudio = value;
+                OnPropertyChanged();
+                ScheduleAutoSave();
+            }
+        }
+    }
+
+    /// <summary>%APPDATA%/RealTimeTranslator/debug/ をエクスプローラーで開く。 録音した WAV の確認用。</summary>
+    [RelayCommand]
+    private void OpenDebugFolder()
+    {
+        try
+        {
+            Directory.CreateDirectory(DebugAudioRecorder.DebugDirectory);
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = DebugAudioRecorder.DebugDirectory,
+                UseShellExecute = true,
+            });
+        }
+        catch (Exception ex)
+        {
+            LoggerService.LogError($"デバッグ録音フォルダのオープンに失敗: {ex.Message}");
+        }
+    }
+
     // AutoPause は ComboBox 化したため AutoPauseOnSilenceSec プロパティ (NumericUpDown 用) は廃止。
     // 旧 settings.json の任意秒数は SanitizeSettings で最も近い既定値に丸められる。
     public AutoPauseOption? SelectedAutoPauseOption
@@ -635,28 +684,12 @@ public partial class SettingsViewModel : ObservableObject
         }
     }
 
-    // ───── 入力プリプロセス DSP (v1.0.30 新規、 v1.0.32 で 4 段 → 3 段) ─────
-    // WASAPI capture 直後・リサンプル前に挟む 3 段 DSP の有効化フラグと入力ゲイン。
+    // ───── 入力プリプロセス DSP (v1.0.30 新規、 v1.0.32 で 4 段 → 3 段、 v1.0.36 で 3 段 → 2 段) ─────
+    // WASAPI capture 直後・リサンプル前に挟む 2 段 DSP (InputGain + AntiClip) の設定。
     // 全部 false / InputGainDb=0 が default で、 完全 bypass 動作 (v1.0.29 以前と同一)。
-    // v1.0.32: LoudnessNormalizer は NightMode (DRC) と機能重複のため削除。
-
-    /// <summary>
-    /// ナイトモード DRC (NightModeCompressor) を有効化する。
-    /// 大音 BGM/SFX を抑え、 ささやき声を相対持ち上げ。 threshold=-30dBFS / ratio=4:1。
-    /// </summary>
-    public bool EnableNightMode
-    {
-        get => _settings.AudioCapture.Preprocessing.EnableNightMode;
-        set
-        {
-            if (_settings.AudioCapture.Preprocessing.EnableNightMode != value)
-            {
-                _settings.AudioCapture.Preprocessing.EnableNightMode = value;
-                OnPropertyChanged();
-                ScheduleAutoSave();
-            }
-        }
-    }
+    // 削除履歴:
+    //   v1.0.32: LoudnessNormalizer 削除 (NightMode と機能重複)
+    //   v1.0.36: NightModeCompressor 削除 (server VAD が句点を返さなくなる経路を誘発しやすく多層防御の相互依存が重かった)
 
     /// <summary>
     /// 最終段クリップ防止リミッタ (AntiClipLimiter) を有効化する。

@@ -68,7 +68,7 @@ public class OverlaySettings
     // 新規 settings.json 生成時 / 旧設定にリスト外フォントが入っている場合 (SettingsViewModel.SanitizeSettings)
     // の両方でここがフォールバック値になる。
     public string FontFamily { get; set; } = "IBM Plex Sans JP";
-    public double FontSize { get; set; } = 24;
+    public double FontSize { get; set; } = 32;
     /// <summary>フォントの太さ。 "Normal" または "Bold"。 OverlayViewModel が Avalonia.Media.FontWeight に変換する。</summary>
     public string FontWeight { get; set; } = "Normal";
     // 既定 partial 字幕色は半透明白 (alpha 0x80)。 SettingsViewModel.TextColorOptions の
@@ -80,11 +80,11 @@ public class OverlaySettings
     // BackgroundColor を埋める運用 (SettingsViewModel が autoSave 時に同期)。
     // 既存環境からのマイグレーション: SanitizeSettings で BackgroundColor から
     // BackgroundColorBase / BackgroundOpacityPercent を逆算して埋める。
-    public string BackgroundColor { get; set; } = "#80000000";
+    public string BackgroundColor { get; set; } = "#BF000000";
     /// <summary>背景色の RGB のみ (#RRGGBB)。 透明度は BackgroundOpacityPercent で別管理。</summary>
     public string BackgroundColorBase { get; set; } = "#000000";
-    /// <summary>背景の不透明度 (0-100%)。 0/25/50/75/100 の 5 段階を想定 (0% = 完全透明)。</summary>
-    public int BackgroundOpacityPercent { get; set; } = 50;
+    /// <summary>背景の不透明度 (0-100%)。 0/25/50/75/100 の 5 段階を想定 (0% = 完全透明)。 default=75% (0xBF / 255 = 0.749…)。</summary>
+    public int BackgroundOpacityPercent { get; set; } = 75;
     public double DisplayDuration { get; set; } = 5.0;
     public double FadeOutDuration { get; set; } = 0.5;
     public double BottomMarginPercent { get; set; } = 10;
@@ -145,38 +145,44 @@ public class AudioCaptureSettings
     // ────────── 入力プリプロセス DSP (v1.0.30 新規) ──────────
 
     /// <summary>
-    /// WASAPI capture 直後・リサンプル前に挟まる 4 段プリプロセス DSP の設定。
+    /// WASAPI capture 直後・リサンプル前に挟まる 2 段プリプロセス DSP の設定 (InputGain → AntiClip)。
     /// VAD パス / API 送信パス両方に同じ前処理が乗る。 すべてのフラグが false かつ
     /// InputGainDb=0 なら完全 bypass で現状動作 (v1.0.29 以前) と一致。
     /// </summary>
     public AudioPreprocessingSettings Preprocessing { get; set; } = new();
+
+    // ────────── デバッグ録音 ──────────
+
+    /// <summary>
+    /// OpenAI に送信される PCM16 (24kHz / Mono) を %APPDATA%/RealTimeTranslator/debug/ に
+    /// WAV ファイルとして保存する (default: false)。 VAD ゲート通過後・サイレンス padding 含めて
+    /// 実送信と完全一致するバイト列を記録する。 セッションごとに 1 ファイル
+    /// (SentAudio_yyyyMMdd_HHmmss_{sessionId}.wav)。 token / 容量を消費するので恒常 ON は推奨しない。
+    /// </summary>
+    public bool DebugRecordSentAudio { get; set; } = false;
 }
 
 /// <summary>
-/// 入力プリプロセス DSP の設定 (v1.0.30 新規、 v1.0.32 で LoudnessNormalizer 削除)。
+/// 入力プリプロセス DSP の設定 (v1.0.30 新規、 v1.0.32 で LoudnessNormalizer 削除、 v1.0.36 で NightModeCompressor 削除)。
 ///
 /// 信号フロー (有効化されたものだけ実効):
 /// <code>
 /// WASAPI 48kHz mono float32
-///   → [NightModeCompressor] → [InputGainStage] → [AntiClipLimiter]
+///   → [InputGainStage] → [AntiClipLimiter]
 ///   → 既存の 48k→16k リサンプル (VAD 判定 + 24k リサンプル → OpenAI 送信)
 /// </code>
 ///
 /// パラメータ値は WebRestrictionRemoval (Chrome 拡張音量ブースター) で動画運用実証済みのものを移植。
 /// 詳細な根拠は各 DSP クラスの XML doc を参照。
 ///
-/// v1.0.32: LoudnessNormalizer を削除。 NightModeCompressor (DRC) で「大音抑制 + 小音持ち上げ」を
-/// より反応性高く実現できるため機能重複と判断。 v1.0.30 で導入したが ON 時に server VAD が句点を
-/// 返さなくなる経路を誘発しやすく、 多層防御パラメータ相互依存を増やすデメリットも除去。
+/// 削除履歴:
+/// - v1.0.32: LoudnessNormalizer を削除。 NightModeCompressor (DRC) と機能重複のため。
+/// - v1.0.36: NightModeCompressor を削除。 ON 時に server VAD が句点を返さなくなる経路を誘発しやすく、
+///   多層防御パラメータ相互依存 (DSP → VAD threshold → D-7 fallback → 類似抑制) を増やすデメリットが大きかった。
+///   遠距離小音量の声拾いは InputGainStage で底上げする方針に統一。
 /// </summary>
 public class AudioPreprocessingSettings
 {
-    /// <summary>
-    /// ナイトモード DRC を有効化する (default: false)。 大音 BGM/SFX を抑え、 小音 (ささやき声) を相対持ち上げ。
-    /// 設定: threshold=-30dBFS / knee=12dB / ratio=4:1 / attack=20ms / release=1.0s。
-    /// </summary>
-    public bool EnableNightMode { get; set; } = false;
-
     /// <summary>
     /// 最終段クリップ防止リミッタを有効化する (default: false)。 threshold=-3dBFS / ratio=12:1。
     /// 入力ゲインや前段 DSP でピーク超過する可能性があるときに ON 推奨。
@@ -221,11 +227,11 @@ public class OpenAIRealtimeSettings
     //   - Silence → InSpeech 再遷移でカウントリセット
     // 値が 0 以下なら機能を無効化する (= VAD Silence 中は完全に送信停止、 v1.0.25 以前と同じ)。
     //
-    // v1.0.33 で 5000 → 8000 に延長 (ゆろさん要望「翻訳が遅れているときに 5 秒だと足りない感じ」)。
-    // 3 秒延長で server が delta 保留している間の「入力継続中」アピールを強化し、 保留 delta の flush を促進。
-    // 副作用: 完全 silence 区間が 3 秒長く送信されるため、 1 silence 周期あたり ~3 秒分の token 増。
-    // 1 silence 区間 = 5 秒以上の沈黙場面で課金影響あり (典型ゲームプレイで分単位の沈黙は稀なため軽微)。
-    public int SilencePaddingMs { get; set; } = 8000;
+    // 変更履歴:
+    //   v1.0.33: 5000 → 8000 に延長 (ゆろさん要望「翻訳が遅れているときに 5 秒だと足りない感じ」)。
+    //   v1.0.36: 8000 → 5000 に戻し (ゆろさん判断、 token 消費を抑えて短い沈黙でカット)。
+    // 1 silence 区間 = N 秒以上の沈黙場面では padding 終了後に Silero VAD が次発話を検知するまで完全停止する。
+    public int SilencePaddingMs { get; set; } = 5000;
 
     // ⭐ D-7 fallback: 句点なし partial の最大累積文字数 (v1.0.28 復活)。
     //

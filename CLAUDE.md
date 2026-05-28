@@ -61,12 +61,13 @@ MSTest、 `TestCategory!=Integration` フィルタでユニットテストのみ
 
 ```
 Audio Capture (WASAPI native 48kHz/2ch)
-  → StereoToMono → 48k→16k (StreamingResampler、 VAD 判定用)
-                    └→ 16k→24k (StreamingResampler、 OpenAI 送信用) → PCM16
+  → StereoToMono → [DSP: InputGain → AntiClip]
+                 ├→ 48k→16k (StreamingResampler、 VAD 判定用)
+                 └→ 48k→24k (StreamingResampler、 OpenAI 送信用) → PCM16
   → OpenAI Realtime Translate API (WebSocket) → Subtitle Overlay (Avalonia 透明窓)
 ```
 
-**v1.0.27 で 1 系統二段リサンプラに統合** (旧 v1.0.23-26 の `48k→16k (VAD) + 48k→24k (送信)` 並列 2 系統を直列化)。 VAD 有効/無効パスとも同じ 48k→16k→24k 二段経路を通る。
+**経路履歴**: v1.0.23-26 は **並列 2 系統** (`48k→16k VAD + 48k→24k 送信`)、 v1.0.27〜v1.0.35 は **1 系統二段** (`48k→16k→24k`) に統合してパイプライン整合性を優先していたが、 中継 16k で Nyquist 8kHz の高域カットが入り OpenAI transcribe 精度を削いでいた。 **v1.0.36 で並列 2 系統に復帰** し、 送信音声は `48k→24k 直` で Nyquist 12kHz の帯域を確保する。 VAD パスは Silero VAD v5 の 16kHz 固定仕様のため変わらず `48k→16k` 直。 VAD 有効/無効パスとも `_sendResampler` は 48k→24k 直経路を通る (VAD 無効時は `_vadResampler` も呼んで戻り値を捨て、 hot-reload 時の状態同期を維持)。
 
 ### Project Structure
 
@@ -95,9 +96,9 @@ Audio Capture (WASAPI native 48kHz/2ch)
 ### Pipeline Flow (TranslationPipelineService in Core/Services/)
 
 1. `AudioCaptureService` feeds WASAPI native rate (typically 48kHz/2ch) audio chunks via `AudioDataAvailable` event
-2. `TranslationPipelineService` がステレオ→モノラル化、 `StreamingResampler` で `48k→16k` (VAD 判定用、 v1.0.27 から 1 系統二段の前段) と `16k→24k` (OpenAI 送信用、 後段) を直列で処理し、 PCM16 に変換して `OpenAIRealtimeClient` に渡す
+2. `TranslationPipelineService` がステレオ→モノラル化、 `StreamingResampler` で `48k→16k` (VAD 判定用) と `48k→24k` (OpenAI 送信用) を **並列 2 系統** (v1.0.36 で復活) で処理し、 PCM16 に変換して `OpenAIRealtimeClient` に渡す。 v1.0.27〜v1.0.35 は `48k→16k→24k` の 1 系統二段だったが、 中継 16k で Nyquist 8kHz 高域カットが入り transcribe 精度を下げていたため revert。
 3. API returns translation text as `response.output_audio_transcript.delta` / `response.output_text.delta` (streaming) and `.done` (final). Legacy event names (`output_transcript.*`, `response.audio_transcript.*`) are still recognized for compatibility.
-4. Delta events fire `SubtitleGenerated` with `IsFinal=false` (throttled per `TranslationPipelineService.DeltaThrottle`, 現在 30ms)、 句点 (`。！？.!?`) 到達または D-7 fallback (`MaxPartialChars`、 default 50 — v1.0.31 で 80 → 50 に短縮) 発火で完結文を切り出して `IsFinal=true` 発火 + 新 `SegmentId` 発行
+4. Delta events fire `SubtitleGenerated` with `IsFinal=false` (throttled per `TranslationPipelineService.DeltaThrottle`, 現在 20ms)、 句点 (`。！？.!?`) 到達または D-7 fallback (`MaxPartialChars`、 default 50 — v1.0.31 で 80 → 50 に短縮) 発火で完結文を切り出して `IsFinal=true` 発火 + 新 `SegmentId` 発行
 5. `OverlayViewModel` displays subtitles, tracking updates by `SegmentId`
 
 ### VAD ゲート + コスト見える化 (案 D + 案 G) 🎯

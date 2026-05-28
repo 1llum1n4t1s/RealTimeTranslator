@@ -388,6 +388,14 @@ public class AudioCaptureService : IAudioCaptureService
             if (callCount == 1)
             {
                 LoggerService.LogDebug($"[Capture] WaveFormat: Encoding={sourceFormat.Encoding}, SampleRate={sourceFormat.SampleRate}, Channels={sourceFormat.Channels}, BitsPerSample={sourceFormat.BitsPerSample}");
+                // D-C1 止血: 上層 (TranslationPipelineService) の StreamingResampler は 48000Hz 固定でハードコードされている。
+                // Hi-Res オーディオ (96kHz/192kHz) や CD レート (44.1kHz) device が default playback だと
+                // 時間軸が歪み VAD / transcribe 精度が崩壊する経路。 検知時に WARN ログを 1 度だけ残す。
+                // 根本修正 (sampleRate 動的化) は議題化のまま残す (Pipeline 全層に sampleRate 伝搬が必要)。
+                if (sourceFormat.SampleRate != 48000)
+                {
+                    LoggerService.LogWarning($"[Capture] ⚠️ 想定外の SampleRate を検出: {sourceFormat.SampleRate}Hz (期待値 48000Hz)。 リサンプラが 48k 前提のため、 VAD 判定や字幕精度が劣化する可能性があります。 Windows サウンド設定で playback device を 48kHz に変更することを推奨します。");
+                }
             }
             var logHex = callCount <= 3 || callCount % 100 == 0;
             if (logHex)
@@ -436,13 +444,14 @@ public class AudioCaptureService : IAudioCaptureService
 
             // バッファに追加。
             // ⭐ 出力契約: WASAPI ネイティブレート (通常 48kHz) のモノラル float[] を発火する。
-            // 旧設計は AudioCaptureService 内で 48k→16k リサンプルしていたが、 送信経路が
-            // 48k→16k→24k と二段でリサンプル/ダウンサンプルする情報損失があった。 さらに
+            // 旧設計 (v1.0.26 以前) は AudioCaptureService 内で 48k→16k リサンプルしていたが、
             // チャンク境界 (~10ms) で WdlResamplingSampleProvider 新規生成による振幅最大 90% の
             // クリックノイズが入り、 ARC Raiders 等の動的音声で VAD/STT を断続的に騙していた。
-            // この層では mono 化 (StereoToMono) と 48k 切り出しだけ行い、 リサンプルは
+            // この層では mono 化 (StereoToMono) と native rate 切り出しだけ行い、 リサンプルは
             // TranslationPipelineService 側で「48k→16k (VAD判定用)」「48k→24k (送信用)」の
-            // 2 経路に分岐させてステートフル StreamingResampler で行う (2026-05-24)。
+            // 2 経路に分岐させてステートフル StreamingResampler で行う設計に変更 (2026-05-24)。
+            // v1.0.27 で「2 経路は無駄」と統合 (48k→16k→24k) したが、 v1.0.36 で並列 2 系統に
+            // revert (中継 16k の Nyquist 8kHz 高域カットが transcribe 精度を下げていたため)。
             lock (_bufferLock)
             {
                 var sampleRate = sourceFormat.SampleRate;

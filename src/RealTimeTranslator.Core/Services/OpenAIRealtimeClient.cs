@@ -107,8 +107,14 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
     /// <inheritdoc />
     public long ServerReportedAudioInputTokens => Interlocked.Read(ref _serverReportedAudioInputTokens);
 
-    public OpenAIRealtimeClient()
+    // デバッグ録音 (OpenAI 送信前 PCM16 を WAV に書き出す)。 ctor で DI 注入。
+    // 設定で OFF のままなら never recording で no-op、 ON のときだけ TranslationPipelineService が
+    // StartSession を呼んでセッション中の SendAudio バイト列を記録する。
+    private readonly Interfaces.IDebugAudioRecorder? _debugAudioRecorder;
+
+    public OpenAIRealtimeClient(Interfaces.IDebugAudioRecorder? debugAudioRecorder = null)
     {
+        _debugAudioRecorder = debugAudioRecorder;
         // ネットワーク復帰イベントで再接続カウンタをリセットする。モバイル NW 切替や
         // 一時切断（5〜30 秒）で MaxReconnectAttempts に達した後でも、復帰後に再試行できるようにする。
         NetworkChange.NetworkAvailabilityChanged += OnNetworkAvailabilityChanged;
@@ -177,6 +183,11 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
         if (pcm16Audio is null || pcm16Audio.Length == 0) return;
         // 再接続中・接続前は音声を捨てる（新セッションでコンテキスト連続性がないため送っても無駄）。
         if (State != ConnectionState.Connected) return;
+
+        // デバッグ録音: SendAudio に到達した PCM16 をそのまま WAV へ追記する。
+        // 録音中でなければ no-op (IDebugAudioRecorder の実装で吸収)。 サイレンス padding 含めて
+        // 「実際に送信を試みた音」を完全記録するため、 ここを Channel 投入前にフックしている。
+        _debugAudioRecorder?.WritePcm16(pcm16Audio);
 
         var channel = _sendChannel;
         if (channel is null) return;

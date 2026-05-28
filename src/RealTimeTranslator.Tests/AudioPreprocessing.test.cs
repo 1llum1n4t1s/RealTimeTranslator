@@ -4,12 +4,13 @@ using RealTimeTranslator.Core.Services.Audio;
 namespace RealTimeTranslator.Tests;
 
 /// <summary>
-/// 入力プリプロセス DSP 3 クラス (v1.0.30 で 4 段導入 → v1.0.32 で LoudnessNormalizer 削除) のユニットテスト。
+/// 入力プリプロセス DSP 2 クラス (v1.0.30 で 4 段導入 → v1.0.32 で LoudnessNormalizer 削除
+/// → v1.0.36 で NightModeCompressor 削除) のユニットテスト。
 ///
 /// 各 DSP の検証ポイント:
 /// - IsEnabled=false で完全 bypass (入力配列を一切変更しない)
-/// - 設計通りのゲイン / 圧縮 / リミット動作 (代表的な入力レベルで挙動確認)
-/// - Reset() で内部状態 (envelope / running gain / sum-of-squares) が完全クリア
+/// - 設計通りのゲイン / リミット動作 (代表的な入力レベルで挙動確認)
+/// - Reset() で内部状態 (envelope / running gain) が完全クリア
 ///
 /// WebRestrictionRemoval (Chrome 拡張音量ブースター) から移植したパラメータをベースにしているため、
 /// 厳密な数値ではなく「方向 (大音は抑える / 小音は持ち上げる)」を中心に検証する。
@@ -22,16 +23,6 @@ public class AudioPreprocessingTests
     // ═════════════════ 共通 bypass テスト ═════════════════
     // IsEnabled=false / GainDb=0 のとき、 入力配列を一切変更しないことを保証する。
     // これが破れると default 設定 (現状動作と互換) の保証が崩れる。
-
-    [TestMethod]
-    public void NightModeCompressor_Disabled_DoesNotMutateBuffer()
-    {
-        var c = new NightModeCompressor(SampleRate, enabled: false);
-        var samples = new float[] { 0.1f, -0.2f, 0.3f, -0.4f, 0.5f };
-        var original = (float[])samples.Clone();
-        c.Process(samples);
-        CollectionAssert.AreEqual(original, samples);
-    }
 
     [TestMethod]
     public void InputGainStage_ZeroDb_DoesNotMutateBuffer()
@@ -108,58 +99,6 @@ public class AudioPreprocessingTests
 
         g.GainDb = 0f;
         Assert.IsFalse(g.IsEnabled, "0dB に戻すと再び bypass");
-    }
-
-    // ═════════════════ NightModeCompressor ═════════════════
-
-    [TestMethod]
-    public void NightModeCompressor_QuietSignal_NoCompression()
-    {
-        // -50 dBFS (knee start -36 dBFS より下) は圧縮対象外
-        var c = new NightModeCompressor(SampleRate, enabled: true);
-        const float inputAmp = 0.00316f; // 10^(-50/20)
-        var samples = GenerateSineWave(440f, inputAmp, SampleRate, durationSec: 0.5);
-        var initialPeak = MaxAbs(samples);
-        c.Process(samples);
-        var finalPeak = MaxAbs(samples);
-        // 圧縮されない (envelope follower の attack 影響だけは多少出るが、 大きく変わらないはず)
-        Assert.AreEqual(initialPeak, finalPeak, initialPeak * 0.1f,
-            "knee 範囲外 (threshold-knee/2 未満) は圧縮対象外");
-    }
-
-    [TestMethod]
-    public void NightModeCompressor_LoudSignal_AppliesCompression()
-    {
-        // -10 dBFS (knee end -24 dBFS より上) は強く圧縮されるはず
-        var c = new NightModeCompressor(SampleRate, enabled: true);
-        const float inputAmp = 0.316f; // 10^(-10/20)
-        var samples = GenerateSineWave(440f, inputAmp, SampleRate, durationSec: 1.0);
-        var initialPeak = MaxAbs(samples);
-        c.Process(samples);
-
-        // envelope が追従しきった後半でチェック (attack 20ms なので 1 秒なら十分追従)
-        var tailPeak = MaxAbs(samples.AsSpan(samples.Length / 2).ToArray());
-        Assert.IsTrue(tailPeak < initialPeak * 0.7f,
-            $"-10dBFS は ratio 4:1 で圧縮されるべき (initial={initialPeak:F4}, tail={tailPeak:F4})");
-    }
-
-    [TestMethod]
-    public void NightModeCompressor_Reset_ClearsEnvelopeState()
-    {
-        // 大音量で envelope を引き上げた後 Reset → 小音量入力で過去の envelope が漏れない
-        var c = new NightModeCompressor(SampleRate, enabled: true);
-        var loud = GenerateSineWave(440f, 0.5f, SampleRate, durationSec: 0.1);
-        c.Process(loud);
-
-        c.Reset();
-
-        // Reset 後の小音量信号は圧縮されない (envelope が floor から再スタート)
-        var probe = GenerateSineWave(440f, 0.001f, SampleRate, durationSec: 0.05);
-        var probeInitialPeak = MaxAbs(probe);
-        c.Process(probe);
-        var probeFinalPeak = MaxAbs(probe);
-        Assert.AreEqual(probeInitialPeak, probeFinalPeak, probeInitialPeak * 0.2f,
-            "Reset 後の小音量は圧縮されない (envelope が clear されている証拠)");
     }
 
     // ═════════════════ AntiClipLimiter ═════════════════

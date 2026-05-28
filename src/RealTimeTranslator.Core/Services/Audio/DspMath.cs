@@ -1,12 +1,12 @@
 namespace RealTimeTranslator.Core.Services.Audio;
 
 /// <summary>
-/// 入力プリプロセス DSP (NightModeCompressor / AntiClipLimiter / 将来追加) で共通利用する
+/// 入力プリプロセス DSP (AntiClipLimiter / 将来追加) で共通利用する
 /// 純粋関数ユーティリティ。 各 DSP に同じ定数・関数を重複定義していた状態を一箇所に集約する。
 ///
-/// /opop バッチ Q (A-1) で v1.0.33 候補に追加。 LoudnessNormalizer 削除 (v1.0.32) で DSP 段数が
-/// 3 に落ち着いたタイミングで、 残る 2 つの envelope follower 型 DSP (NightMode / AntiClip) の
-/// 共通 boilerplate を抽出した。
+/// 履歴: /opop バッチ Q (A-1) で v1.0.33 候補に追加。 当初は NightModeCompressor / AntiClipLimiter の
+/// 2 つの envelope follower 型 DSP の共通 boilerplate を抽出した。 v1.0.36 で NightModeCompressor を
+/// 削除したため、 現状の利用者は AntiClipLimiter のみ。
 /// </summary>
 internal static class DspMath
 {
