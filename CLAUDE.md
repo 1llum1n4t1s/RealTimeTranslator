@@ -61,12 +61,13 @@ MSTest、 `TestCategory!=Integration` フィルタでユニットテストのみ
 
 ```
 Audio Capture (WASAPI native 48kHz/2ch)
-  → StereoToMono → 48k→16k (StreamingResampler、 VAD 判定用)
-                    └→ 16k→24k (StreamingResampler、 OpenAI 送信用) → PCM16
+  → StereoToMono → [DSP: InputGain → AntiClip]
+                 ├→ 48k→16k (StreamingResampler、 VAD 判定用)
+                 └→ 48k→24k (StreamingResampler、 OpenAI 送信用) → PCM16
   → OpenAI Realtime Translate API (WebSocket) → Subtitle Overlay (Avalonia 透明窓)
 ```
 
-**v1.0.27 で 1 系統二段リサンプラに統合** (旧 v1.0.23-26 の `48k→16k (VAD) + 48k→24k (送信)` 並列 2 系統を直列化)。 VAD 有効/無効パスとも同じ 48k→16k→24k 二段経路を通る。
+**経路履歴**: v1.0.23-26 は **並列 2 系統** (`48k→16k VAD + 48k→24k 送信`)、 v1.0.27〜v1.0.35 は **1 系統二段** (`48k→16k→24k`) に統合してパイプライン整合性を優先していたが、 中継 16k で Nyquist 8kHz の高域カットが入り OpenAI transcribe 精度を削いでいた。 **v1.0.36 で並列 2 系統に復帰** し、 送信音声は `48k→24k 直` で Nyquist 12kHz の帯域を確保する。 VAD パスは Silero VAD v5 の 16kHz 固定仕様のため変わらず `48k→16k` 直。 VAD 有効/無効パスとも `_sendResampler` は 48k→24k 直経路を通る (VAD 無効時は `_vadResampler` も呼んで戻り値を捨て、 hot-reload 時の状態同期を維持)。
 
 ### Project Structure
 

@@ -577,17 +577,7 @@
                                    TextWrapping="Wrap"
                                    Margin="0,0,0,16"/>
 
-                        <HeaderedContentControl Header="ナイトモード (Dynamic Range Compression)">
-                            <StackPanel>
-                                <CheckBox IsChecked="{Binding EnableNightMode, Mode=TwoWay}"
-                                          Content="大音 (BGM/SFX) を抑えて、 ささやき声を相対的に持ち上げる"/>
-                                <TextBlock Text="TV やサウンドバーの「ナイトモード」と同等の動的レンジ圧縮。 threshold=-30 dBFS / knee=12 dB / ratio=4:1 / attack=20 ms / release=1.0 s。 爆発音と会話の音量差で会話が埋もれるシーンに有効。"
-                                           FontSize="11" Foreground="{DynamicResource Brush.FG2}"
-                                           TextWrapping="Wrap" Margin="0,4,0,0"/>
-                            </StackPanel>
-                        </HeaderedContentControl>
-
-                        <HeaderedContentControl Header="入力ゲイン (Input Gain)" Margin="0,16,0,0">
+                        <HeaderedContentControl Header="入力ゲイン (Input Gain)">
                             <StackPanel>
                                 <Grid ColumnDefinitions="*,Auto" Margin="0,0,0,4">
                                     <Slider Grid.Column="0"
@@ -614,6 +604,22 @@
                                 <TextBlock Text="threshold=-3 dBFS / ratio=12:1 / attack=1 ms / release=50 ms。 入力ゲインや前段 DSP でピーク超過するときに ON すると、 PCM16 変換時のクリップ歪みを防げます。"
                                            FontSize="11" Foreground="{DynamicResource Brush.FG2}"
                                            TextWrapping="Wrap" Margin="0,4,0,0"/>
+                            </StackPanel>
+                        </HeaderedContentControl>
+
+                        <!-- ═══ デバッグ録音 (送信前 PCM16 → WAV) ═══ -->
+                        <TextBlock Text="デバッグ" FontSize="16" FontWeight="Bold" Margin="0,24,0,8"/>
+
+                        <HeaderedContentControl Header="送信音声を WAV 録音">
+                            <StackPanel>
+                                <CheckBox IsChecked="{Binding DebugRecordSentAudio, Mode=TwoWay}"
+                                          Content="OpenAI に送信する PCM16 (24kHz / Mono) を WAV に保存する"/>
+                                <TextBlock Text="VAD ゲート通過後・サイレンス padding 含めて、 実送信と完全一致するバイト列を記録します。 セッションごとに 1 ファイル (SentAudio_YYYYMMDD_HHmmss_xxxx.wav)。 24kHz / Mono / PCM16 で 1 時間あたり約 170 MB のディスクを消費するため、 必要なときだけ ON にしてください。"
+                                           FontSize="11" Foreground="{DynamicResource Brush.FG2}"
+                                           TextWrapping="Wrap" Margin="0,4,0,8"/>
+                                <Button Content="録音フォルダを開く"
+                                        Command="{Binding OpenDebugFolderCommand}"
+                                        HorizontalAlignment="Left"/>
                             </StackPanel>
                         </HeaderedContentControl>
 

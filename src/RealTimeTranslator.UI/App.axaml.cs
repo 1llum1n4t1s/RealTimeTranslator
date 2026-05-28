@@ -259,6 +259,9 @@ public partial class App : Application
             sp.GetRequiredService<AppSettings>().AudioCapture);
         services.AddSingleton<ISettingsService, SettingsService>();
         services.AddSingleton<IAudioCaptureService, AudioCaptureService>();
+        // デバッグ録音: OpenAI 送信前 PCM16 を WAV に書き出す。 OpenAIRealtimeClient に ctor 注入される。
+        // 設定で OFF のまま StartSession を呼ばなければ WritePcm16 は no-op で、 ディスク/CPU オーバーヘッドなし。
+        services.AddSingleton<IDebugAudioRecorder, DebugAudioRecorder>();
         services.AddSingleton<IRealtimeTranscriber, OpenAIRealtimeClient>();
         // Silero VAD (ONNX 推論セッション)。 onnx ファイルは Assets/silero_vad.onnx に同梱。
         // Singleton にすることで onnx ロード (~10ms) は起動時 1 回のみ。 LSTM state は

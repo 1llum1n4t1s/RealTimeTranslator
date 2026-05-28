@@ -115,17 +115,22 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     //
     // 両リサンプラは LatencyMargin を時間ベース (4ms) に揃えてあり、 16k 512sample = 24k 768sample
     // = 同じ 32ms フレームとして時間同期できる。
+    // v1.0.36 並列 2 系統リサンプラ:
+    //   - _vadResampler: 48k → 16k (Silero VAD v5 が 16kHz 固定仕様のため必須)
+    //   - _sendResampler: 48k → 24k 直 (OpenAI 送信用、 Nyquist 12kHz まで保持して高域を確保)
+    // v1.0.27〜v1.0.35 は 48k→16k→24k の 1 系統二段だったが、 中継 16k で Nyquist 8kHz の
+    // 高域カットが入り OpenAI transcribe 精度に影響していたため、 v1.0.23-26 当時の並列 2 系統に戻した。
+    // 両リサンプラの出力 16k / 24k は同じ時間区間に対応する (= フレームペア化可能)。
     private readonly StreamingResampler _vadResampler = new(48000, 16000);
-    private readonly StreamingResampler _sendResampler = new(16000, 24000);
+    private readonly StreamingResampler _sendResampler = new(48000, 24000);
 
-    // ───────── 入力プリプロセス DSP 3 段 (v1.0.30 新規、 v1.0.32 で LoudnessNormalizer 削除) ─────────
+    // ───────── 入力プリプロセス DSP 2 段 (v1.0.30 新規、 v1.0.32 LoudnessNormalizer 削除、 v1.0.36 NightModeCompressor 削除) ─────────
     // WASAPI 48kHz mono float32 を受け取った直後・リサンプル前に挟まる前処理チェーン。
     // 全 IsEnabled=false / InputGainDb=0 がデフォルトで、 完全 bypass 動作 (v1.0.29 以前と同一)。
-    // 信号フロー: WASAPI → [NightMode] → [InputGain] → [AntiClip] → _vadResampler →...
+    // 信号フロー: WASAPI → [InputGain] → [AntiClip] → _vadResampler →...
     // ステートフルなので _vadResampler と同じくシングルインスタンスで保持 + StartCoreAsync で Reset
     // (詳細は _global/systemPatterns.md の DSP 教訓と各 DSP クラスの XML doc 参照)。
     private const int CaptureSampleRate = 48000;
-    private readonly NightModeCompressor _nightMode = new(CaptureSampleRate);
     private readonly InputGainStage _inputGain = new(0f);
     private readonly AntiClipLimiter _limiter = new(CaptureSampleRate);
     // 16kHz / 32ms = 512 samples ごとに切り出すための VAD用 accumulator。
@@ -174,18 +179,26 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     // ISettingsService 注入経由に置換。 テスト時のモック差し替え可能性が回復。
     private readonly ISettingsService _settingsService;
 
+    // デバッグ録音 (OpenAI 送信前 PCM16 を WAV に書き出す)。 ctor で DI 注入。 null OK (テスト互換)。
+    // ライフサイクル: StartCoreAsync で AppSettings.AudioCapture.DebugRecordSentAudio=true の場合だけ
+    // StartSession、 StopCoreAsync で常に StopSession (idempotent) を呼ぶ。 OpenAIRealtimeClient.SendAudio
+    // 側でも recorder.WritePcm16 を呼ぶが、 録音セッション未開始なら内部で no-op。
+    private readonly IDebugAudioRecorder? _debugAudioRecorder;
+
     public TranslationPipelineService(
         IAudioCaptureService audioCaptureService,
         IRealtimeTranscriber realtimeClient,
         IOptionsMonitor<AppSettings> settingsMonitor,
         ISettingsService settingsService,
-        IVoiceActivityDetector vad)
+        IVoiceActivityDetector vad,
+        IDebugAudioRecorder? debugAudioRecorder = null)
     {
         _audioCaptureService = audioCaptureService;
         _realtimeClient = realtimeClient;
         _settingsMonitor = settingsMonitor;
         _settingsService = settingsService;
         _vad = vad;
+        _debugAudioRecorder = debugAudioRecorder;
         _cachedRealtimeSettings = settingsMonitor.CurrentValue.OpenAIRealtime;
         _throttleTimer = new Timer(OnThrottleTimerElapsed, null, Timeout.Infinite, Timeout.Infinite);
 
@@ -273,7 +286,6 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         _sendResampler.Reset();
         // 入力プリプロセス DSP の envelope follower を同様にクリア
         // (前セッション末尾の大音量に追従していた gain が新セッションに漏れないように)。
-        _nightMode.Reset();
         _inputGain.Reset();
         _limiter.Reset();
         _preRollBuffer.Clear();
@@ -299,6 +311,13 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         _audioCaptureService.AudioDataAvailable += OnAudioDataAvailable;
         _isRunning = true;
         _latencyStopwatch.Start();
+
+        // デバッグ録音: 設定で ON のときだけ新セッションを開く。 OFF なら StartSession を呼ばないので
+        // SendAudio フックの WritePcm16 は IsRecording=false のまま no-op になる。
+        if (_settingsMonitor.CurrentValue.AudioCapture.DebugRecordSentAudio)
+        {
+            _debugAudioRecorder?.StartSession(Guid.NewGuid().ToString("N")[..8]);
+        }
 
         StatsUpdated?.Invoke(this, new PipelineStatsEventArgs
         {
@@ -425,6 +444,11 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
             Logger.Info($"セッション統計: DroppedAudioChunks={openAiClient.DroppedAudioChunkCount} 完結文emit={Interlocked.Read(ref _completedEmitCount)} partial emit={Interlocked.Read(ref _partialEmitCount)}");
         }
 
+        // デバッグ録音セッションを必ず閉じる (idempotent、 未開始のときは内部で no-op)。
+        // WAV ヘッダのサイズフィールドを実値に書き直してから FileStream を Dispose する。
+        try { _debugAudioRecorder?.StopSession(); }
+        catch (Exception ex) { Logger.Warn("DebugAudioRecorder 停止中の例外", ex); }
+
         Logger.Info("翻訳パイプライン停止 完了");
 
         StatsUpdated?.Invoke(this, BuildCurrentStats("停止"));
@@ -456,26 +480,29 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                 {
                     var audioCaptureSettings = _settingsMonitor.CurrentValue.AudioCapture;
 
-                    // ─── 入力プリプロセス DSP (v1.0.30 新規、 v1.0.32 で 4 段 → 3 段に削減) ───
-                    // 設定 IsEnabled / InputGainDb を毎 chunk 同期 (hot-reload 対応)。
+                    // ─── 入力プリプロセス DSP (v1.0.30 新規、 v1.0.32 で 4 段 → 3 段、 v1.0.36 で 3 段 → 2 段に削減) ───
+                    // 設定 InputGainDb / EnableAntiClip を毎 chunk 同期 (hot-reload 対応)。
                     // 全 default (false / 0dB) なら各 Process は内部の IsEnabled で即 return するため
-                    // CPU オーバーヘッドはチェック分のみ。 信号フローは NightMode → InputGain → AntiClip。
+                    // CPU オーバーヘッドはチェック分のみ。 信号フローは InputGain → AntiClip。
                     var preproc = audioCaptureSettings.Preprocessing;
-                    _nightMode.IsEnabled = preproc.EnableNightMode;
                     _inputGain.GainDb = preproc.InputGainDb;
                     _limiter.IsEnabled = preproc.EnableAntiClip;
                     var preprocSpan = audioData.AsSpan();
-                    _nightMode.Process(preprocSpan);
                     _inputGain.Process(preprocSpan);
                     _limiter.Process(preprocSpan);
 
                     if (!audioCaptureSettings.EnableVad)
                     {
-                        // VAD 無効: 素通し送信。 v1.0.27 から 48k→16k→24k 二段経路 (VAD パスと同一)。
-                        // 旧 v1.0.23〜v1.0.26 は 48k→24k 直の別系統だったが、 ゆろさん提案でパイプライン 1 系統化。
-                        // 高域少し削れるが、 VAD 無効 = 「BGM 含めて全部翻訳」用途なので音質よりも整合性優先。
-                        var resampled16k = _vadResampler.Resample(audioData);
-                        var resampled24k = _sendResampler.Resample(resampled16k);
+                        // VAD 無効: 48k → 24k 直リサンプル → 素通し送信 (v1.0.36 並列 2 系統復活)。
+                        // v1.0.27〜v1.0.35 は 48k→16k→24k の二段経路で VAD パスと共有していたが、
+                        // 中継 16k で Nyquist 8kHz の高域カットが入り transcribe 精度に影響していたため
+                        // 48k→24k 直 (Nyquist 12kHz) に戻した。
+                        // _vadResampler も呼んで戻り値を捨てる: 状態同期維持のため (途中で
+                        // EnableVad=true に切り替わったとき _vadResampler の filter state が
+                        // 過去入力に対して空 / 古い問題を防ぐ)。 リサンプル計算分の CPU は無駄だが、
+                        // hot-reload 検知して Reset する複雑な代替案より単純で安全。
+                        _ = _vadResampler.Resample(audioData);
+                        var resampled24k = _sendResampler.Resample(audioData);
                         if (resampled24k.Length > 0)
                         {
                             var pcm16 = AudioFormatConverter.Float32ToPcm16(resampled24k);
@@ -1292,12 +1319,14 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     /// </summary>
     internal void ProcessAudioWithVadGate(float[] audio48kHz, AudioCaptureSettings settings)
     {
-        // v1.0.27 1 系統二段リサンプル:
-        //   48k 入力 → 48k→16k (_vadResampler) → 16k で VAD 判定 + 16k→24k (_sendResampler) → 24k で OpenAI 送信。
+        // v1.0.36 並列 2 系統リサンプル:
+        //   48k 入力を VAD 判定用 (16k) と OpenAI 送信用 (24k) に同時分岐 (直系統)。
+        //   - 48k → 16k (_vadResampler) → VAD 判定
+        //   - 48k → 24k (_sendResampler) → OpenAI 送信 (16k 中継を挟まない = Nyquist 12kHz の帯域確保)
         // 両リサンプラは LatencyMargin を時間ベース (4ms) に揃えてあるので出力は時間同期し、
         // 16k 512sample (32ms) と 24k 768sample (32ms) を「同じ時間区間の VAD フレームペア」として取り出せる。
         var resampled16k = _vadResampler.Resample(audio48kHz);
-        var resampled24k = _sendResampler.Resample(resampled16k);
+        var resampled24k = _sendResampler.Resample(audio48kHz);
 
         int frameSize16k = _vad.RequiredFrameSize; // Silero VAD v5 仕様: 512 sample @ 16kHz (32ms)
         const int frameSize24k = 768;              // 同じ 32ms を 24kHz サンプルで表すと 768
@@ -1466,7 +1495,8 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     /// <summary>VAD ゲート通過分のフレームを 24kHz PCM16 に変換して OpenAI へ送信。</summary>
     private void SendFrameToClient(float[] frame24kHz)
     {
-        // 24kHz フレームを直接 PCM16 化して送信 (リサンプル不要、 _sendResampler 側で既に 24k 化済み)。
+        // 24kHz フレームを直接 PCM16 化して送信 (リサンプル不要)。
+        // _sendResampler は 48k→24k 直 (v1.0.36) で出力済みなので、 ここでは float→PCM16 変換だけ行う。
         var pcm16 = AudioFormatConverter.Float32ToPcm16(frame24kHz);
         _realtimeClient.SendAudio(pcm16);
     }
