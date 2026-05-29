@@ -41,6 +41,22 @@ lockfile を CI 用に維持するのが正規手順。
 ⚠️ **`-r win-x64` は solution に対しては禁止** (NETSDK1134)。 restore コマンドにのみ指定する。
 build / test は solution 単位で OK、 lockfile を読み取って RID を解決する。
 
+⚠️ **lockfile の win-x64 RID がバックグラウンドで剥がれ続ける** (v1.0.37 で再発・対処確立): IDE / Roslyn LSP /
+OmniSharp 等が裏で **裸 restore を走らせ続け**、 working tree の `packages.lock.json` (特に Core / Tests) から
+`net10.0-windows10.0.20348/win-x64` セクションを **明示的な dotnet 実行が無くても繰り返し消す**。 剥がれた版を
+commit すると CI publish が NU1004 で落ちる (`The project's runtime identifiers have changed from. ... lock file's
+runtime identifiers .` が出たらこれ)。 リリース時はこう動く:
+
+- **コミット前後で staged / committed blob を検証する**: `rtk git show :src/RealTimeTranslator.Core/packages.lock.json | grep -c win-x64`
+  で staged blob に win-x64 が 1 以上あることを確認してから commit、 commit 後も `rtk git show HEAD:<path>` で再確認してから
+  push する。 working tree の grep だけ見ると「直ったつもり」で剥がれた版を commit する。
+- **パッケージ版を変えたリリース** → `rtk dotnet restore RealTimeTranslator.slnx -r win-x64 --force-evaluate && rtk git add <3 lockfile>`
+  を **同一コマンドチェーンで atomic に** 実行する。 restore と git add の間に別ツール (= 裏 restore の発火点) を挟ませず、
+  剥がれる前に index へ win-x64 を確定させる。
+- **パッケージ版を変えないリリース (doc のみ等)** → lockfile を **staged しない**。 `rtk git checkout HEAD -- <剥がれた lockfile>`
+  で HEAD の正しい版に戻すか、 whitelist (バージョンファイル + README 等) だけ stage すれば、 commit には HEAD の win-x64 入り
+  lockfile がそのまま引き継がれる。
+
 Platform is **always x64** — there is no x86 support.
 
 ### テスト構造
