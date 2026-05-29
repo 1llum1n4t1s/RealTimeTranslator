@@ -4,9 +4,9 @@
     "net10.0-windows10.0.20348": {
       "1llum1n4t1s.NAudio": {
         "type": "Direct",
-        "requested": "[1.0.45, )",
-        "resolved": "1.0.45",
-        "contentHash": "j2zmRmUxt9E7qKsz3gngeXmwA/RovWDPmHuk2pvsElV/qbidGgRDuaZg9NdryOGxmV5viPiCODrNFo5IpiZA7w=="
+        "requested": "[1.0.46, )",
+        "resolved": "1.0.46",
+        "contentHash": "miv7ofJUEva5x4RBmXBZs8K27dXnN+Obq2AcwolqsZENWLy6cejNA3f4SRq8ejBTvUHV7wqNbtGJ3osKfKd3tQ=="
       },
       "Microsoft.ML.OnnxRuntime": {
         "type": "Direct",
@@ -120,17 +120,6 @@
         "type": "Transitive",
         "resolved": "9.0.0",
         "contentHash": "hyJB4UlpAi19Xr9AXzu2NuagKC4lPfHObNMEAA0HmqFz2rX7wKgzeYzO/jM/eBHDhnUGFFEjk5cOoJaxqg5J4A=="
-      }
-    },
-    "net10.0-windows10.0.20348/win-x64": {
-      "Microsoft.ML.OnnxRuntime": {
-        "type": "Direct",
-        "requested": "[1.26.0, )",
-        "resolved": "1.26.0",
-        "contentHash": "wiylawSnyspmJdZxilJUuUq3Tp/nT9BsngHHKvrCGWsADo15Z7y0G6kYAU0Pqb5af+f/EzwIi2aHaNUlzp/eww==",
-        "dependencies": {
-          "Microsoft.ML.OnnxRuntime.Managed": "1.26.0"
-        }
       }
     }
   }

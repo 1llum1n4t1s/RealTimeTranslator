@@ -17,9 +17,9 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Avalonia" Version="12.0.3" />
-    <PackageReference Include="Avalonia.Desktop" Version="12.0.3" />
-    <PackageReference Include="Avalonia.Themes.Fluent" Version="12.0.3" />
+    <PackageReference Include="Avalonia" Version="12.0.4" />
+    <PackageReference Include="Avalonia.Desktop" Version="12.0.4" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="12.0.4" />
     <!-- Avalonia.Fonts.Inter は App.axaml の FontFamily チェーンに含まれず実利用ゼロ確認済 (rere B-1) -->
     <!-- 同梱日本語フォント 5 種で字幕装飾、 システム既定 (Yu Gothic UI / Segoe UI / Microsoft YaHei) でLatin 文字も解決可能 -->
     <!-- <PackageReference Include="Avalonia.Fonts.Inter" Version="12.0.3" /> -->
@@ -30,8 +30,16 @@
     <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="10.0.8" />
     <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="10.0.8" />
     <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.8" />
-    <PackageReference Include="Velopack" Version="1.0.1" />
-    <PackageReference Include="VelopackUpdateDialog.Avalonia" Version="1.0.3" />
+    <!-- ⚠️ Velopack は **直接参照しない** (v1.0.37 設計、 ゆろさん指摘):
+         VelopackUpdateDialog.Avalonia 1.0.3 の .nuspec で <dependency id="Velopack" version="0.0.1298" />
+         が宣言されているため、 transitive 依存だけ残せば NuGet が自動で 0.0.1298 を resolve する。
+         本体コード (UpdateService.cs 等) は `using Velopack;` で transitive 経由の assembly reference を
+         そのまま使える (NuGet 仕様)。
+         この設計により、 ライブラリ (VelopackUpdateDialog) と本体側の Velopack version が常に整合し、
+         v1.0.33〜v1.0.36 で踏んだ「直接参照を 1.0.1 に上げてライブラリの 0.0.1298 期待値とズレた」
+         dispatch 不整合 (MissingMethodException) を構造的に予防する。
+         将来 Velopack を上げたい場合は VelopackUpdateDialog.Avalonia 側を新 version で再ビルド → publish。 -->
+    <PackageReference Include="VelopackUpdateDialog.Avalonia" Version="1.0.4" />
   </ItemGroup>
 
   <ItemGroup>
