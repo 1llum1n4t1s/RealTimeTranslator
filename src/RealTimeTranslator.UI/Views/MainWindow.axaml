@@ -1,16 +1,16 @@
-﻿<Window xmlns="https://github.com/avaloniaui"
+<Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:vm="using:RealTimeTranslator.UI.ViewModels"
         xmlns:models="using:RealTimeTranslator.Core.Models"
         xmlns:converters="using:RealTimeTranslator.UI.Converters"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
-        mc:Ignorable="d" d:DesignWidth="750" d:DesignHeight="550"
+        mc:Ignorable="d" d:DesignWidth="750" d:DesignHeight="800"
         x:Class="RealTimeTranslator.UI.Views.MainWindow"
         x:DataType="vm:MainViewModel"
         Title="{Binding VersionText, StringFormat='リアルタイム字幕翻訳 v{0}'}"
         Icon="avares://RealTimeTranslator.UI/Assets/app.ico"
-        Width="750" Height="550"
+        Width="750" Height="800"
         MinWidth="650" MinHeight="450"
         CanResize="True"
         Background="Transparent"
@@ -80,11 +80,46 @@
                     <StackPanel Margin="0,0,0,16">
 
                         <!-- Header -->
-                        <StackPanel Margin="0,0,0,16">
+                        <StackPanel Margin="0,0,0,12">
                             <TextBlock Text="リアルタイム字幕翻訳" FontSize="20" FontWeight="Bold"/>
                             <TextBlock Text="ゲームや動画の音声をリアルタイムで翻訳字幕に変換します"
                                        FontSize="12" Foreground="{DynamicResource Brush.FG2}" Margin="0,4,0,0"/>
                         </StackPanel>
+
+                        <!-- ステータス + 開始/停止 (最上部に集約)。 コンテンツが増えたので、 操作の起点である
+                             ステータス & 開始停止を一番上にまとめてすぐ押せるようにする。 -->
+                        <HeaderedContentControl Header="ステータス" Margin="0,0,0,4">
+                            <StackPanel>
+                                <!-- 開始 / 停止 ボタン (ステータスエリア内に配置) -->
+                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,0,0,12">
+                                    <Button Content="開始" Command="{Binding StartCommand}"
+                                            IsEnabled="{Binding CanStart}" Width="140"/>
+                                    <Button Content="停止" Command="{Binding StopCommand}"
+                                            IsEnabled="{Binding IsRunning}" Width="140" Margin="8,0,0,0"/>
+                                </StackPanel>
+                                <StackPanel Orientation="Horizontal">
+                                    <Ellipse Width="10" Height="10" Fill="{Binding StatusColor}" Margin="0,0,8,0"
+                                             VerticalAlignment="Center"/>
+                                    <TextBlock Text="{Binding StatusText}" FontSize="14" VerticalAlignment="Center"/>
+                                </StackPanel>
+                                <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                                    <TextBlock Text="処理遅延: " FontSize="12"
+                                               Foreground="{DynamicResource Brush.FG2}"/>
+                                    <TextBlock Text="{Binding ProcessingLatency, StringFormat=\{0:F0\}ms}"
+                                               FontSize="12"/>
+                                    <TextBlock Text="  |  翻訳遅延: " Margin="16,0,0,0" FontSize="12"
+                                               Foreground="{DynamicResource Brush.FG2}"/>
+                                    <TextBlock Text="{Binding TranslationLatency, StringFormat=\{0:F0\}ms}"
+                                               FontSize="12"/>
+                                </StackPanel>
+                                <!-- セッションの推定 token / コスト / VAD 節約 (案 G 見える化) -->
+                                <TextBlock Text="{Binding CumulativeStatsText}"
+                                           IsVisible="{Binding CumulativeStatsText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"
+                                           FontSize="11" Margin="0,4,0,0"
+                                           Foreground="{DynamicResource Brush.FG2}"
+                                           TextWrapping="Wrap"/>
+                            </StackPanel>
+                        </HeaderedContentControl>
 
                         <!-- Process Selection -->
                         <HeaderedContentControl Header="対象アプリケーション">
@@ -118,32 +153,71 @@
                             </ComboBox>
                         </HeaderedContentControl>
 
-                        <!-- Status -->
-                        <HeaderedContentControl Header="ステータス">
+                        <!-- 入力プリプロセス (音声処理タブから移動): 選択プロセスの音量をリアルタイム表示し、 開始前にゲイン調整できる。
+                             DataContext を SettingsVM に束ねるので配下の binding は vm:SettingsViewModel。 -->
+                        <StackPanel DataContext="{Binding SettingsVM}" x:DataType="vm:SettingsViewModel" Margin="0,0,0,0">
+                        <!-- ═══ 入力プリプロセス DSP (v1.0.30 新規) ═══ -->
+                        <TextBlock Text="入力プリプロセス" FontSize="16" FontWeight="Bold" Margin="0,24,0,8"/>
+                        <TextBlock Text="ゲーム音量が小さいときや遠くの声を拾えないときに、 入力音声を底上げ・整形する DSP チェーンです。 全部オフ・ゲイン 0 dB で現状動作と同じ (完全 bypass)。"
+                                   FontSize="12"
+                                   Foreground="{DynamicResource Brush.FG2}"
+                                   TextWrapping="Wrap"
+                                   Margin="0,0,0,16"/>
+
+                        <HeaderedContentControl Header="入力ゲイン (Input Gain)">
                             <StackPanel>
-                                <StackPanel Orientation="Horizontal">
-                                    <Ellipse Width="10" Height="10" Fill="{Binding StatusColor}" Margin="0,0,8,0"
-                                             VerticalAlignment="Center"/>
-                                    <TextBlock Text="{Binding StatusText}" FontSize="14" VerticalAlignment="Center"/>
-                                </StackPanel>
-                                <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
-                                    <TextBlock Text="処理遅延: " FontSize="12"
-                                               Foreground="{DynamicResource Brush.FG2}"/>
-                                    <TextBlock Text="{Binding ProcessingLatency, StringFormat=\{0:F0\}ms}"
-                                               FontSize="12"/>
-                                    <TextBlock Text="  |  翻訳遅延: " Margin="16,0,0,0" FontSize="12"
-                                               Foreground="{DynamicResource Brush.FG2}"/>
-                                    <TextBlock Text="{Binding TranslationLatency, StringFormat=\{0:F0\}ms}"
-                                               FontSize="12"/>
-                                </StackPanel>
-                                <!-- セッションの推定 token / コスト / VAD 節約 (案 G 見える化) -->
-                                <TextBlock Text="{Binding CumulativeStatsText}"
-                                           IsVisible="{Binding CumulativeStatsText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"
-                                           FontSize="11" Margin="0,4,0,0"
-                                           Foreground="{DynamicResource Brush.FG2}"
-                                           TextWrapping="Wrap"/>
+                                <!-- OBS 風レベルメーター (ゲイン適用後のピーク)。 緑→黄→赤の固定ゾーン背景を、 現在レベルより右側を半透明マスクで覆って表現する。 -->
+                                <Border Height="14" CornerRadius="3" ClipToBounds="True" Margin="0,0,0,2">
+                                    <Border.Background>
+                                        <LinearGradientBrush StartPoint="0%,0%" EndPoint="100%,0%">
+                                            <GradientStop Offset="0.0"  Color="#2ECC40"/>
+                                            <GradientStop Offset="0.65" Color="#2ECC40"/>
+                                            <GradientStop Offset="0.80" Color="#FFDC00"/>
+                                            <GradientStop Offset="0.90" Color="#FF851B"/>
+                                            <GradientStop Offset="1.0"  Color="#FF4136"/>
+                                        </LinearGradientBrush>
+                                    </Border.Background>
+                                    <Border HorizontalAlignment="Right" Background="#D00F1419">
+                                        <Border.Width>
+                                            <MultiBinding Converter="{StaticResource LevelMeterMaskWidthConverter}">
+                                                <Binding Path="InputLevelNorm"/>
+                                                <Binding Path="Bounds.Width" RelativeSource="{RelativeSource AncestorType=Border}"/>
+                                            </MultiBinding>
+                                        </Border.Width>
+                                    </Border>
+                                </Border>
+                                <Grid ColumnDefinitions="*,Auto" Margin="0,0,0,8">
+                                    <TextBlock Grid.Column="0" Text="レベル (ゲイン適用後)" FontSize="10" Foreground="{DynamicResource Brush.FG2}"/>
+                                    <TextBlock Grid.Column="1" Text="{Binding InputLevelText}" FontSize="10" Foreground="{DynamicResource Brush.FG2}"/>
+                                </Grid>
+
+                                <!-- ゲインフェーダー: 左=小さく / 右=大きく の絶対フェーダー (中央が 0 dB)。 OBS 風。 -->
+                                <Grid ColumnDefinitions="*,Auto">
+                                    <Slider Grid.Column="0"
+                                            Minimum="-24" Maximum="24"
+                                            Value="{Binding InputGainDb, Mode=TwoWay}"
+                                            TickFrequency="6" TickPlacement="BottomRight"
+                                            VerticalAlignment="Center"/>
+                                    <Button Grid.Column="1" Content="0 dB"
+                                            Command="{Binding ResetInputGainCommand}"
+                                            ToolTip.Tip="ゲインを 0 dB (等倍) に戻す"
+                                            VerticalAlignment="Center" Margin="8,0,0,0"/>
+                                </Grid>
+                                <Grid ColumnDefinitions="Auto,*,Auto" Margin="0,2,0,0">
+                                    <TextBlock Grid.Column="0" Text="小さく" FontSize="10" Foreground="{DynamicResource Brush.FG2}" VerticalAlignment="Center"/>
+                                    <TextBlock Grid.Column="1"
+                                               Text="{Binding InputGainDb, StringFormat='{}{0:+0;-0;0} dB'}"
+                                               FontSize="11" FontWeight="Bold"
+                                               HorizontalAlignment="Center"
+                                               Foreground="{DynamicResource Brush.FG}"/>
+                                    <TextBlock Grid.Column="2" Text="大きく" FontSize="10" Foreground="{DynamicResource Brush.FG2}" VerticalAlignment="Center"/>
+                                </Grid>
+                                <TextBlock Text="左へ動かすほど小さく、 右へ動かすほど大きくなります (中央＝0 dB / 等倍、 範囲 -24〜+24 dB)。 上のメーターを見ながら、 ピークが右端の赤 (0 dBFS = クリップ) に張り付かないよう調整してください。"
+                                           FontSize="11" Foreground="{DynamicResource Brush.FG2}"
+                                           TextWrapping="Wrap" Margin="0,6,0,0"/>
                             </StackPanel>
                         </HeaderedContentControl>
+                        </StackPanel>
 
                         <!-- API キー未入力時の警告（IsApiKeyConfigured=false の時のみ表示） -->
                         <Border IsVisible="{Binding !IsApiKeyConfigured}"
@@ -163,19 +237,21 @@
                             </StackPanel>
                         </Border>
 
-                        <!-- 重大 API エラーバナー (Quota / InvalidApiKey / Forbidden) -->
+                        <!-- 通知バナー: API 致命エラー (赤/❌「OpenAI API エラー」) と お知らせ (橙/📢「お知らせ」) を
+                             ErrorBannerTitle / ErrorBannerIcon / ErrorBannerBackground / ErrorBannerBorderBrush で出し分ける。
+                             デバッグ録音 ON / VAD fallback / 設定矯正 は「エラー」ではないので橙のお知らせ側に出す。 -->
                         <Border IsVisible="{Binding IsErrorBannerVisible}"
-                                Background="#33FF4444"
-                                BorderBrush="#FFFF4444"
+                                Background="{Binding ErrorBannerBackground}"
+                                BorderBrush="{Binding ErrorBannerBorderBrush}"
                                 BorderThickness="1"
                                 CornerRadius="4"
                                 Padding="12,8"
                                 Margin="0,8,0,0">
                             <Grid ColumnDefinitions="Auto,*,Auto">
-                                <TextBlock Grid.Column="0" Text="❌" FontSize="16"
+                                <TextBlock Grid.Column="0" Text="{Binding ErrorBannerIcon}" FontSize="16"
                                            VerticalAlignment="Top" Margin="0,2,8,0"/>
                                 <StackPanel Grid.Column="1" Spacing="4">
-                                    <TextBlock Text="OpenAI API エラー" FontWeight="Bold" FontSize="13"/>
+                                    <TextBlock Text="{Binding ErrorBannerTitle}" FontWeight="Bold" FontSize="13"/>
                                     <TextBlock Text="{Binding ErrorBannerMessage}"
                                                TextWrapping="Wrap" FontSize="12"/>
                                 </StackPanel>
@@ -187,13 +263,6 @@
                             </Grid>
                         </Border>
 
-                        <!-- Control Buttons -->
-                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,4,0,0">
-                            <Button Content="開始" Command="{Binding StartCommand}"
-                                    IsEnabled="{Binding CanStart}" Width="140"/>
-                            <Button Content="停止" Command="{Binding StopCommand}"
-                                    IsEnabled="{Binding IsRunning}" Width="140" Margin="8,0,0,0"/>
-                        </StackPanel>
 
                     </StackPanel>
                 </ScrollViewer>
@@ -570,67 +639,6 @@
                             </StackPanel>
                         </HeaderedContentControl>
 
-                        <!-- ═══ 入力プリプロセス DSP (v1.0.30 新規) ═══ -->
-                        <TextBlock Text="入力プリプロセス" FontSize="16" FontWeight="Bold" Margin="0,24,0,8"/>
-                        <TextBlock Text="ゲーム音量が小さいときや遠くの声を拾えないときに、 入力音声を底上げ・整形する DSP チェーンです。 全部オフ・ゲイン 0 dB で現状動作と同じ (完全 bypass)。"
-                                   FontSize="12"
-                                   Foreground="{DynamicResource Brush.FG2}"
-                                   TextWrapping="Wrap"
-                                   Margin="0,0,0,16"/>
-
-                        <HeaderedContentControl Header="入力ゲイン (Input Gain)">
-                            <StackPanel>
-                                <!-- OBS 風レベルメーター (ゲイン適用後のピーク)。 緑→黄→赤の固定ゾーン背景を、 現在レベルより右側を半透明マスクで覆って表現する。 -->
-                                <Border Height="14" CornerRadius="3" ClipToBounds="True" Margin="0,0,0,2">
-                                    <Border.Background>
-                                        <LinearGradientBrush StartPoint="0%,0%" EndPoint="100%,0%">
-                                            <GradientStop Offset="0.0"  Color="#2ECC40"/>
-                                            <GradientStop Offset="0.65" Color="#2ECC40"/>
-                                            <GradientStop Offset="0.80" Color="#FFDC00"/>
-                                            <GradientStop Offset="0.90" Color="#FF851B"/>
-                                            <GradientStop Offset="1.0"  Color="#FF4136"/>
-                                        </LinearGradientBrush>
-                                    </Border.Background>
-                                    <Border HorizontalAlignment="Right" Background="#D00F1419">
-                                        <Border.Width>
-                                            <MultiBinding Converter="{StaticResource LevelMeterMaskWidthConverter}">
-                                                <Binding Path="InputLevelNorm"/>
-                                                <Binding Path="Bounds.Width" RelativeSource="{RelativeSource AncestorType=Border}"/>
-                                            </MultiBinding>
-                                        </Border.Width>
-                                    </Border>
-                                </Border>
-                                <Grid ColumnDefinitions="*,Auto" Margin="0,0,0,8">
-                                    <TextBlock Grid.Column="0" Text="レベル (ゲイン適用後)" FontSize="10" Foreground="{DynamicResource Brush.FG2}"/>
-                                    <TextBlock Grid.Column="1" Text="{Binding InputLevelText}" FontSize="10" Foreground="{DynamicResource Brush.FG2}"/>
-                                </Grid>
-
-                                <!-- ゲインフェーダー: 左=小さく / 右=大きく の絶対フェーダー (中央が 0 dB)。 OBS 風。 -->
-                                <Grid ColumnDefinitions="*,Auto">
-                                    <Slider Grid.Column="0"
-                                            Minimum="-24" Maximum="24"
-                                            Value="{Binding InputGainDb, Mode=TwoWay}"
-                                            TickFrequency="6" TickPlacement="BottomRight"
-                                            VerticalAlignment="Center"/>
-                                    <Button Grid.Column="1" Content="0 dB"
-                                            Command="{Binding ResetInputGainCommand}"
-                                            ToolTip.Tip="ゲインを 0 dB (等倍) に戻す"
-                                            VerticalAlignment="Center" Margin="8,0,0,0"/>
-                                </Grid>
-                                <Grid ColumnDefinitions="Auto,*,Auto" Margin="0,2,0,0">
-                                    <TextBlock Grid.Column="0" Text="小さく" FontSize="10" Foreground="{DynamicResource Brush.FG2}" VerticalAlignment="Center"/>
-                                    <TextBlock Grid.Column="1"
-                                               Text="{Binding InputGainDb, StringFormat='{}{0:+0;-0;0} dB'}"
-                                               FontSize="11" FontWeight="Bold"
-                                               HorizontalAlignment="Center"
-                                               Foreground="{DynamicResource Brush.FG}"/>
-                                    <TextBlock Grid.Column="2" Text="大きく" FontSize="10" Foreground="{DynamicResource Brush.FG2}" VerticalAlignment="Center"/>
-                                </Grid>
-                                <TextBlock Text="左へ動かすほど小さく、 右へ動かすほど大きくなります (中央＝0 dB / 等倍、 範囲 -24〜+24 dB)。 上のメーターを見ながら、 ピークが右端の赤 (0 dBFS = クリップ) に張り付かないよう調整してください。"
-                                           FontSize="11" Foreground="{DynamicResource Brush.FG2}"
-                                           TextWrapping="Wrap" Margin="0,6,0,0"/>
-                            </StackPanel>
-                        </HeaderedContentControl>
 
                         <!-- ═══ デバッグ録音 (送信前 PCM16 → WAV) ═══ -->
                         <TextBlock Text="デバッグ" FontSize="16" FontWeight="Bold" Margin="0,24,0,8"/>
@@ -809,6 +817,27 @@
                                            FontSize="11" TextWrapping="Wrap"
                                            Foreground="{DynamicResource Brush.FG2}" Margin="0,0,0,0"/>
                             </Grid>
+                        </HeaderedContentControl>
+
+                        <!-- 翻訳字幕位置調整 (v1.0.41) -->
+                        <HeaderedContentControl Header="翻訳字幕位置調整">
+                            <StackPanel>
+                                <TextBlock Text="字幕を表示する位置を画面上の好きな場所へ移動できます。 「位置を調整」を押すとオーバーレイにサンプル字幕が出るので、 マウスでドラッグして動かし、 オーバーレイ上の「確定して保存」で固定します。"
+                                           FontSize="11" Foreground="{DynamicResource Brush.FG2}"
+                                           TextWrapping="Wrap" Margin="0,0,0,8"/>
+                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <Button Content="🎯 位置を調整 (編集開始)"
+                                            Command="{Binding BeginSubtitlePositionEditCommand}"
+                                            IsEnabled="{Binding !IsSubtitlePositionEditMode}"/>
+                                    <Button Content="↺ 位置をリセット"
+                                            Command="{Binding ResetSubtitlePositionCommand}"
+                                            ToolTip.Tip="字幕位置をデフォルト (下部中央) に戻す"/>
+                                </StackPanel>
+                                <TextBlock Text="編集中はオーバーレイ上部のツールバーで「確定 / リセット / キャンセル」できます。"
+                                           IsVisible="{Binding IsSubtitlePositionEditMode}"
+                                           FontSize="11" Foreground="#FF4FC3F7"
+                                           TextWrapping="Wrap" Margin="0,8,0,0"/>
+                            </StackPanel>
                         </HeaderedContentControl>
 
                         <!-- 翻訳ログの保持期間 -->

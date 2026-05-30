@@ -32,6 +32,8 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
     private readonly ITranslationPipelineService _pipelineService;
     private readonly IAudioCaptureService _audioCaptureService;
+    // プレビュー専用レベルモニタ (「開始」前に選択プロセスの音量をメーター表示する。 OpenAI 非送信)。
+    private readonly IAudioLevelMonitor _levelMonitor;
     private readonly OverlayViewModel _overlayViewModel;
     private AppSettings _settings;
     private readonly IUpdateService _updateService;
@@ -56,6 +58,11 @@ public partial class MainViewModel : ObservableObject, IDisposable
     private readonly System.Threading.Lock _cancellationLock = new();
     private string? _lastLogMessage;
     private CancellationTokenSource? _processingCancellation;
+    // ウィンドウサイズ保存の debounce 用 (リサイズ中の連続発火を間引いて settings.json への書き込みを抑える)。
+    private CancellationTokenSource? _windowSizeSaveCts;
+    // プレビューモニタが現在計測中のプロセス ID。 同一プロセス再選択時に無駄な Stop/Start を避けるため。
+    // 「更新」ボタンで RestoreLastSelectedProcess が同じプロセスを再選択しても再起動しない (フリーズ予防)。
+    private int _previewMonitorProcessId;
 
     [ObservableProperty]
     public partial ObservableCollection<ProcessInfo> Processes { get; set; } = new();
@@ -231,10 +238,12 @@ public partial class MainViewModel : ObservableObject, IDisposable
         SettingsViewModel settingsViewModel,
         ISettingsService settingsService,
         TranslationLogViewModel translationLogViewModel,
-        IVoiceActivityDetector vad)
+        IVoiceActivityDetector vad,
+        IAudioLevelMonitor levelMonitor)
     {
         _pipelineService = pipelineService;
         _audioCaptureService = audioCaptureService;
+        _levelMonitor = levelMonitor;
         _overlayViewModel = overlayViewModel;
         _settingsService = settingsService;
         _translationLogViewModel = translationLogViewModel;
@@ -247,7 +256,8 @@ public partial class MainViewModel : ObservableObject, IDisposable
         // hot-reload された AppSettings も in-place で復号してから消費する。
         _settingsChangeSubscription = optionsMonitor.OnChange(newSettings =>
         {
-            LoggerService.LogInfo("Settings updated detected in MainViewModel.");
+            // 設定保存のたびに reloadOnChange ファイル監視で発火する診断ログ。 位置ドラッグ等で頻発するため Debug に降格。
+            LoggerService.LogDebug("Settings updated detected in MainViewModel.");
             _settingsService.DecryptApiKey(newSettings);
             _settings = newSettings;
             // API キーの設定状態を UI スレッドで反映（CanStart 再評価が走る）
@@ -265,9 +275,15 @@ public partial class MainViewModel : ObservableObject, IDisposable
         _pipelineService.ErrorOccurred += OnPipelineError;
         _pipelineService.AudioLevelUpdated += OnAudioLevelUpdated;
 
+        // プレビューモニタの計測値も同じメーターへ流す (翻訳停止中の表示用)。
+        _levelMonitor.GainDb = _settings.AudioCapture.Preprocessing.InputGainDb;
+        _levelMonitor.LevelUpdated += OnAudioLevelUpdated;
+
         _audioCaptureService.CaptureStatusChanged += OnCaptureStatusChanged;
 
         _settingsViewModel.SettingsSaved += OnSettingsSaved;
+        // 入力ゲインスライダーの変更をプレビューメーターへ即反映 (autosave の 500ms 遅延を待たない)。
+        _settingsViewModel.PropertyChanged += OnSettingsViewModelPropertyChanged;
 
         _updateService.StatusChanged += OnUpdateStatusChanged;
         // UpdateAvailable イベントは廃止 (v1.0.12 から VelopackUpdateDialog.Avalonia に置換)。
@@ -296,8 +312,9 @@ public partial class MainViewModel : ObservableObject, IDisposable
         }
         if (warnings.Count > 0)
         {
-            ErrorBannerMessage = string.Join(" / ", warnings);
-            IsErrorBannerVisible = true;
+            // これらは API エラーではなく「お知らせ」(デバッグ録音 ON / VAD fallback / 設定矯正) なので
+            // オレンジのお知らせバナーで表示する。 赤の「OpenAI API エラー」バナーには載せない。
+            ShowNoticeBanner(string.Join(" / ", warnings));
         }
 
         // RefreshProcesses は Process.GetProcesses + 全 audio session 列挙で 100-500ms かかるため、
@@ -353,16 +370,70 @@ public partial class MainViewModel : ObservableObject, IDisposable
         });
     }
 
-    // Forward post-gain peak level (dBFS) from the pipeline to SettingsViewModel (audio tab DataContext) for its meter.
+    // ゲイン適用後ピーク (dBFS) を SettingsViewModel (= 音声処理タブ/メインのメーター DataContext) に流す。
+    // 発火元は本番パイプライン (_pipelineService) と プレビューモニタ (_levelMonitor) の両方。
+    // 翻訳中はパイプライン、 停止中はプレビューが値を出すが、 排他制御 (OnIsRunningChanged で切替) しているため
+    // 同時には片方しか流れない。
     private void OnAudioLevelUpdated(object? sender, AudioLevelEventArgs e)
     {
         Dispatcher.UIThread.Post(() => _settingsViewModel.UpdateInputLevel(e.PeakDb));
     }
 
-    // Reset the level meter to silence when translation stops.
+    // 翻訳の開始/停止に合わせてプレビューモニタを切り替える。
+    // - 開始 (true): プレビューを止める (本番パイプラインが同じ音を扱い本番メーターに切替。 二重キャプチャ防止)。
+    // - 停止 (false): プレビューを再開して「開始前メーター」表示に戻す。
     partial void OnIsRunningChanged(bool value)
     {
-        if (!value) _settingsViewModel.ResetInputLevel();
+        if (value)
+        {
+            _previewMonitorProcessId = 0; // 停止後に同一プロセスでプレビュー再開できるようリセット
+            _levelMonitor.Stop();
+        }
+        else
+        {
+            _settingsViewModel.ResetInputLevel();
+            StartPreviewMonitor();
+        }
+    }
+
+    // 入力ゲインスライダー変更をプレビューメーターへ即時反映する (autosave 500ms 待ちを回避)。
+    private void OnSettingsViewModelPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(SettingsViewModel.InputGainDb))
+        {
+            _levelMonitor.GainDb = _settingsViewModel.InputGainDb;
+        }
+    }
+
+    // 選択中プロセスのプレビュー計測を (再) 開始する。 翻訳実行中・プロセス未選択・API 計測不要時は何もしない。
+    // 失敗しても silent-fail (AudioLevelMonitor 側でメーターは無音に倒れる)。
+    private void StartPreviewMonitor()
+    {
+        if (IsRunning) return; // 翻訳中は本番メーターを使う
+        var proc = SelectedProcess;
+        if (proc == null)
+        {
+            if (_previewMonitorProcessId != 0)
+            {
+                _previewMonitorProcessId = 0;
+                _levelMonitor.Stop();
+            }
+            return;
+        }
+        // 同一プロセスを再選択しただけ (「更新」ボタンで同じプロセスが復元される等) なら、
+        // 無駄な Stop/Start を起こさない。 ゲインだけ最新化して return。
+        // これがないと RefreshProcesses のたびにプレビューキャプチャを停止→再起動し、
+        // StopCapture の WASAPI native 待ちが UI を詰まらせる原因になる。
+        if (proc.Id == _previewMonitorProcessId && _levelMonitor.IsMonitoring)
+        {
+            _levelMonitor.GainDb = _settingsViewModel.InputGainDb;
+            return;
+        }
+        _previewMonitorProcessId = proc.Id;
+        _levelMonitor.GainDb = _settingsViewModel.InputGainDb;
+        // Process Loopback の STA バインド要件に合わせ、 呼び出し時 (UI スレッド) の SynchronizationContext を渡す。
+        var uiContext = SynchronizationContext.Current ?? new AvaloniaSynchronizationContext();
+        _ = _levelMonitor.StartAsync(proc.Id, uiContext);
     }
 
     /// <summary>
@@ -403,19 +474,62 @@ public partial class MainViewModel : ObservableObject, IDisposable
             // 一過性エラー (RateLimit / BadRequest / Unknown) はログのみで、 バナーは出さない (自動再接続で復旧する想定)。
             if (ex is OpenAIApiException apiEx && apiEx.IsFatal)
             {
-                ErrorBannerMessage = apiEx.FriendlyMessage;
-                IsErrorBannerVisible = true;
+                ShowApiErrorBanner(apiEx.FriendlyMessage);
             }
         });
     }
 
-    /// <summary>UI 上部に表示する重大エラー警告バナーの表示状態。</summary>
+    /// <summary>UI 上部に表示する通知バナーの表示状態。</summary>
     [ObservableProperty]
     public partial bool IsErrorBannerVisible { get; set; }
 
-    /// <summary>警告バナーに表示するユーザー向けメッセージ (日本語、 OpenAIApiException.FriendlyMessage 由来)。</summary>
+    /// <summary>バナーに表示するメッセージ本文。</summary>
     [ObservableProperty]
     public partial string ErrorBannerMessage { get; set; } = string.Empty;
+
+    /// <summary>バナーのタイトル (「OpenAI API エラー」 or 「お知らせ」)。 種別に応じて出し分ける。</summary>
+    [ObservableProperty]
+    public partial string ErrorBannerTitle { get; set; } = "お知らせ";
+
+    /// <summary>バナー左のアイコン (❌ = API エラー / 📢 = お知らせ)。</summary>
+    [ObservableProperty]
+    public partial string ErrorBannerIcon { get; set; } = "📢";
+
+    /// <summary>バナーの背景色 (API エラー=赤系 / お知らせ=オレンジ系)。</summary>
+    [ObservableProperty]
+    public partial IBrush ErrorBannerBackground { get; set; } = new SolidColorBrush(Color.Parse("#33FFA500"));
+
+    /// <summary>バナーの枠線色。</summary>
+    [ObservableProperty]
+    public partial IBrush ErrorBannerBorderBrush { get; set; } = new SolidColorBrush(Color.Parse("#FFFFA500"));
+
+    // バナーの色定義 (API エラー=赤 / お知らせ=オレンジ)。
+    private static readonly IBrush ApiErrorBackground = new SolidColorBrush(Color.Parse("#33FF4444"));
+    private static readonly IBrush ApiErrorBorder = new SolidColorBrush(Color.Parse("#FFFF4444"));
+    private static readonly IBrush NoticeBackground = new SolidColorBrush(Color.Parse("#33FFA500"));
+    private static readonly IBrush NoticeBorder = new SolidColorBrush(Color.Parse("#FFFFA500"));
+
+    /// <summary>OpenAI API の致命エラーを赤バナー (タイトル「OpenAI API エラー」) で表示する。</summary>
+    private void ShowApiErrorBanner(string message)
+    {
+        ErrorBannerTitle = "OpenAI API エラー";
+        ErrorBannerIcon = "❌";
+        ErrorBannerBackground = ApiErrorBackground;
+        ErrorBannerBorderBrush = ApiErrorBorder;
+        ErrorBannerMessage = message;
+        IsErrorBannerVisible = true;
+    }
+
+    /// <summary>エラーではないお知らせ (デバッグ録音 ON / VAD fallback / 設定矯正) をオレンジバナー (タイトル「お知らせ」) で表示する。</summary>
+    private void ShowNoticeBanner(string message)
+    {
+        ErrorBannerTitle = "お知らせ";
+        ErrorBannerIcon = "📢";
+        ErrorBannerBackground = NoticeBackground;
+        ErrorBannerBorderBrush = NoticeBorder;
+        ErrorBannerMessage = message;
+        IsErrorBannerVisible = true;
+    }
 
     /// <summary>バナーを閉じる (ユーザーが内容を確認した後)。</summary>
     [RelayCommand]
@@ -1014,6 +1128,8 @@ public partial class MainViewModel : ObservableObject, IDisposable
     {
         OnPropertyChanged(nameof(CanStart));
         SaveLastSelectedProcess(value);
+        // プロセスを切り替えたら、 そのプロセスの音量をプレビューメーターに出す (翻訳停止中のみ)。
+        StartPreviewMonitor();
     }
     // IsRunning / IsLoading / IsApiKeyConfigured の CanStart 通知は
     // [NotifyPropertyChangedFor(nameof(CanStart))] でフィールド側に集約済み (手動 OnPropertyChanged 排除)。
@@ -1076,6 +1192,51 @@ public partial class MainViewModel : ObservableObject, IDisposable
         _settings.LastSelectedProcessName = process.Name;
         _settings.LastSelectedProcessId = process.Id;
         Log($"選択プロセス '{process.DisplayName}' を設定に保存しました");
+    }
+
+    // ───── メインウィンドウサイズの保存 / 復元 (v1.0.41) ─────
+
+    /// <summary>
+    /// 保存済みのウィンドウサイズを返す (未保存なら null)。 MainWindow が起動時に復元するために呼ぶ。
+    /// MinWidth/MinHeight 未満の不正値はガードして null 扱いにする (壊れた settings.json での極小窓化を防ぐ)。
+    /// </summary>
+    public (double Width, double Height)? GetSavedWindowSize()
+    {
+        var w = _settings.WindowWidth;
+        var h = _settings.WindowHeight;
+        if (w >= 650 && h >= 450)
+            return (w, h);
+        return null;
+    }
+
+    /// <summary>
+    /// ウィンドウサイズを記録し、 debounce (500ms) して settings.json へ保存する。
+    /// MainWindow のリサイズイベント (連続発火) から呼ばれるため、 最後の 1 回だけ書き込む。
+    /// </summary>
+    public void SaveWindowSize(double width, double height)
+    {
+        if (width < 650 || height < 450) return; // Min 未満は無視 (最小化・異常値ガード)
+        _settings.WindowWidth = width;
+        _settings.WindowHeight = height;
+
+        _windowSizeSaveCts?.Cancel();
+        _windowSizeSaveCts?.Dispose();
+        _windowSizeSaveCts = new CancellationTokenSource();
+        var token = _windowSizeSaveCts.Token;
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(500, token);
+                if (!token.IsCancellationRequested)
+                    await _settingsService.SaveAsync(_settings);
+            }
+            catch (OperationCanceledException) { }
+            catch (Exception ex)
+            {
+                LoggerService.LogError($"ウィンドウサイズの保存に失敗: {ex.Message}");
+            }
+        }, token);
     }
 
     /// <summary>
@@ -1217,6 +1378,16 @@ public partial class MainViewModel : ObservableObject, IDisposable
         catch (Exception ex)
         {
             LoggerService.LogError($"MainViewModel.Dispose: 音声キャプチャ停止エラー: {ex.Message}");
+        }
+
+        try
+        {
+            _levelMonitor.Dispose();
+            LoggerService.LogInfo("MainViewModel.Dispose: レベルモニタ停止完了");
+        }
+        catch (Exception ex)
+        {
+            LoggerService.LogError($"MainViewModel.Dispose: レベルモニタ停止エラー: {ex.Message}");
         }
 
         lock (_cancellationLock)

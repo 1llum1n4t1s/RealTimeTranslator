@@ -19,7 +19,18 @@
     </Window.Resources>
 
     <Panel>
-        <ItemsControl ItemsSource="{Binding Subtitles}" VerticalAlignment="Bottom" HorizontalAlignment="Center">
+        <!-- 位置編集モードの薄い背景 (クリックを受け止めて「いま編集中」を可視化)。 -->
+        <Border IsVisible="{Binding IsPositionEditMode}"
+                Background="#26000000"/>
+
+        <!-- 実字幕レイヤー (編集中は隠す)。 RenderTransform で X/Y オフセットを反映。 -->
+        <ItemsControl Name="SubtitleHost"
+                      ItemsSource="{Binding Subtitles}"
+                      VerticalAlignment="Bottom" HorizontalAlignment="Center"
+                      IsVisible="{Binding !IsPositionEditMode}">
+            <ItemsControl.RenderTransform>
+                <TranslateTransform X="{Binding SubtitleOffsetX}" Y="{Binding SubtitleOffsetY}"/>
+            </ItemsControl.RenderTransform>
             <ItemsControl.ItemsPanel>
                 <ItemsPanelTemplate>
                     <StackPanel/>
@@ -33,6 +44,9 @@
             </ItemsControl.Margin>
             <ItemsControl.ItemTemplate>
                 <DataTemplate>
+                    <!-- Classes="Card" の Style.Animations で「フェードイン + 下からスライドアップ」の登場演出。
+                         FillMode を Forward にしないことで、 演出後は Opacity が {Binding Opacity} (フェードアウト用) に戻る。
+                         消えるときは item.Opacity を CleanupTimer が漸減 → DoubleTransition で滑らかに補間し高級感を出す。 -->
                     <Border Classes="Card"
                             Background="{Binding $parent[ItemsControl].DataContext.BackgroundBrush}"
                             BorderBrush="{Binding $parent[ItemsControl].DataContext.BorderBrush}"
@@ -40,7 +54,32 @@
                             CornerRadius="8"
                             Padding="20,10"
                             MaxWidth="1200"
-                            Margin="0,5">
+                            Margin="0,5"
+                            Opacity="{Binding Opacity}">
+                        <Border.Transitions>
+                            <Transitions>
+                                <DoubleTransition Property="Opacity" Duration="0:0:0.4" Easing="CubicEaseInOut"/>
+                            </Transitions>
+                        </Border.Transitions>
+                        <Border.RenderTransform>
+                            <TranslateTransform/>
+                        </Border.RenderTransform>
+                        <Border.Styles>
+                            <Style Selector="Border.Card">
+                                <Style.Animations>
+                                    <Animation Duration="0:0:0.38" Easing="CubicEaseOut" FillMode="None">
+                                        <KeyFrame Cue="0%">
+                                            <Setter Property="Opacity" Value="0"/>
+                                            <Setter Property="TranslateTransform.Y" Value="26"/>
+                                        </KeyFrame>
+                                        <KeyFrame Cue="100%">
+                                            <Setter Property="Opacity" Value="1"/>
+                                            <Setter Property="TranslateTransform.Y" Value="0"/>
+                                        </KeyFrame>
+                                    </Animation>
+                                </Style.Animations>
+                            </Style>
+                        </Border.Styles>
                         <TextBlock Text="{Binding DisplayText}"
                                    FontFamily="{Binding $parent[ItemsControl].DataContext.FontFamily}"
                                    FontSize="{Binding $parent[ItemsControl].DataContext.FontSize}"
@@ -55,5 +94,71 @@
                 </DataTemplate>
             </ItemsControl.ItemTemplate>
         </ItemsControl>
+
+        <!-- 位置編集モード: ドラッグ可能なサンプル字幕。 実字幕と同じ基準位置 (下部中央 + オフセット) に置く。
+             code-behind (OverlayWindow.axaml.cs) が PointerPressed/Moved/Released でドラッグを処理する。 -->
+        <Border Name="EditSample"
+                IsVisible="{Binding IsPositionEditMode}"
+                VerticalAlignment="Bottom" HorizontalAlignment="Center"
+                Background="{Binding BackgroundBrush}"
+                BorderBrush="#FF4FC3F7"
+                BorderThickness="2"
+                CornerRadius="8"
+                Padding="24,14"
+                MaxWidth="1200"
+                Cursor="SizeAll">
+            <Border.RenderTransform>
+                <TranslateTransform X="{Binding SubtitleOffsetX}" Y="{Binding SubtitleOffsetY}"/>
+            </Border.RenderTransform>
+            <Border.Margin>
+                <MultiBinding Converter="{StaticResource BottomMarginPercentConverter}">
+                    <Binding Path="BottomMarginPercent"/>
+                    <Binding RelativeSource="{RelativeSource AncestorType=Window}" Path="Bounds.Height"/>
+                </MultiBinding>
+            </Border.Margin>
+            <StackPanel HorizontalAlignment="Center">
+                <TextBlock Text="🎯 ドラッグして字幕位置を調整"
+                           FontFamily="{Binding FontFamily}"
+                           FontSize="{Binding FontSize}"
+                           FontWeight="{Binding FontWeight}"
+                           Foreground="{Binding FinalTextBrushPreview}"
+                           TextAlignment="Center">
+                    <TextBlock.Effect>
+                        <DropShadowEffect Color="Black" BlurRadius="4" OffsetX="2" OffsetY="2" Opacity="0.8"/>
+                    </TextBlock.Effect>
+                </TextBlock>
+                <TextBlock Text="（ここに字幕が表示されます。 下の「確定して保存」で位置を固定します）"
+                           FontSize="13" Foreground="#FFB0BEC5" TextAlignment="Center" Margin="0,8,0,0"/>
+            </StackPanel>
+        </Border>
+
+        <!-- 編集モードのフローティングツールバー (画面上部中央)。 オーバーレイは Topmost 全画面で設定窓を覆うため、
+             確定/リセット/キャンセルはオーバーレイ側に置いて操作を完結させる。 -->
+        <Border IsVisible="{Binding IsPositionEditMode}"
+                VerticalAlignment="Top" HorizontalAlignment="Center"
+                Margin="0,40,0,0"
+                Background="#F21E1E2E"
+                BorderBrush="#FF4FC3F7"
+                BorderThickness="1"
+                CornerRadius="10"
+                Padding="16,12"
+                BoxShadow="0 4 16 0 #80000000">
+            <StackPanel>
+                <TextBlock Text="🎯 字幕位置の編集中"
+                           FontSize="14" FontWeight="Bold" Foreground="White"
+                           HorizontalAlignment="Center"/>
+                <TextBlock Text="サンプル字幕をドラッグして好きな位置へ。 決まったら「確定して保存」。"
+                           FontSize="12" Foreground="#FFB0BEC5"
+                           HorizontalAlignment="Center" Margin="0,4,0,10"/>
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Spacing="8">
+                    <Button Content="✓ 確定して保存" Command="{Binding ConfirmPositionCommand}"
+                            Background="#FF2E7D32" Foreground="White" Padding="14,6"/>
+                    <Button Content="↺ リセット" Command="{Binding ResetPositionCommand}"
+                            Padding="14,6"/>
+                    <Button Content="✕ キャンセル" Command="{Binding CancelPositionCommand}"
+                            Padding="14,6"/>
+                </StackPanel>
+            </StackPanel>
+        </Border>
     </Panel>
 </Window>

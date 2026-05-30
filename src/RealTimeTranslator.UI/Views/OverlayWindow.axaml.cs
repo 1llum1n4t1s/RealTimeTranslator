@@ -2,6 +2,7 @@ using System;
 using System.Runtime.InteropServices;
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Input;
 using Avalonia.Media;
 using RealTimeTranslator.Core.Services;
 using RealTimeTranslator.UI.ViewModels;
@@ -40,6 +41,14 @@ public partial class OverlayWindow : Window
         return IntPtr.Size == 8 ? SetWindowLongPtr64(hWnd, nIndex, dwNewLong) : SetWindowLongPtr32(hWnd, nIndex, dwNewLong);
     }
 
+    // ── 位置編集モードのドラッグ状態 (View ローカル状態なので code-behind で完結) ──
+    private OverlayViewModel? _vm;
+    private Border? _editSample;
+    private bool _isDragging;
+    private Point _dragStartPointer;     // ウィンドウ座標でのドラッグ開始位置
+    private double _dragStartOffsetX;     // ドラッグ開始時の字幕オフセット
+    private double _dragStartOffsetY;
+
     public OverlayWindow()
     {
         InitializeComponent();
@@ -49,6 +58,9 @@ public partial class OverlayWindow : Window
     public OverlayWindow(OverlayViewModel viewModel) : this()
     {
         DataContext = viewModel;
+        _vm = viewModel;
+        // 編集モードの ON/OFF に合わせてクリック透過を切替える (編集中だけドラッグ可能にする)。
+        viewModel.PositionEditModeChanged += OnPositionEditModeChanged;
     }
 
     private void OnOpened(object? sender, EventArgs e)
@@ -65,7 +77,63 @@ public partial class OverlayWindow : Window
         Background = Brushes.Transparent;
         SetClickThrough();
 
+        // 編集用サンプル字幕のドラッグハンドラを結線する。
+        _editSample = this.FindControl<Border>("EditSample");
+        if (_editSample != null)
+        {
+            _editSample.PointerPressed += OnEditSamplePointerPressed;
+            _editSample.PointerMoved += OnEditSamplePointerMoved;
+            _editSample.PointerReleased += OnEditSamplePointerReleased;
+        }
+
         LoggerService.LogInfo($"OverlayWindow: 透過レベル={ActualTransparencyLevel}, クリック透過設定完了");
+    }
+
+    // ───────── 位置編集モード ─────────
+
+    private void OnPositionEditModeChanged(object? sender, bool editing)
+    {
+        if (editing)
+        {
+            // 編集中はマウスを受け取れるようにクリック透過を解除し、 最前面へ。
+            DisableClickThrough();
+            Activate();
+        }
+        else
+        {
+            _isDragging = false;
+            // 編集終了で再びクリック透過 (字幕は背景として振る舞う) に戻す。
+            SetClickThrough();
+        }
+    }
+
+    private void OnEditSamplePointerPressed(object? sender, PointerPressedEventArgs e)
+    {
+        if (_vm is null || !_vm.IsPositionEditMode) return;
+        _isDragging = true;
+        _dragStartPointer = e.GetPosition(this);
+        _dragStartOffsetX = _vm.SubtitleOffsetX;
+        _dragStartOffsetY = _vm.SubtitleOffsetY;
+        e.Pointer.Capture(_editSample);
+        e.Handled = true;
+    }
+
+    private void OnEditSamplePointerMoved(object? sender, PointerEventArgs e)
+    {
+        if (!_isDragging || _vm is null) return;
+        var p = e.GetPosition(this);
+        var dx = p.X - _dragStartPointer.X;
+        var dy = p.Y - _dragStartPointer.Y;
+        // ドラッグ中は live 反映のみ (persist=false)。 保存は「確定」ボタンで行う。
+        _vm.UpdateSubtitleOffset(_dragStartOffsetX + dx, _dragStartOffsetY + dy, persist: false);
+    }
+
+    private void OnEditSamplePointerReleased(object? sender, PointerReleasedEventArgs e)
+    {
+        if (!_isDragging) return;
+        _isDragging = false;
+        e.Pointer.Capture(null);
+        e.Handled = true;
     }
 
     private void SetClickThrough()

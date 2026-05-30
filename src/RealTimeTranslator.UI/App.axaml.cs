@@ -259,6 +259,9 @@ public partial class App : Application
             sp.GetRequiredService<AppSettings>().AudioCapture);
         services.AddSingleton<ISettingsService, SettingsService>();
         services.AddSingleton<IAudioCaptureService, AudioCaptureService>();
+        // プレビュー専用レベルモニタ: 「開始」前に選択プロセスの音量をメーター表示する (OpenAI 非送信)。
+        // 本番キャプチャとは別インスタンスを内包するため、 二重キャプチャは MainViewModel 側の停止制御で防ぐ。
+        services.AddSingleton<IAudioLevelMonitor, AudioLevelMonitor>();
         // デバッグ録音: OpenAI 送信前 PCM16 を WAV に書き出す。 OpenAIRealtimeClient に ctor 注入される。
         // 設定で OFF のまま StartSession を呼ばなければ WritePcm16 は no-op で、 ディスク/CPU オーバーヘッドなし。
         services.AddSingleton<IDebugAudioRecorder, DebugAudioRecorder>();
