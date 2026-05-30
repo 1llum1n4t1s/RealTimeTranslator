@@ -145,7 +145,11 @@ public sealed class AudioLevelMonitor : IAudioLevelMonitor
         {
             lock (_stateLock) { if (_cts == cts) _cts = null; }
             cts.Dispose();
-            _startStopGate.Release();
+            // CodeRabbit 指摘: Dispose() がゲート解放待ちをタイムアウトして先に _startStopGate を破棄した
+            // 稀ケースでは Release が ObjectDisposedException になるため握り潰す (通常は Dispose が解放を待つ)。
+            try { _startStopGate.Release(); }
+            catch (ObjectDisposedException) { }
+            catch (SemaphoreFullException) { }
         }
     }
 
@@ -234,8 +238,16 @@ public sealed class AudioLevelMonitor : IAudioLevelMonitor
         if (_isDisposed) return;
         _isDisposed = true;
         _capture.AudioDataAvailable -= OnAudioDataAvailable;
-        Stop();
-        _capture.Dispose();
+        Stop(); // in-flight StartAsync の cts をキャンセルし、 速やかにゲートを解放させる
+
+        // CodeRabbit 指摘: in-flight な StartAsync がゲートを保持したまま _startStopGate.Dispose() すると、
+        // その finally の _startStopGate.Release() が ObjectDisposedException になる。 Stop() で cts を
+        // キャンセル済みなので StartCaptureWithRetryAsync は速やかに抜けてゲートを解放する。 解放を待ってから
+        // 破棄する (in-flight が無ければ count=1 なので即 acquire。 万一抜けない場合に備えてタイムアウト付き)。
+        try { _startStopGate.Wait(TimeSpan.FromSeconds(1)); }
+        catch (ObjectDisposedException) { /* 二重 Dispose 等は無視 */ }
+
+        try { _capture.Dispose(); } catch (Exception) { /* best effort */ }
         _startStopGate.Dispose();
     }
 }
