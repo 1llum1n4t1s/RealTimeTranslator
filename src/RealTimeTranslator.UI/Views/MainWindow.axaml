@@ -675,6 +675,17 @@
 
                         <TextBlock Text="オーバーレイ表示設定" FontSize="20" FontWeight="Bold" Margin="0,0,0,16"/>
 
+                        <!-- 字幕オーバーレイ表示 ON/OFF (v1.0.41) -->
+                        <HeaderedContentControl Header="字幕オーバーレイ">
+                            <StackPanel>
+                                <ToggleSwitch IsChecked="{Binding ShowSubtitleOverlay, Mode=TwoWay}"
+                                              OnContent="表示する" OffContent="非表示"/>
+                                <TextBlock Text="画面に重ねる字幕オーバーレイの表示/非表示を切り替えます。 非表示にしても翻訳処理は続くので、 「翻訳ログ」タブで履歴を読めます。 字幕を画面に出したくない人・ ログだけ見たい人向けです。"
+                                           FontSize="11" Foreground="{DynamicResource Brush.FG2}"
+                                           TextWrapping="Wrap" Margin="0,6,0,0"/>
+                            </StackPanel>
+                        </HeaderedContentControl>
+
                         <!-- Font -->
                         <HeaderedContentControl Header="フォント">
                             <Grid ColumnDefinitions="100,*" RowDefinitions="Auto,Auto,Auto">

@@ -49,6 +49,9 @@ public partial class OverlayWindow : Window
     private double _dragStartOffsetX;     // ドラッグ開始時の字幕オフセット
     private double _dragStartOffsetY;
 
+    // 透過が利用可能か (OnOpened で判定)。 透過不可で強制非表示中は字幕表示トグルでも表示しない (デスクトップ黒画面防止)。
+    private bool _transparencyOk = true;
+
     public OverlayWindow()
     {
         InitializeComponent();
@@ -61,6 +64,8 @@ public partial class OverlayWindow : Window
         _vm = viewModel;
         // 編集モードの ON/OFF に合わせてクリック透過を切替える (編集中だけドラッグ可能にする)。
         viewModel.PositionEditModeChanged += OnPositionEditModeChanged;
+        // 字幕オーバーレイ表示 ON/OFF の切替に追従してウィンドウの表示/非表示を切替える。
+        viewModel.OverlayVisibilityChanged += OnOverlayVisibilityChanged;
     }
 
     private void OnOpened(object? sender, EventArgs e)
@@ -69,9 +74,11 @@ public partial class OverlayWindow : Window
         if (ActualTransparencyLevel == WindowTransparencyLevel.None)
         {
             LoggerService.LogWarning("OverlayWindow: 透過レベルが None — ウィンドウを非表示にします（デスクトップ黒画面防止）");
+            _transparencyOk = false;
             IsVisible = false;
             return;
         }
+        _transparencyOk = true;
 
         // 背景が透過であることを明示的に保証
         Background = Brushes.Transparent;
@@ -86,6 +93,9 @@ public partial class OverlayWindow : Window
             _editSample.PointerReleased += OnEditSamplePointerReleased;
         }
 
+        // 字幕表示 ON/OFF 設定の初期状態を反映 (起動時に OFF なら隠す)。
+        ApplyOverlayVisibility();
+
         LoggerService.LogInfo($"OverlayWindow: 透過レベル={ActualTransparencyLevel}, クリック透過設定完了");
     }
 
@@ -95,6 +105,9 @@ public partial class OverlayWindow : Window
     {
         if (editing)
         {
+            // 字幕オーバーレイを OFF にしていても、 位置調整中はサンプル字幕をドラッグできるよう一時的に表示する。
+            if (_transparencyOk)
+                IsVisible = true;
             // 編集中はマウスを受け取れるようにクリック透過を解除し、 最前面へ。
             DisableClickThrough();
             Activate();
@@ -104,7 +117,25 @@ public partial class OverlayWindow : Window
             _isDragging = false;
             // 編集終了で再びクリック透過 (字幕は背景として振る舞う) に戻す。
             SetClickThrough();
+            // 編集終了で字幕表示 ON/OFF 設定どおりの表示状態に戻す (OFF なら再び隠す)。
+            ApplyOverlayVisibility();
         }
+    }
+
+    // ───────── 字幕オーバーレイ表示 ON/OFF ─────────
+
+    private void OnOverlayVisibilityChanged(object? sender, bool visible) => ApplyOverlayVisibility();
+
+    /// <summary>
+    /// 字幕表示 ON/OFF 設定 (OverlayViewModel.IsOverlayVisible) をウィンドウの IsVisible に反映する。
+    /// 透過不可で強制非表示中 (_transparencyOk=false) のときは何もしない (黒画面化防止を優先)。
+    /// Show()/Hide() ではなく IsVisible を直接切替えるため、 既存ウィンドウハンドルとクリック透過設定は保持される。
+    /// </summary>
+    private void ApplyOverlayVisibility()
+    {
+        if (!_transparencyOk || _vm is null)
+            return;
+        IsVisible = _vm.IsOverlayVisible;
     }
 
     private void OnEditSamplePointerPressed(object? sender, PointerPressedEventArgs e)

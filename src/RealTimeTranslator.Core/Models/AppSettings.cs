@@ -68,6 +68,12 @@ public class UpdateSettings
 
 public class OverlaySettings
 {
+    // 字幕オーバーレイ窓を画面に表示するか (v1.0.41 新規)。 false にすると画面に重ねる字幕は出ないが、
+    // 翻訳処理・翻訳ログ記録は継続する (「翻訳ログ」タブで履歴を読む運用向け。 字幕を画面に出したくない人用)。
+    // default true = 従来どおり表示。 旧 settings.json (このキーなし) は System.Text.Json が default true を
+    // 採用するので後方互換 (明示マイグレーション不要)。
+    public bool ShowSubtitleOverlay { get; set; } = true;
+
     // 既定フォント: 同梱の IBM Plex Sans JP (avares 解決は OverlayViewModel.EmbeddedFontMap)。
     // 新規 settings.json 生成時 / 旧設定にリスト外フォントが入っている場合 (SettingsViewModel.SanitizeSettings)
     // の両方でここがフォールバック値になる。
