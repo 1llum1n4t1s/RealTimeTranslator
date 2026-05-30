@@ -31,6 +31,11 @@ public sealed class AudioLevelMonitor : IAudioLevelMonitor
     // プロセス切替/停止時に確実に止めるための CTS。 これがないと音声未再生プロセス選択時にバックグラウンドで
     // 永久リトライが残り、 次の Start のループと _capture を競合する。
     private CancellationTokenSource? _cts;
+    // Codex 指摘 [3329103853] 対応: Start/Stop を直列化して「停止完了前に同じ _capture で再開」レースを防ぐ。
+    // Stop が投げたバックグラウンド StopCapture (WASAPI native 待ち) を、 次の Start が必ず await してから
+    // StartCaptureWithRetryAsync を呼ぶようにする。 _capture は 1 インスタンス使い回しのままで安全になる。
+    private readonly SemaphoreSlim _startStopGate = new(1, 1);
+    private Task _pendingStop = Task.CompletedTask;
 
     public AudioLevelMonitor()
     {
@@ -63,16 +68,26 @@ public sealed class AudioLevelMonitor : IAudioLevelMonitor
     {
         if (_isDisposed || processId <= 0) return;
 
-        // 既存セッション (と進行中のリトライループ) を止めてから開始 (idempotent)。
+        // 既存セッション (と進行中のリトライループ) を止める (idempotent)。 Stop は UI をブロックしないよう
+        // StopCapture をバックグラウンドへ逃がし、 その停止 Task を _pendingStop に残す。
         Stop();
+        var pendingStop = _pendingStop;
 
         // このプレビュー専用の CTS を作り、 外部トークンとリンクする。 所有権はこの StartAsync にあり、
         // finally で dispose する。 Stop は _cts 経由で cancel だけ行う (無限リトライを確実に終わらせる)。
         var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         lock (_stateLock) { _cts = cts; }
 
+        // Codex 指摘 [3329103853]: Start/Stop を直列化し、 直前の StopCapture (WASAPI native 待ち) が
+        // 完了してから同じ _capture で再開する。 これがないと StartCaptureWithRetryAsync 内の同期 StopCapture と
+        // バックグラウンド停止が競合し、 プロセス切替フリーズ/レースが再発する。
+        await _startStopGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            // 直前の停止完了を待つ (UI スレッドではなくここ = await 後の継続スレッドで待つので UI は固まらない)。
+            try { await pendingStop.ConfigureAwait(false); } catch { /* 停止失敗は無害 */ }
+            if (cts.IsCancellationRequested) return;
+
             // WASAPI Process Loopback は STA (UI) スレッドにバインドするため、 UI コンテキストを渡す
             // (本番パイプラインの MainViewModel.StartAsync と同じ作法)。
             var started = await _capture.StartCaptureWithRetryAsync(processId, cts.Token, captureCreationContext).ConfigureAwait(false);
@@ -92,6 +107,10 @@ public sealed class AudioLevelMonitor : IAudioLevelMonitor
             // キャプチャ不可 (音声未再生プロセス等) はエラーにせず無音表示に倒す。
             if (isCurrent && !started) EmitSilence();
         }
+        catch (OperationCanceledException)
+        {
+            // Stop/Dispose による正常キャンセル。 状態は Stop 側で false 済み。
+        }
         catch (Exception)
         {
             // silent-fail: プレビューは補助機能なので失敗しても翻訳本体に影響させない。
@@ -107,6 +126,7 @@ public sealed class AudioLevelMonitor : IAudioLevelMonitor
         {
             lock (_stateLock) { if (_cts == cts) _cts = null; }
             cts.Dispose();
+            _startStopGate.Release();
         }
     }
 
@@ -129,8 +149,10 @@ public sealed class AudioLevelMonitor : IAudioLevelMonitor
         // ここで直接 _capture.StopCapture() を呼ぶと UI がフリーズする (本番パイプラインと同じ既知の罠、 2026-05-17)。
         // バックグラウンドスレッドへ逃がして UI をブロックしない。 _isMonitoring は既に false なので、
         // 停止中に来る AudioDataAvailable は OnAudioDataAvailable 冒頭の monitoring ガードで無視される。
+        // Codex 指摘 [3329103853]: この停止 Task を _pendingStop に保持し、 次の StartAsync が await してから
+        // 再開する。 これで「停止完了前に同じ _capture を再利用」する race を防ぐ。
         var capture = _capture;
-        Task.Run(() =>
+        _pendingStop = Task.Run(() =>
         {
             try { capture.StopCapture(); }
             catch (Exception) { /* プレビュー停止失敗は無害 (次の Start で再生成) */ }
@@ -176,5 +198,6 @@ public sealed class AudioLevelMonitor : IAudioLevelMonitor
         _capture.AudioDataAvailable -= OnAudioDataAvailable;
         Stop();
         _capture.Dispose();
+        _startStopGate.Dispose();
     }
 }
