@@ -71,7 +71,8 @@ public sealed class AudioLevelMonitor : IAudioLevelMonitor
         // 既存セッション (と進行中のリトライループ) を止める (idempotent)。 Stop は UI をブロックしないよう
         // StopCapture をバックグラウンドへ逃がし、 その停止 Task を _pendingStop に残す。
         Stop();
-        var pendingStop = _pendingStop;
+        Task pendingStop;
+        lock (_stateLock) { pendingStop = _pendingStop; }
 
         // このプレビュー専用の CTS を作り、 外部トークンとリンクする。 所有権はこの StartAsync にあり、
         // finally で dispose する。 Stop は _cts 経由で cancel だけ行う (無限リトライを確実に終わらせる)。
@@ -93,19 +94,37 @@ public sealed class AudioLevelMonitor : IAudioLevelMonitor
             var started = await _capture.StartCaptureWithRetryAsync(processId, cts.Token, captureCreationContext).ConfigureAwait(false);
 
             bool isCurrent;
+            bool cancelledButStarted = false;
             lock (_stateLock)
             {
-                // 自分が最新の Start でなければ (cts が差し替えられた) 状態を触らない (stale 完了の上書き防止)。
-                isCurrent = _cts == cts;
+                // 自分が最新の Start (cts 未差し替え) かつ、 この await 中に Stop でキャンセルされていない場合だけ
+                // 状態を publish する。 Codex [3329151908]: cts.IsCancellationRequested を見ないと、 開始直後に
+                // Stop された (capture が started=true で完了する) とき _cts==cts のまま _isMonitoring=true を
+                // 再点灯してしまい、 本番翻訳キャプチャと二重起動になる。
+                bool stillOwner = _cts == cts;
+                isCurrent = stillOwner && !cts.IsCancellationRequested;
                 if (isCurrent)
                 {
                     _isMonitoring = started;
                     _lastEmitUtc = DateTime.MinValue;
                     _peakAccum = 0f;
                 }
+                else if (stillOwner && started)
+                {
+                    // まだ最新 Start だが Stop でキャンセルされた。 起動してしまった capture を停止する必要がある。
+                    // (新 Start が登場して stillOwner=false の場合は、 その新 Start が StartCaptureWithRetryAsync 内で
+                    //  既存 capture を停止するので、 ここでは何もしない。)
+                    cancelledButStarted = true;
+                }
+            }
+            if (cancelledButStarted)
+            {
+                // キャンセル済みなのに起動した capture を停止 (二重キャプチャ防止)。 _pendingStop に chain するので
+                // 次の Start はこの停止完了後に再開する。
+                ScheduleStopCapture();
             }
             // キャプチャ不可 (音声未再生プロセス等) はエラーにせず無音表示に倒す。
-            if (isCurrent && !started) EmitSilence();
+            else if (isCurrent && !started) EmitSilence();
         }
         catch (OperationCanceledException)
         {
@@ -149,16 +168,35 @@ public sealed class AudioLevelMonitor : IAudioLevelMonitor
         // ここで直接 _capture.StopCapture() を呼ぶと UI がフリーズする (本番パイプラインと同じ既知の罠、 2026-05-17)。
         // バックグラウンドスレッドへ逃がして UI をブロックしない。 _isMonitoring は既に false なので、
         // 停止中に来る AudioDataAvailable は OnAudioDataAvailable 冒頭の monitoring ガードで無視される。
-        // Codex 指摘 [3329103853]: この停止 Task を _pendingStop に保持し、 次の StartAsync が await してから
-        // 再開する。 これで「停止完了前に同じ _capture を再利用」する race を防ぐ。
-        var capture = _capture;
-        _pendingStop = Task.Run(() =>
-        {
-            try { capture.StopCapture(); }
-            catch (Exception) { /* プレビュー停止失敗は無害 (次の Start で再生成) */ }
-        });
+        // Codex 指摘 [3329103853] / [3329151910]: 停止 Task を _pendingStop に積み、 次の StartAsync が await して
+        // から再開する。 これで「停止完了前に同じ _capture を再利用」する race を防ぐ。 既に in-flight な停止が
+        // あれば置き換えず chain する (置き換えると AudioCaptureService の _isStopping ガードで no-op 停止が
+        // 先に完了し、 次の Start が「停止完了」と誤認してしまう)。
+        ScheduleStopCapture();
 
         if (wasMonitoring) EmitSilence();
+    }
+
+    /// <summary>
+    /// StopCapture をバックグラウンドで直列に積む (Codex [3329151910])。 既に in-flight な停止 Task があれば
+    /// それを await してから StopCapture を呼ぶ。 単純に <c>_pendingStop = Task.Run(StopCapture)</c> で置き換えると、
+    /// <see cref="AudioCaptureService.StopCapture"/> は同時呼び出しを <c>_isStopping</c> ガードで即 return するため、
+    /// 置き換え Task が「native 停止していない no-op」のまま先に完了し、 次の Start が「停止完了」と誤認して
+    /// 旧 capture をまだ破棄中なのに再利用するレースになる。 chain することで _pendingStop は常に
+    /// 「これまでの全 native 停止の完了」を表す。 WASAPI 停止は数百 ms ブロックするため UI スレッド外で実行する。
+    /// </summary>
+    private void ScheduleStopCapture()
+    {
+        var capture = _capture;
+        lock (_stateLock)
+        {
+            var previous = _pendingStop;
+            _pendingStop = Task.Run(async () =>
+            {
+                try { await previous.ConfigureAwait(false); } catch (Exception) { /* 前段停止失敗は無害 */ }
+                try { capture.StopCapture(); } catch (Exception) { /* プレビュー停止失敗は無害 (次の Start で再生成) */ }
+            });
+        }
     }
 
     private void OnAudioDataAvailable(object? sender, AudioDataEventArgs e)

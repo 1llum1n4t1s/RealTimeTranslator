@@ -56,6 +56,19 @@ public partial class OverlayViewModel : ObservableObject, IDisposable
     [ObservableProperty]
     public partial IBrush FinalTextBrushPreview { get; set; } = Brushes.White;
 
+    // ───── 字幕オーバーレイ表示 ON/OFF (v1.0.41) ─────
+    // OverlaySettings.ShowSubtitleOverlay を反映。 false で OverlayWindow を非表示にする (翻訳・ログは継続)。
+    // OverlayWindow (code-behind) が OverlayVisibilityChanged を購読してウィンドウの IsVisible を切替える
+    // (PositionEditModeChanged と同じ「UI ロジックは code-behind」方針)。
+    [ObservableProperty]
+    public partial bool IsOverlayVisible { get; set; } = true;
+
+    /// <summary>字幕オーバーレイの表示/非表示切替を OverlayWindow (code-behind) に伝えるイベント (true=表示)。</summary>
+    public event EventHandler<bool>? OverlayVisibilityChanged;
+
+    partial void OnIsOverlayVisibleChanged(bool value)
+        => OverlayVisibilityChanged?.Invoke(this, value);
+
     [ObservableProperty]
     public partial double BottomMarginPercent { get; set; } = 10;
 
@@ -99,10 +112,12 @@ public partial class OverlayViewModel : ObservableObject, IDisposable
     /// <summary>位置編集モードを開始する (SettingsViewModel の「位置を調整」ボタンから呼ばれる)。</summary>
     public void BeginPositionEdit()
     {
-        _editStartOffsetX = _settings.SubtitleOffsetX;
-        _editStartOffsetY = _settings.SubtitleOffsetY;
-        SubtitleOffsetX = _editStartOffsetX;
-        SubtitleOffsetY = _editStartOffsetY;
+        // 編集の起点は live の SubtitleOffsetX/Y を使う。 直前の確定/リセットは autosave (500ms debounce) の
+        // 保存→reload を経て初めて _settings に反映されるため、 その debounce 窓内で _settings を読むと
+        // 確定したばかりの位置を取りこぼして古い位置へスナップしてしまう (Codex [3329151909])。 live 値は
+        // 確定 (ConfirmPosition) / ドラッグ / ReloadSettings で常に最新なので、 連続編集でも位置を失わない。
+        _editStartOffsetX = SubtitleOffsetX;
+        _editStartOffsetY = SubtitleOffsetY;
         IsPositionEditMode = true;
     }
 
@@ -163,6 +178,7 @@ public partial class OverlayViewModel : ObservableObject, IDisposable
         SubtitleOffsetX = _settings.SubtitleOffsetX;
         SubtitleOffsetY = _settings.SubtitleOffsetY;
         FinalTextBrushPreview = ParseBrush(_settings.FinalTextColor);
+        IsOverlayVisible = _settings.ShowSubtitleOverlay;
         _cleanupTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(CleanupIntervalMs) };
         _cleanupTimer.Tick += CleanupOldSubtitles;
         _cleanupTimer.Start();
@@ -245,6 +261,7 @@ public partial class OverlayViewModel : ObservableObject, IDisposable
             BorderBrush = DeriveBorderBrush(_settings.BackgroundColor);
             FinalTextBrushPreview = ParseBrush(_settings.FinalTextColor);
             BottomMarginPercent = _settings.BottomMarginPercent;
+            IsOverlayVisible = _settings.ShowSubtitleOverlay;
             // 編集モード中はドラッグ中の値を settings 由来の値で上書きしない (確定前のブレ防止)。
             if (!IsPositionEditMode)
             {

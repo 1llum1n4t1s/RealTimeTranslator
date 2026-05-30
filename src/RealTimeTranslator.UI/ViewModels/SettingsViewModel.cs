@@ -415,6 +415,26 @@ public partial class SettingsViewModel : ObservableObject
 
     // ───── 表示設定プロパティ（自動保存付き） ─────
 
+    /// <summary>
+    /// 字幕オーバーレイ窓を表示するか (v1.0.41)。 OFF にすると画面に重ねる字幕は消えるが、 翻訳処理・
+    /// 翻訳ログ記録は継続する (「翻訳ログ」タブで履歴を読む運用向け)。 トグル即時に OverlayViewModel へ
+    /// 反映して窓を出す/消し (500ms debounce を待たない)、 永続化は ScheduleAutoSave に委ねる。
+    /// </summary>
+    public bool ShowSubtitleOverlay
+    {
+        get => _settings.Overlay.ShowSubtitleOverlay;
+        set
+        {
+            if (_settings.Overlay.ShowSubtitleOverlay != value)
+            {
+                _settings.Overlay.ShowSubtitleOverlay = value;
+                _overlayViewModel.IsOverlayVisible = value; // 即時反映 (debounce を待たずに窓を切替える)
+                OnPropertyChanged();
+                ScheduleAutoSave();
+            }
+        }
+    }
+
     public string? SelectedFontFamily
     {
         get => _settings.Overlay.FontFamily;
