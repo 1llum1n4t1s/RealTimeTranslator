@@ -71,21 +71,36 @@ public sealed class AudioLevelMonitor : IAudioLevelMonitor
         // 既存セッション (と進行中のリトライループ) を止める (idempotent)。 Stop は UI をブロックしないよう
         // StopCapture をバックグラウンドへ逃がし、 その停止 Task を _pendingStop に残す。
         Stop();
-        Task pendingStop;
-        lock (_stateLock) { pendingStop = _pendingStop; }
 
         // このプレビュー専用の CTS を作り、 外部トークンとリンクする。 所有権はこの StartAsync にあり、
-        // finally で dispose する。 Stop は _cts 経由で cancel だけ行う (無限リトライを確実に終わらせる)。
+        // finally で dispose する。 Stop は _cts 経由で cancel だけ行う (無限リトライ + ゲート待ちを確実に終わらせる)。
         var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         lock (_stateLock) { _cts = cts; }
 
         // Codex 指摘 [3329103853]: Start/Stop を直列化し、 直前の StopCapture (WASAPI native 待ち) が
-        // 完了してから同じ _capture で再開する。 これがないと StartCaptureWithRetryAsync 内の同期 StopCapture と
-        // バックグラウンド停止が競合し、 プロセス切替フリーズ/レースが再発する。
-        await _startStopGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        // 完了してから同じ _capture で再開する。 ゲート待ちは生の外部トークンではなく **リンク CTS** (cts.Token) で
+        // 待つので、 Stop()/Dispose() がこの待機を即座に解除できる。
+        // Codex 指摘 [3329185116]: ゲート取得前にキャンセル/破棄された場合は、 まだ何も start していないので _cts を
+        // 片付けて return する。 ここで return しないと _cts に死んだ cts が残り、 直前の in-flight Start が
+        // 「自分はもう owner ではない」と誤判定して起動済み capture を停止できず、 _isMonitoring=false のまま残留する。
         try
         {
-            // 直前の停止完了を待つ (UI スレッドではなくここ = await 後の継続スレッドで待つので UI は固まらない)。
+            await _startStopGate.WaitAsync(cts.Token).ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            lock (_stateLock) { if (_cts == cts) _cts = null; }
+            cts.Dispose();
+            return;
+        }
+
+        try
+        {
+            // 直前の停止完了を待つ。 ゲート取得後に _pendingStop を読むことで、 直前にゲートを離した Start が
+            // (キャンセルされて) 積んだ自分の capture 停止も必ず待ってから再開する。 UI スレッドではなく
+            // await 後の継続スレッドで待つので UI は固まらない。
+            Task pendingStop;
+            lock (_stateLock) { pendingStop = _pendingStop; }
             try { await pendingStop.ConfigureAwait(false); } catch { /* 停止失敗は無害 */ }
             if (cts.IsCancellationRequested) return;
 
@@ -94,13 +109,12 @@ public sealed class AudioLevelMonitor : IAudioLevelMonitor
             var started = await _capture.StartCaptureWithRetryAsync(processId, cts.Token, captureCreationContext).ConfigureAwait(false);
 
             bool isCurrent;
-            bool cancelledButStarted = false;
+            bool startedButNotPublished = false;
             lock (_stateLock)
             {
                 // 自分が最新の Start (cts 未差し替え) かつ、 この await 中に Stop でキャンセルされていない場合だけ
                 // 状態を publish する。 Codex [3329151908]: cts.IsCancellationRequested を見ないと、 開始直後に
-                // Stop された (capture が started=true で完了する) とき _cts==cts のまま _isMonitoring=true を
-                // 再点灯してしまい、 本番翻訳キャプチャと二重起動になる。
+                // Stop された (capture が started=true で完了する) とき _isMonitoring=true を再点灯し本番と二重起動になる。
                 bool stillOwner = _cts == cts;
                 isCurrent = stillOwner && !cts.IsCancellationRequested;
                 if (isCurrent)
@@ -109,18 +123,18 @@ public sealed class AudioLevelMonitor : IAudioLevelMonitor
                     _lastEmitUtc = DateTime.MinValue;
                     _peakAccum = 0f;
                 }
-                else if (stillOwner && started)
+                else if (started)
                 {
-                    // まだ最新 Start だが Stop でキャンセルされた。 起動してしまった capture を停止する必要がある。
-                    // (新 Start が登場して stillOwner=false の場合は、 その新 Start が StartCaptureWithRetryAsync 内で
-                    //  既存 capture を停止するので、 ここでは何もしない。)
-                    cancelledButStarted = true;
+                    // publish しないのに capture が起動してしまった: ① Stop でキャンセル (stillOwner) /
+                    // ② 新 Start が _cts を奪取 / ③ ゲート待ちキャンセルで bail した Start が _cts を片付けた、 のいずれか。
+                    // どれも起動済み capture を停止しないと _isMonitoring=false のまま残留する (Codex [3329151908] / [3329185116])。
+                    // 次の Start は **ゲート取得後** に _pendingStop を読むので、 ここで積んだ停止を必ず待ってから再開する
+                    // → ② の本物の競合 Start でも「停止 → 再生成」が直列化され安全。
+                    startedButNotPublished = true;
                 }
             }
-            if (cancelledButStarted)
+            if (startedButNotPublished)
             {
-                // キャンセル済みなのに起動した capture を停止 (二重キャプチャ防止)。 _pendingStop に chain するので
-                // 次の Start はこの停止完了後に再開する。
                 ScheduleStopCapture();
             }
             // キャプチャ不可 (音声未再生プロセス等) はエラーにせず無音表示に倒す。
@@ -145,8 +159,8 @@ public sealed class AudioLevelMonitor : IAudioLevelMonitor
         {
             lock (_stateLock) { if (_cts == cts) _cts = null; }
             cts.Dispose();
-            // CodeRabbit 指摘: Dispose() がゲート解放待ちをタイムアウトして先に _startStopGate を破棄した
-            // 稀ケースでは Release が ObjectDisposedException になるため握り潰す (通常は Dispose が解放を待つ)。
+            // Dispose() がゲート解放待ちをタイムアウトして先に _startStopGate を破棄した稀ケースでは Release が
+            // ObjectDisposedException になるため握り潰す (CodeRabbit 指摘)。
             try { _startStopGate.Release(); }
             catch (ObjectDisposedException) { }
             catch (SemaphoreFullException) { }
