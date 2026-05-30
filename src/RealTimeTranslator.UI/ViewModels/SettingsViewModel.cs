@@ -784,6 +784,37 @@ public partial class SettingsViewModel : ObservableObject
         ScheduleAutoSave();
     }
 
+    // ───── メインウィンドウサイズの保存 / 復元 (v1.0.41、 Codex 指摘 [3329103856] で SettingsViewModel に集約) ─────
+    // ウィンドウサイズ保存を MainViewModel ではなく SettingsViewModel 経由 (= autosave と同じ _settings インスタンス /
+    // ScheduleAutoSave 経路) に一本化する。 MainViewModel._settings は reloadOnChange で差し替わるため、 そちらで
+    // 直接 SaveAsync すると、 SettingsViewModel が抱える別インスタンスの autosave が古いサイズで上書きして
+    // リサイズを巻き戻すレースがあった。 保存元を 1 つにして解消する。
+
+    /// <summary>
+    /// 保存済みのウィンドウサイズを返す (未保存/不正値なら null)。 MainWindow が起動時に復元するために呼ぶ。
+    /// MinWidth/MinHeight 未満はガードして null 扱い (壊れた settings.json での極小窓化を防ぐ)。
+    /// </summary>
+    public (double Width, double Height)? GetSavedWindowSize()
+    {
+        var w = _settings.WindowWidth;
+        var h = _settings.WindowHeight;
+        return (w >= 650 && h >= 450) ? (w, h) : null;
+    }
+
+    /// <summary>
+    /// ウィンドウサイズを記録し、 debounce (ScheduleAutoSave 500ms) で settings.json へ保存する。
+    /// MainWindow のリサイズイベント (連続発火) から呼ばれる前提で、 値変化時のみ autosave を起こす。
+    /// </summary>
+    public void SaveWindowSize(double width, double height)
+    {
+        if (width < 650 || height < 450) return; // Min 未満は無視 (最小化・異常値ガード)
+        if (Math.Abs(_settings.WindowWidth - width) < 0.5 && Math.Abs(_settings.WindowHeight - height) < 0.5)
+            return; // 変化なし (ピクセル誤差) は無視
+        _settings.WindowWidth = width;
+        _settings.WindowHeight = height;
+        ScheduleAutoSave();
+    }
+
     /// <summary>
     /// 翻訳ログの保持期間 ComboBox。 0 = 無制限、 7/30/90/180/365 日。
     /// 設定変更は次回起動時の <see cref="ITranslationLogger.PerformRetentionCleanupAsync"/> で反映される。

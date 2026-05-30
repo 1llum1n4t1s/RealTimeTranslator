@@ -58,8 +58,6 @@ public partial class MainViewModel : ObservableObject, IDisposable
     private readonly System.Threading.Lock _cancellationLock = new();
     private string? _lastLogMessage;
     private CancellationTokenSource? _processingCancellation;
-    // ウィンドウサイズ保存の debounce 用 (リサイズ中の連続発火を間引いて settings.json への書き込みを抑える)。
-    private CancellationTokenSource? _windowSizeSaveCts;
     // プレビューモニタが現在計測中のプロセス ID。 同一プロセス再選択時に無駄な Stop/Start を避けるため。
     // 「更新」ボタンで RestoreLastSelectedProcess が同じプロセスを再選択しても再起動しない (フリーズ予防)。
     private int _previewMonitorProcessId;
@@ -1195,49 +1193,15 @@ public partial class MainViewModel : ObservableObject, IDisposable
     }
 
     // ───── メインウィンドウサイズの保存 / 復元 (v1.0.41) ─────
+    // Codex 指摘 [3329103856]: 実体は SettingsViewModel に集約し、 ここは委譲のみ。
+    // 保存元を autosave と同じ _settings インスタンス (SettingsViewModel 側) に一本化することで、
+    // 「リサイズ保存 → 別設定変更の autosave が古いサイズで上書き」する巻き戻りレースを防ぐ。
 
-    /// <summary>
-    /// 保存済みのウィンドウサイズを返す (未保存なら null)。 MainWindow が起動時に復元するために呼ぶ。
-    /// MinWidth/MinHeight 未満の不正値はガードして null 扱いにする (壊れた settings.json での極小窓化を防ぐ)。
-    /// </summary>
-    public (double Width, double Height)? GetSavedWindowSize()
-    {
-        var w = _settings.WindowWidth;
-        var h = _settings.WindowHeight;
-        if (w >= 650 && h >= 450)
-            return (w, h);
-        return null;
-    }
+    /// <summary>保存済みウィンドウサイズ (MainWindow が起動時の復元に使う)。 SettingsViewModel に委譲。</summary>
+    public (double Width, double Height)? GetSavedWindowSize() => _settingsViewModel.GetSavedWindowSize();
 
-    /// <summary>
-    /// ウィンドウサイズを記録し、 debounce (500ms) して settings.json へ保存する。
-    /// MainWindow のリサイズイベント (連続発火) から呼ばれるため、 最後の 1 回だけ書き込む。
-    /// </summary>
-    public void SaveWindowSize(double width, double height)
-    {
-        if (width < 650 || height < 450) return; // Min 未満は無視 (最小化・異常値ガード)
-        _settings.WindowWidth = width;
-        _settings.WindowHeight = height;
-
-        _windowSizeSaveCts?.Cancel();
-        _windowSizeSaveCts?.Dispose();
-        _windowSizeSaveCts = new CancellationTokenSource();
-        var token = _windowSizeSaveCts.Token;
-        _ = Task.Run(async () =>
-        {
-            try
-            {
-                await Task.Delay(500, token);
-                if (!token.IsCancellationRequested)
-                    await _settingsService.SaveAsync(_settings);
-            }
-            catch (OperationCanceledException) { }
-            catch (Exception ex)
-            {
-                LoggerService.LogError($"ウィンドウサイズの保存に失敗: {ex.Message}");
-            }
-        }, token);
-    }
+    /// <summary>ウィンドウサイズ変更を保存 (MainWindow のリサイズから呼ばれる)。 SettingsViewModel に委譲。</summary>
+    public void SaveWindowSize(double width, double height) => _settingsViewModel.SaveWindowSize(width, height);
 
     /// <summary>
     /// 現在オーディオセッションを持つプロセスのIDを取得

@@ -114,13 +114,18 @@ public partial class OverlayViewModel : ObservableObject, IDisposable
         IsPositionEditMode = false;
     }
 
-    /// <summary>字幕位置をデフォルト (下部中央、 オフセット 0,0) に戻して保存する。 編集モードは継続。</summary>
+    /// <summary>
+    /// 字幕位置をデフォルト (下部中央、 オフセット 0,0) に戻す。 編集モードは継続。
+    /// Codex 指摘 [3329103854]: ここでは settings に保存しない (ライブ変更のみ)。
+    /// 「カスタム位置で編集開始 → リセット → キャンセル」のとき、 即保存すると settings に 0,0 が
+    /// 書かれてしまい、 キャンセルしたのに次回起動で位置が失われる。 保存は ConfirmPosition (確定) に一本化し、
+    /// キャンセル時は CancelPosition が編集開始時点の値へ戻す (settings は無変更のまま)。
+    /// </summary>
     [RelayCommand]
     private void ResetPosition()
     {
         SubtitleOffsetX = 0;
         SubtitleOffsetY = 0;
-        PersistSubtitleOffset?.Invoke(0, 0);
     }
 
     /// <summary>ドラッグを破棄して編集開始時点の位置に戻し、 編集モードを終了する (オーバーレイの「キャンセル」)。</summary>
