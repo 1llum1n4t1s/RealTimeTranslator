@@ -258,6 +258,10 @@ public partial class MainViewModel : ObservableObject, IDisposable
             LoggerService.LogDebug("Settings updated detected in MainViewModel.");
             _settingsService.DecryptApiKey(newSettings);
             _settings = newSettings;
+            // CodeRabbit 指摘 (outside-diff): hot-reload で settings が外部変更/別経路保存されたとき、
+            // プレビューメーターのゲインが旧値のまま残らないよう最新の InputGainDb を流す。
+            // (走行中は本番メーターを使うが、 GainDb の同期自体は無害。 プレビュー再開時に正しい値で出る。)
+            _levelMonitor.GainDb = newSettings.AudioCapture.Preprocessing.InputGainDb;
             // API キーの設定状態を UI スレッドで反映（CanStart 再評価が走る）
             Dispatcher.UIThread.Post(() =>
             {
