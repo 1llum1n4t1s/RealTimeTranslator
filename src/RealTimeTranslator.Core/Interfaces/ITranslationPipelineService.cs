@@ -24,6 +24,11 @@ public interface ITranslationPipelineService : IAsyncDisposable, IDisposable
     event EventHandler<Exception>? ErrorOccurred;
 
     /// <summary>
+    /// 入力音声のレベルメーター更新時に発火するイベント (ゲイン適用後ピーク dBFS、 約 50ms 間隔)
+    /// </summary>
+    event EventHandler<AudioLevelEventArgs>? AudioLevelUpdated;
+
+    /// <summary>
     /// パイプラインを開始します
     /// </summary>
     /// <param name="token">キャンセルトークン</param>

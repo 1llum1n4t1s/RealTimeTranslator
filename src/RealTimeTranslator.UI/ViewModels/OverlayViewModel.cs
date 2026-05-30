@@ -29,8 +29,12 @@ public partial class OverlayViewModel : ObservableObject, IDisposable
 
     // /rere 第2R #B2-010-CONT (v1.0.29 候補): 既定値を AppSettings.cs:70 / SettingsViewModel.cs SanitizeSettings 矯正先と統一。
     // 旧 "Yu Gothic UI" は OS フォールバック想定の歴史残骸、 現行アプリ既定は同梱 IBM Plex Sans JP に統一。
+    // ⚠️ 型は string ではなく Avalonia.Media.FontFamily にする (フォント反映バグ修正): string で公開して
+    //    OverlayWindow.axaml の TextBlock.FontFamily (FontFamily 型) にバインドすると、 compiled binding 経路で
+    //    string→FontFamily の暗黙変換が効かず avares URI が無視され、 全フォントが既定 (App.axaml の Yu Gothic UI)
+    //    にフォールバックして「どれを選んでも見た目が変わらない」状態になっていた。 型を揃えれば変換不要で確実に効く。
     [ObservableProperty]
-    public partial string FontFamily { get; set; } = "IBM Plex Sans JP";
+    public partial FontFamily FontFamily { get; set; } = ResolveFontFamily("IBM Plex Sans JP");
 
     [ObservableProperty]
     public partial double FontSize { get; set; } = 24;
@@ -166,25 +170,36 @@ public partial class OverlayViewModel : ObservableObject, IDisposable
             : Avalonia.Media.FontWeight.Normal;
     }
 
-    // settings.json には "IBM Plex Sans JP" のような表示名 (= フォント本体の family name) を保存し、
-    // ここで avares:// URI に変換してレンダラに渡す。 これで「ユーザーが目にする選択肢名」と
-    // 「Avalonia の FontFamily 文字列」を切り離せる。 システムフォント (Yu Gothic UI 等) は
-    // 辞書ヒットせずそのまま渡してプラットフォームに解決させる。
+    // 同梱フォントを avares:// で参照する際のフォルダ URI。 個別 .ttf ファイルではなく Assets/Fonts
+    // フォルダ全体を指す形式 (フォルダ#Family) にすることで、 同 family の Regular/Bold 両 .ttf が読み込まれ、
+    // FontWeight=Bold 選択時に擬似ボールドではなく専用 Bold 字形が使われる。 (可変フォント Noto は単一
+    // ファイルだが weight 軸を内包するため同様に Bold が出る。)
+    private const string EmbeddedFontFolderUri = "avares://RealTimeTranslator.UI/Assets/Fonts";
+
+    // settings.json には "M PLUS Rounded 1c" のような「表示名」を保存し、 ここで「実際のフォント内部 family 名」
+    // (ttf の name table。 fonttools で実測) に変換する。 ⚠️ 表示名 ≠ 内部名 のフォントがあるため両者を分離する:
+    //   - "M PLUS Rounded 1c" の内部 family 名は "Rounded Mplus 1c" (語順/大小が表示名と異なる)
+    //   - その他 4 種は表示名 = 内部名 で一致
+    // 内部名がズレていると Avalonia が avares 解決に失敗して既定フォントにフォールバックする (= フォント反映バグの一因)。
+    // システムフォント (Yu Gothic UI 等) は辞書に無いので名前のまま渡してプラットフォームに解決させる。
     public static readonly IReadOnlyDictionary<string, string> EmbeddedFontMap =
         new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
-            ["IBM Plex Sans JP"]  = "avares://RealTimeTranslator.UI/Assets/Fonts/IBMPlexSansJP-Regular.ttf#IBM Plex Sans JP",
-            ["Noto Sans JP"]      = "avares://RealTimeTranslator.UI/Assets/Fonts/NotoSansJP-Variable.ttf#Noto Sans JP",
-            ["LINE Seed JP"]      = "avares://RealTimeTranslator.UI/Assets/Fonts/LINESeedJP-Regular.ttf#LINE Seed JP",
-            ["Zen Maru Gothic"]   = "avares://RealTimeTranslator.UI/Assets/Fonts/ZenMaruGothic-Regular.ttf#Zen Maru Gothic",
-            ["M PLUS Rounded 1c"] = "avares://RealTimeTranslator.UI/Assets/Fonts/MPLUSRounded1c-Regular.ttf#M PLUS Rounded 1c",
+            ["IBM Plex Sans JP"]  = "IBM Plex Sans JP",
+            ["Noto Sans JP"]      = "Noto Sans JP",
+            ["LINE Seed JP"]      = "LINE Seed JP",
+            ["Zen Maru Gothic"]   = "Zen Maru Gothic",
+            ["M PLUS Rounded 1c"] = "Rounded Mplus 1c",
         };
 
-    private static string ResolveFontFamily(string familyName)
+    private static FontFamily ResolveFontFamily(string familyName)
     {
         if (string.IsNullOrWhiteSpace(familyName))
-            return "IBM Plex Sans JP"; // /rere 第2R #B2-010-CONT: AppSettings.cs:70 default と統一
-        return EmbeddedFontMap.TryGetValue(familyName, out var uri) ? uri : familyName;
+            familyName = "IBM Plex Sans JP"; // /rere 第2R #B2-010-CONT: AppSettings.cs:70 default と統一
+        // 同梱フォントは avares フォルダ URI + 実内部名で解決、 システムフォントは名前のまま OS に委ねる。
+        return EmbeddedFontMap.TryGetValue(familyName, out var realName)
+            ? new FontFamily($"{EmbeddedFontFolderUri}#{realName}")
+            : new FontFamily(familyName);
     }
 
     private static IBrush ParseBrush(string colorString)

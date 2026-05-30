@@ -61,7 +61,6 @@ public class UpdateSettings
     public string IgnoredTagName { get; set; } = string.Empty;
 }
 
-
 public class OverlaySettings
 {
     // 既定フォント: 同梱の IBM Plex Sans JP (avares 解決は OverlayViewModel.EmbeddedFontMap)。
@@ -183,11 +182,6 @@ public class AudioCaptureSettings
 /// </summary>
 public class AudioPreprocessingSettings
 {
-    /// <summary>
-    /// 最終段クリップ防止リミッタを有効化する (default: false)。 threshold=-3dBFS / ratio=12:1。
-    /// 入力ゲインや前段 DSP でピーク超過する可能性があるときに ON 推奨。
-    /// </summary>
-    public bool EnableAntiClip { get; set; } = false;
 
     /// <summary>
     /// ユーザー手動の入力ゲイン (dB)。 範囲 -24〜+24 (UI 側で制約)、 default 0 (= no-op)。

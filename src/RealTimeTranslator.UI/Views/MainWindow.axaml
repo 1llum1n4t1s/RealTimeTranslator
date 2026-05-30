@@ -1,4 +1,4 @@
-<Window xmlns="https://github.com/avaloniaui"
+﻿<Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:vm="using:RealTimeTranslator.UI.ViewModels"
         xmlns:models="using:RealTimeTranslator.Core.Models"
@@ -21,6 +21,7 @@
 
     <Window.Resources>
         <converters:InverseBoolConverter x:Key="InverseBoolConverter"/>
+        <converters:LevelMeterMaskWidthConverter x:Key="LevelMeterMaskWidthConverter"/>
     </Window.Resources>
 
     <Design.DataContext>
@@ -579,31 +580,55 @@
 
                         <HeaderedContentControl Header="入力ゲイン (Input Gain)">
                             <StackPanel>
-                                <Grid ColumnDefinitions="*,Auto" Margin="0,0,0,4">
+                                <!-- OBS 風レベルメーター (ゲイン適用後のピーク)。 緑→黄→赤の固定ゾーン背景を、 現在レベルより右側を半透明マスクで覆って表現する。 -->
+                                <Border Height="14" CornerRadius="3" ClipToBounds="True" Margin="0,0,0,2">
+                                    <Border.Background>
+                                        <LinearGradientBrush StartPoint="0%,0%" EndPoint="100%,0%">
+                                            <GradientStop Offset="0.0"  Color="#2ECC40"/>
+                                            <GradientStop Offset="0.65" Color="#2ECC40"/>
+                                            <GradientStop Offset="0.80" Color="#FFDC00"/>
+                                            <GradientStop Offset="0.90" Color="#FF851B"/>
+                                            <GradientStop Offset="1.0"  Color="#FF4136"/>
+                                        </LinearGradientBrush>
+                                    </Border.Background>
+                                    <Border HorizontalAlignment="Right" Background="#D00F1419">
+                                        <Border.Width>
+                                            <MultiBinding Converter="{StaticResource LevelMeterMaskWidthConverter}">
+                                                <Binding Path="InputLevelNorm"/>
+                                                <Binding Path="Bounds.Width" RelativeSource="{RelativeSource AncestorType=Border}"/>
+                                            </MultiBinding>
+                                        </Border.Width>
+                                    </Border>
+                                </Border>
+                                <Grid ColumnDefinitions="*,Auto" Margin="0,0,0,8">
+                                    <TextBlock Grid.Column="0" Text="レベル (ゲイン適用後)" FontSize="10" Foreground="{DynamicResource Brush.FG2}"/>
+                                    <TextBlock Grid.Column="1" Text="{Binding InputLevelText}" FontSize="10" Foreground="{DynamicResource Brush.FG2}"/>
+                                </Grid>
+
+                                <!-- ゲインフェーダー: 左=小さく / 右=大きく の絶対フェーダー (中央が 0 dB)。 OBS 風。 -->
+                                <Grid ColumnDefinitions="*,Auto">
                                     <Slider Grid.Column="0"
                                             Minimum="-24" Maximum="24"
                                             Value="{Binding InputGainDb, Mode=TwoWay}"
-                                            TickFrequency="1" IsSnapToTickEnabled="True"
+                                            TickFrequency="6" TickPlacement="BottomRight"
                                             VerticalAlignment="Center"/>
-                                    <Button Grid.Column="1" Content="0 dB に戻す"
+                                    <Button Grid.Column="1" Content="0 dB"
                                             Command="{Binding ResetInputGainCommand}"
+                                            ToolTip.Tip="ゲインを 0 dB (等倍) に戻す"
                                             VerticalAlignment="Center" Margin="8,0,0,0"/>
                                 </Grid>
-                                <TextBlock Text="{Binding InputGainDb, StringFormat='現在: {0:+0;-0;0} dB (-24 〜 +24 dB、 既定 0 dB で完全 bypass)'}"
-                                           FontSize="11" Foreground="{DynamicResource Brush.FG2}" Margin="0,0,0,4"/>
-                                <TextBlock Text="単純な掛け算で全帯域を底上げします。 +6 dB で 2 倍音量。 上げすぎるとクリップするので下のリミッタも一緒に ON 推奨。"
+                                <Grid ColumnDefinitions="Auto,*,Auto" Margin="0,2,0,0">
+                                    <TextBlock Grid.Column="0" Text="小さく" FontSize="10" Foreground="{DynamicResource Brush.FG2}" VerticalAlignment="Center"/>
+                                    <TextBlock Grid.Column="1"
+                                               Text="{Binding InputGainDb, StringFormat='{}{0:+0;-0;0} dB'}"
+                                               FontSize="11" FontWeight="Bold"
+                                               HorizontalAlignment="Center"
+                                               Foreground="{DynamicResource Brush.FG}"/>
+                                    <TextBlock Grid.Column="2" Text="大きく" FontSize="10" Foreground="{DynamicResource Brush.FG2}" VerticalAlignment="Center"/>
+                                </Grid>
+                                <TextBlock Text="左へ動かすほど小さく、 右へ動かすほど大きくなります (中央＝0 dB / 等倍、 範囲 -24〜+24 dB)。 上のメーターを見ながら、 ピークが右端の赤 (0 dBFS = クリップ) に張り付かないよう調整してください。"
                                            FontSize="11" Foreground="{DynamicResource Brush.FG2}"
-                                           TextWrapping="Wrap"/>
-                            </StackPanel>
-                        </HeaderedContentControl>
-
-                        <HeaderedContentControl Header="クリップ防止リミッタ (Anti-Clip Limiter)" Margin="0,16,0,0">
-                            <StackPanel>
-                                <CheckBox IsChecked="{Binding EnableAntiClip, Mode=TwoWay}"
-                                          Content="-3 dBFS で頭打ちにする brick-wall リミッタ"/>
-                                <TextBlock Text="threshold=-3 dBFS / ratio=12:1 / attack=1 ms / release=50 ms。 入力ゲインや前段 DSP でピーク超過するときに ON すると、 PCM16 変換時のクリップ歪みを防げます。"
-                                           FontSize="11" Foreground="{DynamicResource Brush.FG2}"
-                                           TextWrapping="Wrap" Margin="0,4,0,0"/>
+                                           TextWrapping="Wrap" Margin="0,6,0,0"/>
                             </StackPanel>
                         </HeaderedContentControl>
 

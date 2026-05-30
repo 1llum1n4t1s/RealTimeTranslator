@@ -263,6 +263,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
         _pipelineService.SubtitleGenerated += OnSubtitleGenerated;
         _pipelineService.StatsUpdated += OnPipelineStatsUpdated;
         _pipelineService.ErrorOccurred += OnPipelineError;
+        _pipelineService.AudioLevelUpdated += OnAudioLevelUpdated;
 
         _audioCaptureService.CaptureStatusChanged += OnCaptureStatusChanged;
 
@@ -350,6 +351,18 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 Text: text);
             _translationLogViewModel.AddEntry(entry);
         });
+    }
+
+    // Forward post-gain peak level (dBFS) from the pipeline to SettingsViewModel (audio tab DataContext) for its meter.
+    private void OnAudioLevelUpdated(object? sender, AudioLevelEventArgs e)
+    {
+        Dispatcher.UIThread.Post(() => _settingsViewModel.UpdateInputLevel(e.PeakDb));
+    }
+
+    // Reset the level meter to silence when translation stops.
+    partial void OnIsRunningChanged(bool value)
+    {
+        if (!value) _settingsViewModel.ResetInputLevel();
     }
 
     /// <summary>

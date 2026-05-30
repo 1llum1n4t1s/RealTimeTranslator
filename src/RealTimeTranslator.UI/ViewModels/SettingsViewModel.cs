@@ -691,24 +691,35 @@ public partial class SettingsViewModel : ObservableObject
     //   v1.0.32: LoudnessNormalizer 削除 (NightMode と機能重複)
     //   v1.0.36: NightModeCompressor 削除 (server VAD が句点を返さなくなる経路を誘発しやすく多層防御の相互依存が重かった)
 
-    /// <summary>
-    /// 最終段クリップ防止リミッタ (AntiClipLimiter) を有効化する。
-    /// 入力ゲインや前段 DSP でピーク超過する可能性があるときに ON 推奨。
-    /// </summary>
-    public bool EnableAntiClip
+    // Input level meter (audio tab): peak after input gain. Pushed in by MainViewModel. Norm=0..1, PeakDb numeric, Text label.
+    private double _inputLevelNorm;
+    public double InputLevelNorm { get => _inputLevelNorm; set => SetProperty(ref _inputLevelNorm, value); }
+
+    private double _inputLevelPeakDb = -120d;
+    public double InputLevelPeakDb { get => _inputLevelPeakDb; set => SetProperty(ref _inputLevelPeakDb, value); }
+
+    private string _inputLevelText = "-∞ dB";
+    public string InputLevelText { get => _inputLevelText; set => SetProperty(ref _inputLevelText, value); }
+
+    // Called from MainViewModel when a post-gain peak level (dBFS) arrives from the pipeline.
+    // Maps -60..0 dBFS to 0..1 for the OBS-like meter and updates the numeric label.
+    public void UpdateInputLevel(double peakDb)
     {
-        get => _settings.AudioCapture.Preprocessing.EnableAntiClip;
-        set
-        {
-            if (_settings.AudioCapture.Preprocessing.EnableAntiClip != value)
-            {
-                _settings.AudioCapture.Preprocessing.EnableAntiClip = value;
-                OnPropertyChanged();
-                ScheduleAutoSave();
-            }
-        }
+        const double floorDb = -60.0;
+        double norm = (peakDb - floorDb) / (0.0 - floorDb);
+        if (norm < 0) norm = 0; else if (norm > 1) norm = 1;
+        InputLevelNorm = norm;
+        InputLevelPeakDb = peakDb;
+        InputLevelText = peakDb <= floorDb ? "-∞ dB" : $"{peakDb:0.0} dB";
     }
 
+    // Reset the meter to silence (called when translation stops).
+    public void ResetInputLevel()
+    {
+        InputLevelNorm = 0d;
+        InputLevelPeakDb = -120d;
+        InputLevelText = "-∞ dB";
+    }
     /// <summary>
     /// ユーザー手動の入力ゲイン (dB)。 範囲 -24〜+24、 default 0。
     /// 0 dB ピッタリ (差 ±0.01dB 以内) は <see cref="InputGainStage"/> が完全 bypass する。

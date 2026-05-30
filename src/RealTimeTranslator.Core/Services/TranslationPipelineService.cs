@@ -136,7 +136,10 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     // (詳細は _global/systemPatterns.md の DSP 教訓と各 DSP クラスの XML doc 参照)。
     private const int CaptureSampleRate = 48000;
     private readonly InputGainStage _inputGain = new(0f);
-    private readonly AntiClipLimiter _limiter = new(CaptureSampleRate);
+    // レベルメーター用: ゲイン適用後のピーク振幅を ~50ms スロットルで UI へ通知する状態。
+    private DateTime _lastLevelEmitUtc = DateTime.MinValue;
+    private float _levelPeakAccum;
+    private static readonly TimeSpan LevelEmitInterval = TimeSpan.FromMilliseconds(50);
     // 16kHz / 32ms = 512 samples ごとに切り出すための VAD用 accumulator。
     // 24kHz / 32ms = 768 samples ごとに切り出すための送信用 accumulator (同じ時間区間に対応)。
     private float[]? _frameAccumulator;
@@ -177,6 +180,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     public event EventHandler<SubtitleItem>? SubtitleGenerated;
     public event EventHandler<PipelineStatsEventArgs>? StatsUpdated;
     public event EventHandler<Exception>? ErrorOccurred;
+    public event EventHandler<AudioLevelEventArgs>? AudioLevelUpdated;
 
     private readonly IOptionsMonitor<AppSettings> _settingsMonitor;
     // rere B1-003: SettingsService.DecryptApiKeyInPlace の static 直叩き (Service Locator) を
@@ -184,10 +188,17 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     private readonly ISettingsService _settingsService;
 
     // デバッグ録音 (OpenAI 送信前 PCM16 を WAV に書き出す)。 ctor で DI 注入。 null OK (テスト互換)。
-    // ライフサイクル: StartCoreAsync で AppSettings.AudioCapture.DebugRecordSentAudio=true の場合だけ
-    // StartSession、 StopCoreAsync で常に StopSession (idempotent) を呼ぶ。 OpenAIRealtimeClient.SendAudio
-    // 側でも recorder.WritePcm16 を呼ぶが、 録音セッション未開始なら内部で no-op。
+    // ライフサイクル: 開始/停止判定は SyncDebugRecording に一元化し、 StartCoreAsync / StopCoreAsync /
+    // 設定変更 (IOptionsMonitor.OnChange) の 3 経路から呼ぶ。 これにより「翻訳開始後に WAV 保存を ON/OFF
+    // しても即反映」される (旧実装は StartCoreAsync 時に 1 回しか判定せず、 走行中の切替が無視されていた)。
+    // OpenAIRealtimeClient.SendAudio 側でも recorder.WritePcm16 を呼ぶが、 録音セッション未開始なら内部で no-op。
     private readonly IDebugAudioRecorder? _debugAudioRecorder;
+    // SyncDebugRecording を 3 経路から呼んでも安全なよう直列化するロック。
+    private readonly System.Threading.Lock _debugRecordingLock = new();
+    // pipeline が録音セッションを開いて WriteFailed を購読中か (= 自分が start させた状態か)。
+    private bool _debugRecordingActive;
+    // 走行中のデバッグ録音 ON/OFF 切替を即反映するための設定変更購読。 Dispose で解除する。
+    private IDisposable? _settingsChangeSubscription;
 
     public TranslationPipelineService(
         IAudioCaptureService audioCaptureService,
@@ -210,6 +221,10 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         _realtimeClient.TranscriptCompleted += OnTranscriptCompleted;
         _realtimeClient.ErrorReceived += OnClientError;
         _realtimeClient.StateChanged += OnConnectionStateChanged;
+
+        // 翻訳開始後にデバッグ録音 (WAV 保存) を ON/OFF しても即反映されるよう設定変更を購読する。
+        // 走行中なら SyncDebugRecording が録音セッションを開始/停止する (非走行中は no-op)。
+        _settingsChangeSubscription = _settingsMonitor.OnChange((_, _) => SyncDebugRecording());
     }
 
 
@@ -293,7 +308,6 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         // 入力プリプロセス DSP の envelope follower を同様にクリア
         // (前セッション末尾の大音量に追従していた gain が新セッションに漏れないように)。
         _inputGain.Reset();
-        _limiter.Reset();
         _preRollBuffer.Clear();
         _vadState = VadState.Silence;
         _hangoverFramesRemaining = 0;
@@ -318,26 +332,9 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         _isRunning = true;
         _latencyStopwatch.Start();
 
-        // デバッグ録音: 設定で ON のときだけ新セッションを開く。 OFF なら StartSession を呼ばないので
-        // SendAudio フックの WritePcm16 は IsRecording=false のまま no-op になる。
-        if (_settingsMonitor.CurrentValue.AudioCapture.DebugRecordSentAudio && _debugAudioRecorder is not null)
-        {
-            // 書き込み失敗 (ディスク full / 権限不足 / AV ブロック) を UI バナーに伝播するため購読。
-            // StopCoreAsync で必ず -= して event leak を防ぐ (Singleton 寿命 vs セッション寿命のミスマッチ対策)。
-            _debugAudioRecorder.WriteFailed += OnDebugRecorderWriteFailed;
-            // 防御的 try-catch (CodeRabbit 指摘対応): DebugAudioRecorder.StartSession は silent-fail
-            // 設計だが、 将来 IDebugAudioRecorder の別実装が例外を投げる可能性に備えて、 デバッグ録音失敗が
-            // 翻訳パイプライン全体を止めないようガードする。 失敗してもログを残して継続する。
-            try
-            {
-                _debugAudioRecorder.StartSession(Guid.NewGuid().ToString("N")[..8]);
-            }
-            catch (Exception ex)
-            {
-                Logger.Warn("DebugAudioRecorder 開始中の例外 (翻訳は継続)", ex);
-                ErrorOccurred?.Invoke(this, ex);
-            }
-        }
+        // デバッグ録音 (WAV 保存): ON なら録音セッションを開く。 走行中の ON/OFF 切替にも追従できるよう、
+        // 開始/停止判定は SyncDebugRecording に一元化している (設定変更の OnChange からも呼ばれる)。
+        SyncDebugRecording();
 
         StatsUpdated?.Invoke(this, new PipelineStatsEventArgs
         {
@@ -464,15 +461,9 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
             Logger.Info($"セッション統計: DroppedAudioChunks={openAiClient.DroppedAudioChunkCount} 完結文emit={Interlocked.Read(ref _completedEmitCount)} partial emit={Interlocked.Read(ref _partialEmitCount)}");
         }
 
-        // デバッグ録音セッションを必ず閉じる (idempotent、 未開始のときは内部で no-op)。
-        // WAV ヘッダのサイズフィールドを実値に書き直してから FileStream を Dispose する。
-        // WriteFailed 購読も必ず解除 (DebugRecorder は Singleton で寿命が pipeline より長いため、 leak 防止)。
-        if (_debugAudioRecorder is not null)
-        {
-            _debugAudioRecorder.WriteFailed -= OnDebugRecorderWriteFailed;
-            try { _debugAudioRecorder.StopSession(); }
-            catch (Exception ex) { Logger.Warn("DebugAudioRecorder 停止中の例外", ex); }
-        }
+        // デバッグ録音セッションを必ず閉じる: ここでは _isRunning は既に false なので SyncDebugRecording が
+        // StopSession (WAV ヘッダのサイズ確定書き換え) + WriteFailed 購読解除を行う (idempotent、 未開始なら no-op)。
+        SyncDebugRecording();
 
         Logger.Info("翻訳パイプライン停止 完了");
 
@@ -521,10 +512,11 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                     // CPU オーバーヘッドはチェック分のみ。 信号フローは InputGain → AntiClip。
                     var preproc = audioCaptureSettings.Preprocessing;
                     _inputGain.GainDb = preproc.InputGainDb;
-                    _limiter.IsEnabled = preproc.EnableAntiClip;
                     var preprocSpan = audioData.AsSpan();
                     _inputGain.Process(preprocSpan);
-                    _limiter.Process(preprocSpan);
+
+                    // ゲイン適用後のピークレベルを UI のレベルメーターへ通知 (約 50ms スロットル)。
+                    ReportAudioLevel(preprocSpan);
 
                     if (!audioCaptureSettings.EnableVad)
                     {
@@ -1024,6 +1016,76 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     }
 
     /// <summary>
+    /// デバッグ録音 (WAV 保存) の「あるべき状態」を現在の設定 + 走行状態 (<c>_isRunning &amp;&amp;
+    /// DebugRecordSentAudio</c>) から再計算し、 録音セッションを開始/停止する。 StartCoreAsync /
+    /// StopCoreAsync / 設定変更 (<c>IOptionsMonitor.OnChange</c>) の 3 経路から呼ばれ、
+    /// <see cref="_debugRecordingLock"/> で直列化する。 これで「翻訳開始後に WAV 保存を ON/OFF しても即反映」される。
+    /// 二重 StartSession / WriteFailed 二重購読は <see cref="_debugRecordingActive"/> と -= → += で防ぐ。
+    /// ErrorOccurred はハンドラ再入によるデッドロックを避けるためロック解放後に発火する。
+    /// </summary>
+    private void SyncDebugRecording()
+    {
+        if (_debugAudioRecorder is null) return;
+
+        Exception? startError = null;
+        lock (_debugRecordingLock)
+        {
+            bool want = _isRunning && _settingsMonitor.CurrentValue.AudioCapture.DebugRecordSentAudio;
+            if (want && !_debugRecordingActive)
+            {
+                // 書き込み失敗 (ディスク full / 権限不足 / AV ブロック) を UI バナーに伝播するため購読。
+                // 二重購読を避けるため一旦 -= してから += する (-= は未購読でも無害)。
+                _debugAudioRecorder.WriteFailed -= OnDebugRecorderWriteFailed;
+                _debugAudioRecorder.WriteFailed += OnDebugRecorderWriteFailed;
+                try
+                {
+                    // StartSession は silent-fail 設計だが、 将来別実装が例外を投げても翻訳本体を止めないようガード。
+                    _debugAudioRecorder.StartSession(Guid.NewGuid().ToString("N")[..8]);
+                    _debugRecordingActive = true;
+                }
+                catch (Exception ex)
+                {
+                    _debugAudioRecorder.WriteFailed -= OnDebugRecorderWriteFailed;
+                    Logger.Warn("DebugAudioRecorder 開始中の例外 (翻訳は継続)", ex);
+                    startError = ex;
+                }
+            }
+            else if (!want && _debugRecordingActive)
+            {
+                // WAV ヘッダのサイズフィールドを実値に書き直してから FileStream を Dispose。 購読も解除して leak 防止。
+                _debugAudioRecorder.WriteFailed -= OnDebugRecorderWriteFailed;
+                try { _debugAudioRecorder.StopSession(); }
+                catch (Exception ex) { Logger.Warn("DebugAudioRecorder 停止中の例外", ex); }
+                _debugRecordingActive = false;
+            }
+        }
+
+        if (startError is not null) ErrorOccurred?.Invoke(this, startError);
+    }
+
+    /// <summary>
+    /// ゲイン適用後のピーク振幅を算出し、 ~50ms スロットルで <see cref="AudioLevelUpdated"/> を発火する。
+    /// スロットル窓内はピークホールド (窓内最大) して瞬間ピークの取りこぼしを防ぐ。 UI の入力レベルメーター用。
+    /// </summary>
+    private void ReportAudioLevel(ReadOnlySpan<float> samples)
+    {
+        float peak = _levelPeakAccum;
+        for (int i = 0; i < samples.Length; i++)
+        {
+            float a = MathF.Abs(samples[i]);
+            if (a > peak) peak = a;
+        }
+        _levelPeakAccum = peak;
+
+        var now = DateTime.UtcNow;
+        if (now - _lastLevelEmitUtc < LevelEmitInterval) return;
+        _lastLevelEmitUtc = now;
+        float db = DspMath.AmplitudeToDb(_levelPeakAccum);
+        _levelPeakAccum = 0f; // スロットル窓をリセット
+        AudioLevelUpdated?.Invoke(this, new AudioLevelEventArgs { PeakDb = db });
+    }
+
+    /// <summary>
     /// DebugAudioRecorder の WriteFailed イベント (ディスク full / 権限不足 / AV ブロック等で書き込み失敗) を
     /// ErrorOccurred 経由で UI バナーに伝播する (rere F-005 対応)。
     /// </summary>
@@ -1123,6 +1185,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         _realtimeClient.ErrorReceived -= OnClientError;
         _realtimeClient.StateChanged -= OnConnectionStateChanged;
         _audioCaptureService.AudioDataAvailable -= OnAudioDataAvailable;
+        _settingsChangeSubscription?.Dispose();
         _startStopLock.Dispose();
     }
 
@@ -1144,6 +1207,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         _realtimeClient.ErrorReceived -= OnClientError;
         _realtimeClient.StateChanged -= OnConnectionStateChanged;
         _audioCaptureService.AudioDataAvailable -= OnAudioDataAvailable;
+        _settingsChangeSubscription?.Dispose();
         _startStopLock.Dispose();
     }
 
