@@ -4,26 +4,18 @@ using RealTimeTranslator.Core.Services.Audio;
 namespace RealTimeTranslator.Tests;
 
 /// <summary>
-/// 入力プリプロセス DSP 2 クラス (v1.0.30 で 4 段導入 → v1.0.32 で LoudnessNormalizer 削除
-/// → v1.0.36 で NightModeCompressor 削除) のユニットテスト。
+/// 入力プリプロセス DSP (InputGainStage) のユニットテスト。
+/// 履歴: v1.0.30 で 4 段導入 → v1.0.32 LoudnessNormalizer 削除 → v1.0.36 NightModeCompressor 削除
+/// → クリップ防止リミッタ (AntiClipLimiter) も削除 (レベルメーターを見て手動でレベル管理する OBS 方式に変更)。
+/// 現在の入力プリプロセスは InputGainStage 1 段のみ。
 ///
-/// 各 DSP の検証ポイント:
-/// - IsEnabled=false で完全 bypass (入力配列を一切変更しない)
-/// - 設計通りのゲイン / リミット動作 (代表的な入力レベルで挙動確認)
-/// - Reset() で内部状態 (envelope / running gain) が完全クリア
-///
-/// WebRestrictionRemoval (Chrome 拡張音量ブースター) から移植したパラメータをベースにしているため、
-/// 厳密な数値ではなく「方向 (大音は抑える / 小音は持ち上げる)」を中心に検証する。
+/// 検証ポイント:
+/// - IsEnabled=false (0dB) で完全 bypass (入力配列を一切変更しない)
+/// - 設計通りのゲイン動作 (代表的な入力レベルで挙動確認)
 /// </summary>
 [TestClass]
 public class AudioPreprocessingTests
 {
-    private const int SampleRate = 48000;
-
-    // ═════════════════ 共通 bypass テスト ═════════════════
-    // IsEnabled=false / GainDb=0 のとき、 入力配列を一切変更しないことを保証する。
-    // これが破れると default 設定 (現状動作と互換) の保証が崩れる。
-
     [TestMethod]
     public void InputGainStage_ZeroDb_DoesNotMutateBuffer()
     {
@@ -33,18 +25,6 @@ public class AudioPreprocessingTests
         g.Process(samples);
         CollectionAssert.AreEqual(original, samples);
     }
-
-    [TestMethod]
-    public void AntiClipLimiter_Disabled_DoesNotMutateBuffer()
-    {
-        var l = new AntiClipLimiter(SampleRate, enabled: false);
-        var samples = new float[] { 0.1f, -0.2f, 0.3f, -0.4f, 0.5f };
-        var original = (float[])samples.Clone();
-        l.Process(samples);
-        CollectionAssert.AreEqual(original, samples);
-    }
-
-    // ═════════════════ InputGainStage ═════════════════
 
     [TestMethod]
     public void InputGainStage_Plus6dB_ApproximatelyDoublesAmplitude()
@@ -99,79 +79,5 @@ public class AudioPreprocessingTests
 
         g.GainDb = 0f;
         Assert.IsFalse(g.IsEnabled, "0dB に戻すと再び bypass");
-    }
-
-    // ═════════════════ AntiClipLimiter ═════════════════
-
-    [TestMethod]
-    public void AntiClipLimiter_BelowThreshold_PassesThrough()
-    {
-        // -10 dBFS は threshold -3 dBFS 未満なので圧縮されない
-        var l = new AntiClipLimiter(SampleRate, enabled: true);
-        const float inputAmp = 0.316f; // 10^(-10/20)
-        var samples = GenerateSineWave(440f, inputAmp, SampleRate, durationSec: 0.1);
-        var initialPeak = MaxAbs(samples);
-        l.Process(samples);
-        var finalPeak = MaxAbs(samples);
-        Assert.AreEqual(initialPeak, finalPeak, initialPeak * 0.05f,
-            "threshold 未満は素通し");
-    }
-
-    [TestMethod]
-    public void AntiClipLimiter_PeakAboveOne_ClampsToHardLimit()
-    {
-        // 振幅 5.0 の極端なオーバー入力でも、 最終的に |sample| <= 0.999 (HardClipMax) に収まる
-        var l = new AntiClipLimiter(SampleRate, enabled: true);
-        var samples = new float[SampleRate / 4]; // 250ms
-        for (int i = 0; i < samples.Length; i++)
-            samples[i] = (i % 2 == 0) ? 5.0f : -5.0f;
-        l.Process(samples);
-        foreach (var s in samples)
-        {
-            Assert.IsTrue(MathF.Abs(s) <= 0.999f + 0.0001f,
-                $"hard clamp で |sample| <= 0.999 になるべき (s={s})");
-        }
-    }
-
-    [TestMethod]
-    public void AntiClipLimiter_ModerateOverThreshold_ReducesAmplitude()
-    {
-        // -1 dBFS (threshold -3 dBFS 超え) は限定的に圧縮される
-        var l = new AntiClipLimiter(SampleRate, enabled: true);
-        const float inputAmp = 0.891f; // 10^(-1/20)
-        var samples = GenerateSineWave(440f, inputAmp, SampleRate, durationSec: 0.2);
-        var initialPeak = MaxAbs(samples);
-        l.Process(samples);
-
-        // attack 1ms なのですぐ追従、 ratio 12:1 で threshold を僅かに超えた程度に収まる
-        var tailPeak = MaxAbs(samples.AsSpan(samples.Length / 2).ToArray());
-        Assert.IsTrue(tailPeak < initialPeak,
-            $"threshold 超えは抑制されるべき (initial={initialPeak:F4}, tail={tailPeak:F4})");
-        Assert.IsTrue(tailPeak <= 0.999f + 0.0001f,
-            $"最終的に hard clamp 内 (tail={tailPeak:F4})");
-    }
-
-    // ═════════════════ ヘルパー ═════════════════
-
-    private static float[] GenerateSineWave(float freq, float amplitude, int sampleRate, double durationSec)
-    {
-        int n = (int)(sampleRate * durationSec);
-        var samples = new float[n];
-        for (int i = 0; i < n; i++)
-        {
-            samples[i] = amplitude * MathF.Sin(2f * MathF.PI * freq * i / sampleRate);
-        }
-        return samples;
-    }
-
-    private static float MaxAbs(float[] arr)
-    {
-        float max = 0f;
-        foreach (var v in arr)
-        {
-            var abs = MathF.Abs(v);
-            if (abs > max) max = abs;
-        }
-        return max;
     }
 }
