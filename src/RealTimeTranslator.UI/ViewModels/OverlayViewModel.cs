@@ -5,6 +5,7 @@ using System.Linq;
 using Avalonia.Media;
 using Avalonia.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
+using CommunityToolkit.Mvvm.Input;
 using Microsoft.Extensions.Options;
 using RealTimeTranslator.Core.Models;
 using RealTimeTranslator.Core.Services;
@@ -51,8 +52,85 @@ public partial class OverlayViewModel : ObservableObject, IDisposable
     [ObservableProperty]
     public partial IBrush BorderBrush { get; set; } = new SolidColorBrush(Color.FromArgb(128, 255, 255, 255));
 
+    // 位置編集モードのサンプル字幕で使う確定字幕色のプレビュー Brush。
+    [ObservableProperty]
+    public partial IBrush FinalTextBrushPreview { get; set; } = Brushes.White;
+
     [ObservableProperty]
     public partial double BottomMarginPercent { get; set; } = 10;
+
+    // ───── 字幕位置 微調整オフセット (px) + 編集モード (v1.0.41) ─────
+    // 下部中央 (BottomMarginPercent 基準) からの px オフセット。 編集モードでドラッグして決める。
+    [ObservableProperty]
+    public partial double SubtitleOffsetX { get; set; }
+
+    [ObservableProperty]
+    public partial double SubtitleOffsetY { get; set; }
+
+    // 位置編集モード中か。 true のとき OverlayWindow はクリック透過を解除し、 サンプル字幕をドラッグ可能にする。
+    // 確定 (false) でクリック透過 ON に戻り、 ドラッグ不可になる。
+    [ObservableProperty]
+    public partial bool IsPositionEditMode { get; set; }
+
+    /// <summary>位置編集モードの開始/終了を OverlayWindow (code-behind) に伝えるイベント (true=編集開始)。</summary>
+    public event EventHandler<bool>? PositionEditModeChanged;
+
+    partial void OnIsPositionEditModeChanged(bool value)
+        => PositionEditModeChanged?.Invoke(this, value);
+
+    /// <summary>
+    /// 編集モードでドラッグ確定した位置を保存するコールバック。 OverlayWindow が px オフセットを渡してくる。
+    /// SettingsViewModel 側で settings.json に永続化するため、 外部から差し込む (DI 循環を避ける緩い結線)。
+    /// </summary>
+    public Action<double, double>? PersistSubtitleOffset { get; set; }
+
+    /// <summary>OverlayWindow からドラッグ中/確定時に呼ばれ、 表示オフセットを即時更新する。</summary>
+    public void UpdateSubtitleOffset(double offsetX, double offsetY, bool persist)
+    {
+        SubtitleOffsetX = offsetX;
+        SubtitleOffsetY = offsetY;
+        if (persist) PersistSubtitleOffset?.Invoke(offsetX, offsetY);
+    }
+
+    // キャンセル時に戻す「編集開始時点の保存済みオフセット」。
+    private double _editStartOffsetX;
+    private double _editStartOffsetY;
+
+    /// <summary>位置編集モードを開始する (SettingsViewModel の「位置を調整」ボタンから呼ばれる)。</summary>
+    public void BeginPositionEdit()
+    {
+        _editStartOffsetX = _settings.SubtitleOffsetX;
+        _editStartOffsetY = _settings.SubtitleOffsetY;
+        SubtitleOffsetX = _editStartOffsetX;
+        SubtitleOffsetY = _editStartOffsetY;
+        IsPositionEditMode = true;
+    }
+
+    /// <summary>現在のドラッグ位置を保存して編集モードを終了する (オーバーレイの「確定」ボタン)。</summary>
+    [RelayCommand]
+    private void ConfirmPosition()
+    {
+        PersistSubtitleOffset?.Invoke(SubtitleOffsetX, SubtitleOffsetY);
+        IsPositionEditMode = false;
+    }
+
+    /// <summary>字幕位置をデフォルト (下部中央、 オフセット 0,0) に戻して保存する。 編集モードは継続。</summary>
+    [RelayCommand]
+    private void ResetPosition()
+    {
+        SubtitleOffsetX = 0;
+        SubtitleOffsetY = 0;
+        PersistSubtitleOffset?.Invoke(0, 0);
+    }
+
+    /// <summary>ドラッグを破棄して編集開始時点の位置に戻し、 編集モードを終了する (オーバーレイの「キャンセル」)。</summary>
+    [RelayCommand]
+    private void CancelPosition()
+    {
+        SubtitleOffsetX = _editStartOffsetX;
+        SubtitleOffsetY = _editStartOffsetY;
+        IsPositionEditMode = false;
+    }
 
     /// <summary>
     /// /opop N1-003: コンストラクタ引数を required (non-nullable) に変更 (v1.0.33)。
@@ -66,7 +144,8 @@ public partial class OverlayViewModel : ObservableObject, IDisposable
         _settings = optionsMonitor.CurrentValue.Overlay;
         _settingsChangeSubscription = optionsMonitor.OnChange(newSettings =>
         {
-            LoggerService.LogInfo("Settings updated detected in OverlayViewModel.");
+            // 設定保存のたびに reloadOnChange ファイル監視で発火する診断ログ。 位置ドラッグ等で頻発するため Debug に降格。
+            LoggerService.LogDebug("Settings updated detected in OverlayViewModel.");
             _settings = newSettings.Overlay;
             ReloadSettings();
         });
@@ -76,6 +155,9 @@ public partial class OverlayViewModel : ObservableObject, IDisposable
         BackgroundBrush = ParseBrush(_settings.BackgroundColor);
         BorderBrush = DeriveBorderBrush(_settings.BackgroundColor);
         BottomMarginPercent = _settings.BottomMarginPercent;
+        SubtitleOffsetX = _settings.SubtitleOffsetX;
+        SubtitleOffsetY = _settings.SubtitleOffsetY;
+        FinalTextBrushPreview = ParseBrush(_settings.FinalTextColor);
         _cleanupTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(CleanupIntervalMs) };
         _cleanupTimer.Tick += CleanupOldSubtitles;
         _cleanupTimer.Start();
@@ -156,7 +238,14 @@ public partial class OverlayViewModel : ObservableObject, IDisposable
             FontWeight = ResolveFontWeight(_settings.FontWeight);
             BackgroundBrush = ParseBrush(_settings.BackgroundColor);
             BorderBrush = DeriveBorderBrush(_settings.BackgroundColor);
+            FinalTextBrushPreview = ParseBrush(_settings.FinalTextColor);
             BottomMarginPercent = _settings.BottomMarginPercent;
+            // 編集モード中はドラッグ中の値を settings 由来の値で上書きしない (確定前のブレ防止)。
+            if (!IsPositionEditMode)
+            {
+                SubtitleOffsetX = _settings.SubtitleOffsetX;
+                SubtitleOffsetY = _settings.SubtitleOffsetY;
+            }
         });
     }
 

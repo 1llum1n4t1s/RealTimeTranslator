@@ -28,6 +28,20 @@ public partial class SettingsViewModel : ObservableObject
         _settings = options.CurrentValue;
         _settingsService = settingsService;
         _overlayViewModel = overlayViewModel;
+        // 字幕位置の編集確定/リセット時に OverlayViewModel から呼ばれて settings.json へ永続化する
+        // (DI 循環を避けるため OverlayViewModel にコールバックを差し込む緩い結線)。
+        _overlayViewModel.PersistSubtitleOffset = (x, y) =>
+        {
+            _settings.Overlay.SubtitleOffsetX = x;
+            _settings.Overlay.SubtitleOffsetY = y;
+            ScheduleAutoSave();
+        };
+        // オーバーレイのツールバーで編集を確定/キャンセルしたとき、 設定タブの編集ボタン活性も追従させる。
+        _overlayViewModel.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName == nameof(OverlayViewModel.IsPositionEditMode))
+                OnPropertyChanged(nameof(IsSubtitlePositionEditMode));
+        };
         FontFamilies = new ReadOnlyCollection<string>(new[]
         {
             // システムフォント (Windows 既定)
@@ -743,6 +757,32 @@ public partial class SettingsViewModel : ObservableObject
     /// <summary>入力ゲインを 0 dB にリセットする (UI のゼロボタン用)。</summary>
     [RelayCommand]
     private void ResetInputGain() => InputGainDb = 0f;
+
+    // ───── 翻訳字幕位置調整 (v1.0.41) ─────
+
+    /// <summary>OverlayViewModel の編集モード状態 (UI バインド用。 編集ボタンの活性切替に使う)。</summary>
+    public bool IsSubtitlePositionEditMode => _overlayViewModel.IsPositionEditMode;
+
+    /// <summary>
+    /// 字幕位置の編集モードを開始する。 オーバーレイにドラッグ可能なサンプル字幕が出て、
+    /// マウスで自由に移動できる。 確定/キャンセルはオーバーレイ上のツールバーで行う。
+    /// </summary>
+    [RelayCommand]
+    private void BeginSubtitlePositionEdit()
+    {
+        _overlayViewModel.BeginPositionEdit();
+        OnPropertyChanged(nameof(IsSubtitlePositionEditMode));
+    }
+
+    /// <summary>字幕位置をデフォルト (下部中央) にリセットして保存する。 編集中でなくても使える。</summary>
+    [RelayCommand]
+    private void ResetSubtitlePosition()
+    {
+        _settings.Overlay.SubtitleOffsetX = 0;
+        _settings.Overlay.SubtitleOffsetY = 0;
+        _overlayViewModel.UpdateSubtitleOffset(0, 0, persist: false);
+        ScheduleAutoSave();
+    }
 
     /// <summary>
     /// 翻訳ログの保持期間 ComboBox。 0 = 無制限、 7/30/90/180/365 日。

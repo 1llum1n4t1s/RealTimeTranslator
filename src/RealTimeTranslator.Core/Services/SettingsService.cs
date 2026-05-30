@@ -189,6 +189,9 @@ public class SettingsService : ISettingsService
         LastSelectedProcessId = source.LastSelectedProcessId,
         Update = source.Update,
         TranslationLog = source.TranslationLog,
+        // ウィンドウサイズもコピー対象に含める (含めないと autosave のたびに 0 にリセットされる)。
+        WindowWidth = source.WindowWidth,
+        WindowHeight = source.WindowHeight,
     };
 
     /// <inheritdoc />

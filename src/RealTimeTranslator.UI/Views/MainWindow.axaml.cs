@@ -37,10 +37,41 @@ public partial class MainWindow : Window
         InitializeComponent();
     }
 
+    private MainViewModel? _viewModel;
+
     public MainWindow(MainViewModel viewModel)
     {
         InitializeComponent();
         DataContext = viewModel;
+        _viewModel = viewModel;
+
+        // 前回保存したウィンドウサイズを復元 (未保存なら axaml の既定 750x800 のまま)。
+        var saved = viewModel.GetSavedWindowSize();
+        if (saved is { } s)
+        {
+            Width = s.Width;
+            Height = s.Height;
+        }
+
+        // ユーザーがリサイズしたら debounce して settings.json に保存する。
+        // PropertyChanged で ClientSize/Width/Height を監視 (Avalonia は Window のサイズ変更を Bounds/ClientSize で通知)。
+        ClientSizeProperty.Changed.AddClassHandler<MainWindow>((w, _) => w.OnWindowSizeChanged());
+    }
+
+    /// <summary>
+    /// リサイズ完了の検知。 通常表示 (Normal) のときだけ現在の Width/Height を保存する
+    /// (最大化・最小化中のサイズは復元用に保存しない)。
+    /// </summary>
+    private void OnWindowSizeChanged()
+    {
+        if (_viewModel is null) return;
+        if (WindowState != WindowState.Normal) return;
+        // Width/Height は NaN になり得る (未設定時) ため、 確定値の ClientSize ベースではなく
+        // 実寸の Bounds を使う。 Bounds はクライアント領域、 Width/Height はウィンドウ全体だが、
+        // 復元は同じ Width/Height へ書き戻すので Width/Height をそのまま保存して対称にする。
+        var w = double.IsNaN(Width) ? Bounds.Width : Width;
+        var h = double.IsNaN(Height) ? Bounds.Height : Height;
+        _viewModel.SaveWindowSize(w, h);
     }
 
     /// <summary>

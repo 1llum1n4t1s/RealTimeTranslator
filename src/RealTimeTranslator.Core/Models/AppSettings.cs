@@ -11,6 +11,11 @@ public class AppSettings
     public int LastSelectedProcessId { get; set; }
     public UpdateSettings Update { get; set; } = new();
     public TranslationLogSettings TranslationLog { get; set; } = new();
+
+    // メインウィンドウのサイズ (v1.0.41 新規)。 ユーザーがリサイズした値を保存し、 次回起動時に復元する。
+    // 0 = 未保存 (初回起動 or 旧 settings.json) → MainWindow.axaml の既定 (750x800) を使う。
+    public double WindowWidth { get; set; }
+    public double WindowHeight { get; set; }
 }
 
 /// <summary>
@@ -88,6 +93,16 @@ public class OverlaySettings
     public double FadeOutDuration { get; set; } = 0.5;
     public double BottomMarginPercent { get; set; } = 10;
     public int MaxLines { get; set; } = 3;
+
+    // ────────── 字幕位置 微調整オフセット (v1.0.41 新規) ──────────
+    // 「表示設定 → 翻訳字幕位置調整」の編集モードでサンプル字幕をドラッグした結果を保存する。
+    // 基準位置 (BottomMarginPercent による下部中央) からの px オフセット。
+    //   SubtitleOffsetX: 正 = 右へ / 負 = 左へ
+    //   SubtitleOffsetY: 正 = 下へ / 負 = 上へ
+    // 0,0 で従来どおり「下部中央 (BottomMarginPercent 基準)」に表示される。
+    // 「位置をリセット」で 0,0 に戻す。
+    public double SubtitleOffsetX { get; set; }
+    public double SubtitleOffsetY { get; set; }
 }
 
 public class AudioCaptureSettings
