@@ -20,6 +20,9 @@ public partial class SettingsViewModel : ObservableObject
     private readonly ISettingsService _settingsService;
     private readonly OverlayViewModel _overlayViewModel;
     private CancellationTokenSource? _autoSaveCts;
+    // CodeRabbit 指摘 [3329106464] 対応: debounce 中 (= 未書き込みの変更が保留中) かを示すフラグ。
+    // アプリ終了時に FlushPendingSaveAsync で「保留中なら即保存」して、 終了直前のリサイズ等の取りこぼしを防ぐ。
+    private volatile bool _autoSavePending;
 
     public event EventHandler<SettingsSavedEventArgs>? SettingsSaved;
 
@@ -842,6 +845,7 @@ public partial class SettingsViewModel : ObservableObject
         _autoSaveCts?.Dispose();
         _autoSaveCts = new CancellationTokenSource();
         var token = _autoSaveCts.Token;
+        _autoSavePending = true; // 未書き込みの変更あり (終了時 flush 対象)
 
         _ = Task.Run(async () =>
         {
@@ -855,10 +859,23 @@ public partial class SettingsViewModel : ObservableObject
         }, token);
     }
 
+    /// <summary>
+    /// CodeRabbit 指摘 [3329106464] 対応: アプリ終了時に呼ぶ。 debounce 待ち中の保留保存があれば、
+    /// 500ms 待たずに即座に flush して settings.json に書き込む。 これで「リサイズ直後に終了」しても
+    /// 最後の値が永続化される。 保留が無ければ何もしない。 App.OnExit から await して呼ばれる想定。
+    /// </summary>
+    public async Task FlushPendingSaveAsync()
+    {
+        if (!_autoSavePending) return;
+        _autoSaveCts?.Cancel(); // 進行中の debounce 待ちを打ち切り、 二重保存を避ける
+        await SaveInternalAsync().ConfigureAwait(false);
+    }
+
     private async Task SaveInternalAsync()
     {
         try
         {
+            _autoSavePending = false; // 書き込みに入った時点で保留を解消 (flush と debounce の二重実行を吸収)
             await _settingsService.SaveAsync(_settings);
             // UIスレッドで通知（OverlayViewModel.ReloadSettings や MainViewModel.OnSettingsSaved が UI バインドプロパティを操作するため）
             Avalonia.Threading.Dispatcher.UIThread.Post(() =>

@@ -183,6 +183,16 @@ public partial class App : Application
             _updateCancellation?.Cancel();
             _updateCancellation?.Dispose();
 
+            // CodeRabbit 指摘 [3329106464] 対応: 終了直前のリサイズ等が autosave の debounce 待ち中だと
+            // 書き込まれないまま落ちるため、 保留中の設定保存をここで flush する (2 秒タイムアウト付き)。
+            try
+            {
+                var settingsVm = _serviceProvider?.GetService<SettingsViewModel>();
+                if (settingsVm != null)
+                    await settingsVm.FlushPendingSaveAsync().WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
+            }
+            catch (Exception ex) { LoggerService.LogWarning($"OnExit: 設定 flush 失敗: {ex.Message}"); }
+
             // 明示的に audio capture を停止する（NAudio の WASAPI スレッドを確実に解放）
             try
             {

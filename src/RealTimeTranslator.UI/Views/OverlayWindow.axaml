@@ -43,7 +43,7 @@
                 </MultiBinding>
             </ItemsControl.Margin>
             <ItemsControl.ItemTemplate>
-                <DataTemplate>
+                <DataTemplate x:DataType="vm:SubtitleDisplayItem">
                     <!-- Classes="Card" の Style.Animations で「フェードイン + 下からスライドアップ」の登場演出。
                          FillMode を Forward にしないことで、 演出後は Opacity が {Binding Opacity} (フェードアウト用) に戻る。
                          消えるときは item.Opacity を CleanupTimer が漸減 → DoubleTransition で滑らかに補間し高級感を出す。 -->
