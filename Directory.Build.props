@@ -10,7 +10,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-    <Version>1.0.42</Version>
+    <Version>1.0.43</Version>
     <!-- ReadyToRun: AOT 互換性に依存せず JIT コンパイル時間を削減（起動時間 30-50% 短縮見込み） -->
     <PublishReadyToRun>true</PublishReadyToRun>
     <!--
