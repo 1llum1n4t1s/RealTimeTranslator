@@ -130,29 +130,26 @@ public class AudioCaptureSettings
     public string VadPreset { get; set; } = "Balanced";
 
     /// <summary>
-    /// speech probability のしきい値 (0.0-1.0, default: 0.4)。
-    /// v1.0.30 で 0.5 → 0.3 にシフトしたら、 BGM/SE の継続送信で OpenAI server VAD が
-    /// 発話境界を引けなくなり「字幕が句点なしで繋がる」回帰が発生 (実機ログ 23:40 セッションで
-    /// 111 partial に対し完結文 emit=1 のみ、 D-7 fallback で 5 文連結を確認)。
-    /// v1.0.31 で **0.4** に戻り気味調整。 全プリセットも +0.1 連動シフト
-    /// (Balanced 0.4 / PrioritizeEdges 0.3 / AggressiveSavings 0.5)。
+    /// speech probability のしきい値 (0.0-1.0, default: 0.3)。
+    /// v1.0.30 で 0.5 → 0.3 にシフト → v1.0.31 で 0.4 に戻り気味調整 → v1.0.42 で再び **0.3** に。
+    /// 全プリセットも -0.1 連動シフト (Balanced 0.3 / PrioritizeEdges 0.2 / AggressiveSavings 0.4)。
     /// 遠距離小音量の声拾いは入力プリプロセス DSP (<see cref="AudioPreprocessingSettings"/>) に任せる方針。
     /// </summary>
-    public float VadThreshold { get; set; } = 0.4f;
+    public float VadThreshold { get; set; } = 0.3f;
 
     /// <summary>
     /// 発話冒頭の取りこぼし防止用にリングバッファに保持する直近音声の長さ (ms)。
-    /// Balanced プリセットの推奨値は **800ms** (v1.0.31 で 600 → 800 に拡張)。
-    /// 頭の子音 + 立ち上がりを確実に拾うため、 既定をやや厚めに取る方針。
+    /// Balanced プリセットの推奨値は **1000ms** (v1.0.31 で 600→800、 その後 800→1000 に拡張)。
+    /// 頭の子音 + 立ち上がりを確実に拾うため、 既定を厚めに取る方針。
     /// </summary>
-    public int VadPreRollMs { get; set; } = 800;
+    public int VadPreRollMs { get; set; } = 1000;
 
     /// <summary>
     /// 発話末尾の切れ防止用に speech 終了判定後も送信を継続する長さ (ms)。
-    /// Balanced プリセットの推奨値は **600ms** (v1.0.31 で 400 → 600 に拡張)。
-    /// 語尾の無声子音 / 息継ぎ込みの「、」を取りこぼさないため、 既定をやや厚めに取る方針。
+    /// Balanced プリセットの推奨値は **400ms** (v1.0.31 で 400→600、 その後 600→400 に短縮)。
+    /// 末尾の無音送信を削って token を節約する方向に薄めに取る方針 (頭の取りこぼし防止は PreRoll 側で担保)。
     /// </summary>
-    public int VadHangoverMs { get; set; } = 600;
+    public int VadHangoverMs { get; set; } = 400;
 
     // ────────── 自動 Pause 保険 ──────────
 
