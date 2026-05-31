@@ -530,7 +530,7 @@
           "Microsoft.Extensions.DependencyInjection": "[10.0.8, )",
           "Microsoft.Extensions.Options": "[10.0.8, )",
           "Microsoft.Extensions.Options.ConfigurationExtensions": "[10.0.8, )",
-          "RealTimeTranslator.Core": "[1.0.39, )",
+          "RealTimeTranslator.Core": "[1.0.41, )",
           "VelopackUpdateDialog.Avalonia": "[1.0.5, )"
         }
       }
