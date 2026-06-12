@@ -24,7 +24,7 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 # ---- 定数 (旧 CI 版 release.yml / velopack.yml と揃える) ----
-$VpkVersion = '1.1.1'               # NuGet パッケージ側の Velopack (transitive 解決 1.1.1) と同一バージョンに固定
+$VpkVersion = '0.0.1369-g1d5c984'   # 承認済み固定バージョン (Lhamiel と同一)。勝手なバージョン変更は禁止 (/vava Step 4-4)
 $WranglerVersion = '4.92.0'         # サプライチェーン対策でバージョン固定
 $Bucket = 'realtimetranslator-updates'
 $BaseUrl = 'https://rtt.nephilim.jp'
