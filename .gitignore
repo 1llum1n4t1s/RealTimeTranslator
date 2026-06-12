@@ -39,3 +39,6 @@ build_output.txt
 # Local dev tooling (Claude Code MCP / Serena)
 .mcp.json
 .serena/
+
+# Local release artifacts (scripts/release-local.ps1)
+local-release/
