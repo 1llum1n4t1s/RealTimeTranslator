@@ -185,6 +185,21 @@ public class SettingsService : ISettingsService
             SilencePaddingMs = source.OpenAIRealtime.SilencePaddingMs,
             MaxPartialChars = source.OpenAIRealtime.MaxPartialChars,
         },
+        // ⚠️ Provider / Gemini を必ずコピーする (上の C2-001 と同じ罠: 漏らすと autosave のたびに
+        // Provider が OpenAI に、 Gemini 設定が default に静かにリセットされる)。
+        Provider = source.Provider,
+        Gemini = new GeminiLiveSettings
+        {
+            ApiKey = DpapiHelper.Encrypt(source.Gemini.ApiKey),
+            OutputLanguage = source.Gemini.OutputLanguage,
+            Model = source.Gemini.Model,
+            Endpoint = source.Gemini.Endpoint,
+            EchoTargetLanguage = source.Gemini.EchoTargetLanguage,
+            ReconnectDelayMs = source.Gemini.ReconnectDelayMs,
+            MaxReconnectAttempts = source.Gemini.MaxReconnectAttempts,
+            SilencePaddingMs = source.Gemini.SilencePaddingMs,
+            MaxPartialChars = source.Gemini.MaxPartialChars,
+        },
         LastSelectedProcessName = source.LastSelectedProcessName,
         LastSelectedProcessId = source.LastSelectedProcessId,
         Update = source.Update,

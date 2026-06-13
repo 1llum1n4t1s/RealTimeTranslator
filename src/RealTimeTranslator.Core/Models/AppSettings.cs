@@ -7,6 +7,16 @@ public class AppSettings
     public OverlaySettings Overlay { get; set; } = new();
     public AudioCaptureSettings AudioCapture { get; set; } = new();
     public OpenAIRealtimeSettings OpenAIRealtime { get; set; } = new();
+
+    /// <summary>
+    /// 翻訳に使う Realtime プロバイダ。 OpenAI Realtime API か Google Gemini Live Translate を選ぶ。
+    /// 切替は再起動不要 (hot-swap): 次の翻訳開始 (StartAsync) 時に反映される。 既定は OpenAI。
+    /// </summary>
+    public TranscriptionProvider Provider { get; set; } = TranscriptionProvider.OpenAI;
+
+    /// <summary>Gemini Live Translate プロバイダの設定 (<see cref="Provider"/> が Gemini のとき使用)。</summary>
+    public GeminiLiveSettings Gemini { get; set; } = new();
+
     public string LastSelectedProcessName { get; set; } = string.Empty;
     public int LastSelectedProcessId { get; set; }
     public UpdateSettings Update { get; set; } = new();
@@ -265,6 +275,48 @@ public class OpenAIRealtimeSettings
     // v1.0.31 で 80 → **50** に短縮。 v1.0.30 の VAD threshold 0.3 で BGM 連続送信時に
     // 「複数文が句点なしで繋がる」現象 (実機 23:40 セッションで 5 文連結を確認) が顕在化した対策。
     // 50 文字なら字幕として 2 行に収まる読みやすい長さで、 連結バグの可視被害も最小化する。
+    public int MaxPartialChars { get; set; } = 50;
+}
+
+/// <summary>翻訳に使う Realtime プロバイダの種別。</summary>
+public enum TranscriptionProvider
+{
+    /// <summary>OpenAI Realtime Translate API (既定、 24kHz 送信、 per-token 課金)。</summary>
+    OpenAI = 0,
+    /// <summary>Google Gemini Live Translate API (gemini-3.5-live-translate-preview、 16kHz 送信、 per-minute 課金)。</summary>
+    Gemini = 1,
+}
+
+/// <summary>
+/// Google Gemini Live Translate API (gemini-3.5-live-translate-preview) の設定。
+/// WebSocket BidiGenerateContent エンドポイントに接続し、 speech-to-speech 翻訳モデルの
+/// outputAudioTranscription を字幕テキストとして使う (出力音声 modality は破棄)。
+///
+/// 入力音声は 16kHz/PCM16/mono 固定 (OpenAI の 24kHz と異なる)。 TranslationPipelineService が
+/// <see cref="OpenAIRealtimeSettings"/> と同じパイプライン挙動 (無音 padding / 文字数 fallback 分割) を
+/// 適用できるよう、 後半フィールドは OpenAI 側と同名で揃えてある。
+/// </summary>
+public class GeminiLiveSettings
+{
+    public string ApiKey { get; set; } = string.Empty;
+    public string OutputLanguage { get; set; } = "ja";
+    public string Model { get; set; } = "models/gemini-3.5-live-translate-preview";
+    public string Endpoint { get; set; } =
+        "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent";
+
+    /// <summary>
+    /// translationConfig.echoTargetLanguage。 入力が既にターゲット言語のとき、 そのまま echo するか。
+    /// 字幕用途では true (例: 日本語ゲームで日本語をそのまま字幕化したい) が自然。
+    /// </summary>
+    public bool EchoTargetLanguage { get; set; } = true;
+
+    public int ReconnectDelayMs { get; set; } = 3000;
+    public int MaxReconnectAttempts { get; set; } = 30;
+
+    /// <summary>VAD Silence 中の無音 PCM 継続送信の最大時間 (ms)。 OpenAI 側と同義 (保留 delta flush)。</summary>
+    public int SilencePaddingMs { get; set; } = 5000;
+
+    /// <summary>句点なし partial の最大累積文字数 (D-7 fallback)。 OpenAI 側と同義。</summary>
     public int MaxPartialChars { get; set; } = 50;
 }
 

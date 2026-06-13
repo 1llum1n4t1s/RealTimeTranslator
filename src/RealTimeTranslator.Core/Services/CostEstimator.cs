@@ -23,6 +23,12 @@ public static class CostEstimator
     private const decimal GptRealtimeFullRatePerMillion = 32m;   // gpt-realtime-2 / gpt-realtime-1.5 / gpt-realtime-translate
     private const decimal GptRealtimeMiniRatePerMillion = 10m;   // gpt-realtime-mini
 
+    // ───── Gemini Live Translate (per-minute 課金を token 換算した目安) ─────
+    // Gemini 3.5 Live Translate は per-minute $0.023/min 課金 (token ベースではない)。
+    // UI は token ベースで統一表示するため、 100 tokens/sec × 60 = 6000 tokens/min から
+    // $0.023 / 6000 tokens × 1M ≈ $3.83/1M に換算する (あくまで目安、 正確には分課金)。
+    private const decimal GeminiLiveTranslateRatePerMillion = 3.83m;
+
     // ───── 旧料金 (deprecated、 互換維持) ─────
     // 旧 settings.json が "gpt-4o-realtime-preview" を指している既存ユーザー向け。
     // OpenAI 側がモデルを完全廃止すれば実害なくなるが、 それまでは旧料金で見積もる方が当時の課金実感に近い。
@@ -66,9 +72,10 @@ public static class CostEstimator
     /// 優先順位 (上から評価、 マッチした時点で確定):
     ///  1. "gpt-4o-mini-realtime"  → 旧 mini      = $10  (legacy 互換)
     ///  2. "gpt-4o-realtime"       → 旧フル       = $100 (legacy 互換)
-    ///  3. "mini"                  → 現行 mini    = $10  (gpt-realtime-mini 等)
-    ///  4. "realtime" or "translate" → 現行フル   = $32  (gpt-realtime-2 / gpt-realtime-translate 等)
-    ///  5. 不明                    → 現行フル    = $32  (安全側 fallback)
+    ///  3. "gemini" / "live-translate" → Gemini  = $3.83 (per-minute $0.023/min を token 換算した目安)
+    ///  4. "mini"                  → 現行 mini    = $10  (gpt-realtime-mini 等)
+    ///  5. "realtime" or "translate" → 現行フル   = $32  (gpt-realtime-2 / gpt-realtime-translate 等)
+    ///  6. 不明                    → 現行フル    = $32  (安全側 fallback)
     ///
     /// gpt-4o 系のレガシー判定を先に置くのは、 旧モデルが OpenAI 側にまだ残っていた時代の課金実感と
     /// 整合させるため (旧 $100/h を想定していた人が UI で $32/h と表示されると「現実より安い」と
@@ -83,7 +90,11 @@ public static class CostEstimator
         if (lower.Contains("gpt-4o-mini-realtime")) return LegacyGpt4oMiniRealtimeRatePerMillion;
         // 2. 旧フル (gpt-4o-realtime-preview)
         if (lower.Contains("gpt-4o-realtime")) return LegacyGpt4oRealtimeRatePerMillion;
-        // 3. 現行 mini 系全般 (gpt-realtime-mini / gpt-realtime-mini-* 日付付きバリアント等)
+        // 3. Gemini Live Translate — ⚠️ "mini" 判定より前に置く ("gemini" は部分文字列 "mini" を
+        //    含むため、 順序を誤ると mini レートに誤判定される)。 "live-translate" も "translate" を
+        //    含むので同様に先回りで判定する。
+        if (lower.Contains("gemini") || lower.Contains("live-translate")) return GeminiLiveTranslateRatePerMillion;
+        // 4. 現行 mini 系全般 (gpt-realtime-mini / gpt-realtime-mini-* 日付付きバリアント等)
         if (lower.Contains("mini")) return GptRealtimeMiniRatePerMillion;
         // 4. 現行フル系全般 (gpt-realtime-2 / gpt-realtime-1.5 / gpt-realtime-translate / gpt-realtime 等)
         if (lower.Contains("realtime") || lower.Contains("translate")) return GptRealtimeFullRatePerMillion;

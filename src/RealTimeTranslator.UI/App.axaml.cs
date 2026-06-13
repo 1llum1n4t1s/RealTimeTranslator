@@ -275,7 +275,13 @@ public partial class App : Application
         // デバッグ録音: OpenAI 送信前 PCM16 を WAV に書き出す。 OpenAIRealtimeClient に ctor 注入される。
         // 設定で OFF のまま StartSession を呼ばなければ WritePcm16 は no-op で、 ディスク/CPU オーバーヘッドなし。
         services.AddSingleton<IDebugAudioRecorder, DebugAudioRecorder>();
-        services.AddSingleton<IRealtimeTranscriber, OpenAIRealtimeClient>();
+        // プロバイダ 2 実装を具象型で登録する。 TranslationPipelineService が両方を ctor 注入し、
+        // AppSettings.Provider に応じて hot-swap する (再起動不要、 次の Start で反映)。
+        // DebugAudioRecorder は両 client に ctor 注入される (録音は active 側でのみ発火)。
+        services.AddSingleton<OpenAIRealtimeClient>();
+        services.AddSingleton<GeminiLiveClient>();
+        // 既定の IRealtimeTranscriber (具象型を直接要求しない consumer 向けに OpenAI を返す)。
+        services.AddSingleton<IRealtimeTranscriber>(sp => sp.GetRequiredService<OpenAIRealtimeClient>());
         // Silero VAD (ONNX 推論セッション)。 onnx ファイルは Assets/silero_vad.onnx に同梱。
         // Singleton にすることで onnx ロード (~10ms) は起動時 1 回のみ。 LSTM state は
         // TranslationPipelineService が Start のたびに Reset を呼んでクリアする。

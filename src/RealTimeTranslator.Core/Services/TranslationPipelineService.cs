@@ -20,7 +20,15 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     private static readonly TimeSpan DeltaThrottle = TimeSpan.FromMilliseconds(20);
 
     private readonly IAudioCaptureService _audioCaptureService;
-    private readonly IRealtimeTranscriber _realtimeClient;
+    // プロバイダ 2 実装 + 現在 active な参照。 hot-swap: StartCoreAsync で Provider を見て
+    // _activeClient を選び直す (走行中は切り替わらない。 設定変更は次の Start で反映)。
+    // 送信レート分岐は _activeClient.InputSampleRate (OpenAI=24000 / Gemini=16000) で行う。
+    private readonly IRealtimeTranscriber _openAiClient;
+    private readonly IRealtimeTranscriber _geminiClient;
+    private IRealtimeTranscriber _activeClient;
+    // 購読/解除用の重複排除済み client 配列。 テストで openAi==gemini の同一モックを渡されたとき、
+    // 同じインスタンスへ 2 回 += すると delta/done が二重発火する (emit 件数が倍) ため参照で排除する。
+    private readonly IRealtimeTranscriber[] _distinctClients;
     private OpenAIRealtimeSettings _cachedRealtimeSettings;
     private Channel<float[]>? _audioInputChannel;
     private Task? _audioProcessingTask;
@@ -200,16 +208,50 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     // 走行中のデバッグ録音 ON/OFF 切替を即反映するための設定変更購読。 Dispose で解除する。
     private IDisposable? _settingsChangeSubscription;
 
+    // 本番 DI 用: OpenAI/Gemini の具象 client を 2 つ注入する。
     public TranslationPipelineService(
         IAudioCaptureService audioCaptureService,
-        IRealtimeTranscriber realtimeClient,
+        OpenAIRealtimeClient openAiClient,
+        GeminiLiveClient geminiClient,
         IOptionsMonitor<AppSettings> settingsMonitor,
         ISettingsService settingsService,
         IVoiceActivityDetector vad,
         IDebugAudioRecorder? debugAudioRecorder = null)
+        : this(audioCaptureService, openAiClient, geminiClient, settingsMonitor, settingsService, vad, debugAudioRecorder, sentinel: default)
+    {
+    }
+
+    // テスト用: 単一の IRealtimeTranscriber モックを openAi/gemini 兼用で受ける
+    // (テストは Provider=OpenAI 既定で active=openAi のため Gemini 固有経路は通らない)。
+    internal TranslationPipelineService(
+        IAudioCaptureService audioCaptureService,
+        IRealtimeTranscriber transcriber,
+        IOptionsMonitor<AppSettings> settingsMonitor,
+        ISettingsService settingsService,
+        IVoiceActivityDetector vad,
+        IDebugAudioRecorder? debugAudioRecorder = null)
+        : this(audioCaptureService, transcriber, transcriber, settingsMonitor, settingsService, vad, debugAudioRecorder, sentinel: default)
+    {
+    }
+
+    // 共通本体 (bool sentinel で上 2 つの ctor とシグネチャを区別する)。
+    private TranslationPipelineService(
+        IAudioCaptureService audioCaptureService,
+        IRealtimeTranscriber openAiClient,
+        IRealtimeTranscriber geminiClient,
+        IOptionsMonitor<AppSettings> settingsMonitor,
+        ISettingsService settingsService,
+        IVoiceActivityDetector vad,
+        IDebugAudioRecorder? debugAudioRecorder,
+        bool sentinel)
     {
         _audioCaptureService = audioCaptureService;
-        _realtimeClient = realtimeClient;
+        _openAiClient = openAiClient;
+        _geminiClient = geminiClient;
+        _activeClient = openAiClient; // 既定 (Start 時に Provider で再選択)
+        _distinctClients = ReferenceEquals(openAiClient, geminiClient)
+            ? new[] { openAiClient }
+            : new[] { openAiClient, geminiClient };
         _settingsMonitor = settingsMonitor;
         _settingsService = settingsService;
         _vad = vad;
@@ -217,10 +259,15 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         _cachedRealtimeSettings = settingsMonitor.CurrentValue.OpenAIRealtime;
         _throttleTimer = new Timer(OnThrottleTimerElapsed, null, Timeout.Infinite, Timeout.Infinite);
 
-        _realtimeClient.TranscriptDeltaReceived += OnTranscriptDelta;
-        _realtimeClient.TranscriptCompleted += OnTranscriptCompleted;
-        _realtimeClient.ErrorReceived += OnClientError;
-        _realtimeClient.StateChanged += OnConnectionStateChanged;
+        // 両 client のイベントを購読する。 非 active client は Connect しないのでイベントを発火しない
+        // (provider 切替は Start を跨ぐため active/非active のイベント混線は起きない)。
+        foreach (var client in _distinctClients)
+        {
+            client.TranscriptDeltaReceived += OnTranscriptDelta;
+            client.TranscriptCompleted += OnTranscriptCompleted;
+            client.ErrorReceived += OnClientError;
+            client.StateChanged += OnConnectionStateChanged;
+        }
 
         // 翻訳開始後にデバッグ録音 (WAV 保存) を ON/OFF しても即反映されるよう設定変更を購読する。
         // 走行中なら SyncDebugRecording が録音セッションを開始/停止する (非走行中は no-op)。
@@ -246,25 +293,32 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
 
     private async Task StartCoreAsync(CancellationToken token)
     {
-        // settings.json で変更したばかりの内容 (OutputLanguage 等) が反映されるよう、
-        // 起動直前に IOptionsMonitor から最新値を取り直す。
-        // 旧実装は _cachedRealtimeSettings (構築時 or ApplySettingsAsync の値) を
-        // 使っていたが、 UI で言語切替後にすぐ「開始」を押すと古い設定で接続して
-        // しまうケースがあった。DPAPI で暗号化されている API キーも復号して使う。
-        var freshSettings = _settingsMonitor.CurrentValue.OpenAIRealtime;
+        // settings.json で変更したばかりの内容 (Provider / OutputLanguage 等) が反映されるよう、
+        // 起動直前に IOptionsMonitor から最新値を取り直す。 DPAPI 暗号化された API キーも復号して使う。
         _settingsService.DecryptApiKey(_settingsMonitor.CurrentValue);
-        _cachedRealtimeSettings = freshSettings;
-        Logger.Info($"StartAsync: OutputLanguage='{freshSettings.OutputLanguage}' Model='{freshSettings.Model}'");
+        var appSettings = _settingsMonitor.CurrentValue;
+        var provider = appSettings.Provider;
 
-        var settings = _cachedRealtimeSettings;
-        if (string.IsNullOrWhiteSpace(settings.ApiKey))
+        // hot-swap: Provider に応じて active client を選ぶ。 走行中は切り替わらない
+        // (設定変更は次の Start で反映)。 送信レート分岐は _activeClient.InputSampleRate で行う。
+        _activeClient = provider == TranscriptionProvider.Gemini ? _geminiClient : _openAiClient;
+
+        var freshSettings = appSettings.OpenAIRealtime;
+        _cachedRealtimeSettings = freshSettings;
+
+        // API キー検証 (provider 別)。
+        var apiKey = provider == TranscriptionProvider.Gemini ? appSettings.Gemini.ApiKey : freshSettings.ApiKey;
+        if (string.IsNullOrWhiteSpace(apiKey))
         {
-            var ex = new InvalidOperationException("OpenAI APIキーが設定されていません。設定画面でキーを入力してください。");
+            var providerName = provider == TranscriptionProvider.Gemini ? "Gemini" : "OpenAI";
+            var ex = new InvalidOperationException($"{providerName} APIキーが設定されていません。設定画面でキーを入力してください。");
             ErrorOccurred?.Invoke(this, ex);
             throw ex;
         }
 
-        Logger.Info("翻訳パイプライン開始（OpenAI Realtime API）");
+        var langLog = provider == TranscriptionProvider.Gemini ? appSettings.Gemini.OutputLanguage : freshSettings.OutputLanguage;
+        var modelLog = provider == TranscriptionProvider.Gemini ? appSettings.Gemini.Model : freshSettings.Model;
+        Logger.Info($"翻訳パイプライン開始 (Provider={provider}, OutputLanguage='{langLog}', Model='{modelLog}')");
 
         // 前セッションの累積 transcript / SegmentId をリセットしないと、 再 Start 時に
         // 「前回 done で確定したテキストを prefix として保持」した状態から始まり、
@@ -279,8 +333,15 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
             _hasPendingDelta = false;
         }
 
+        // 接続 (provider 別)。 Gemini は具象 GeminiLiveClient の固有メソッドで GeminiLiveSettings を
+        // 直接渡す (OpenAIRealtimeSettings 経由のマッピングだと Endpoint/Model/EchoTargetLanguage が
+        // 落ちるため)。 テスト時 _geminiClient はモック (GeminiLiveClient ではない) なので else に落ち、
+        // active モックへ OpenAIRealtimeSettings で接続する (テストは Provider=OpenAI 既定)。
         // rere B1-011: Core layer 統一で ConfigureAwait(false) 付与。
-        await _realtimeClient.ConnectAsync(settings, token).ConfigureAwait(false);
+        if (provider == TranscriptionProvider.Gemini && _geminiClient is GeminiLiveClient geminiLive)
+            await geminiLive.ConnectAsync(appSettings.Gemini, token).ConfigureAwait(false);
+        else
+            await _activeClient.ConnectAsync(freshSettings, token).ConfigureAwait(false);
 
         // WASAPI コールバックスレッドで重い変換を行うと audio glitch の原因になるため、
         // Channel に raw float[] を投入だけして変換は専用タスクで行う。
@@ -316,6 +377,9 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         _frameAccumulatorLen = 0;
         _frameAccumulator24k = null;
         _frameAccumulator24kLen = 0;
+        // provider 切替で送信フレーム長 (16k=1024B / 24k=1536B) が変わるため、 無音 padding バッファの
+        // キャッシュを破棄して次フレームで正しいサイズに作り直させる (Plan 検証リスク 1)。
+        _silencePaddingPcm16 = null;
         _skippedSecondsByVad = 0;
         _sessionStartUtc = DateTime.UtcNow;
         _lastSpeechUtc = DateTime.UtcNow;
@@ -439,7 +503,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         // WebSocket 切断も外部待機を入れて UI スレッドに戻る前に確実に完了させる
         try
         {
-            await _realtimeClient.DisconnectAsync()
+            await _activeClient.DisconnectAsync()
                   .WaitAsync(TimeSpan.FromSeconds(3))
                   .ConfigureAwait(false);
         }
@@ -456,10 +520,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         // DroppedAudioChunkCount はキャプチャ → API 送信の Channel<byte[]>(100) で
         // BoundedChannelFullMode.DropOldest によって捨てられた音声チャンク累計。
         // 「字幕が抜ける」報告時に「ローカル NW 詰まりか OpenAI 側遅延か」を切り分ける。
-        if (_realtimeClient is OpenAIRealtimeClient openAiClient)
-        {
-            Logger.Info($"セッション統計: DroppedAudioChunks={openAiClient.DroppedAudioChunkCount} 完結文emit={Interlocked.Read(ref _completedEmitCount)} partial emit={Interlocked.Read(ref _partialEmitCount)}");
-        }
+        Logger.Info($"セッション統計: DroppedAudioChunks={_activeClient.DroppedAudioChunkCount} 完結文emit={Interlocked.Read(ref _completedEmitCount)} partial emit={Interlocked.Read(ref _partialEmitCount)}");
 
         // デバッグ録音セッションを必ず閉じる: ここでは _isRunning は既に false なので SyncDebugRecording が
         // StopSession (WAV ヘッダのサイズ確定書き換え) + WriteFailed 購読解除を行う (idempotent、 未開始なら no-op)。
@@ -502,7 +563,11 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                     // VAD 判定がやや不安定だが、 PreRoll (default 800ms) で吸収される。
                     if (audioCaptureSettings.EnableVad != _lastEnableVad)
                     {
-                        _vadResampler.Reset();
+                        // OpenAI は VAD 無効パスで _vadResampler を回さない (送信は _sendResampler) ため、
+                        // 有効へ戻したとき filter state が古い → Reset する。 Gemini は VAD 有効/無効
+                        // どちらも _vadResampler を送信に使うので Reset 不要 (連続性を保つ)。
+                        if (_activeClient.InputSampleRate != 16000)
+                            _vadResampler.Reset();
                         _lastEnableVad = audioCaptureSettings.EnableVad;
                     }
 
@@ -520,17 +585,16 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
 
                     if (!audioCaptureSettings.EnableVad)
                     {
-                        // VAD 無効: 48k → 24k 直リサンプル → 素通し送信 (v1.0.36 並列 2 系統復活)。
-                        // v1.0.27〜v1.0.35 は 48k→16k→24k の二段経路で VAD パスと共有していたが、
-                        // 中継 16k で Nyquist 8kHz の高域カットが入り transcribe 精度に影響していたため
-                        // 48k→24k 直 (Nyquist 12kHz) に戻した。
-                        // _vadResampler は VAD 有効への切替検知 (上の `EnableVad != _lastEnableVad`) で
-                        // Reset するため、 ここで呼ぶ必要はない (B1-001 / D-I3 対応で「戻り値捨て」を削除)。
-                        var resampled24k = _sendResampler.Resample(audioData);
-                        if (resampled24k.Length > 0)
+                        // VAD 無効 素通し送信。 provider 別の送信レート:
+                        //   OpenAI: 48k → 24k 直 (_sendResampler、 Nyquist 12kHz)
+                        //   Gemini: 48k → 16k (_vadResampler、 Gemini 入力 16kHz 固定)
+                        var resampledSend = _activeClient.InputSampleRate == 16000
+                            ? _vadResampler.Resample(audioData)
+                            : _sendResampler.Resample(audioData);
+                        if (resampledSend.Length > 0)
                         {
-                            var pcm16 = AudioFormatConverter.Float32ToPcm16(resampled24k);
-                            _realtimeClient.SendAudio(pcm16);
+                            var pcm16 = AudioFormatConverter.Float32ToPcm16(resampledSend);
+                            _activeClient.SendAudio(pcm16);
                         }
                     }
                     else
@@ -1180,10 +1244,13 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         }
 
         _throttleTimer.Dispose();
-        _realtimeClient.TranscriptDeltaReceived -= OnTranscriptDelta;
-        _realtimeClient.TranscriptCompleted -= OnTranscriptCompleted;
-        _realtimeClient.ErrorReceived -= OnClientError;
-        _realtimeClient.StateChanged -= OnConnectionStateChanged;
+        foreach (var client in _distinctClients)
+        {
+            client.TranscriptDeltaReceived -= OnTranscriptDelta;
+            client.TranscriptCompleted -= OnTranscriptCompleted;
+            client.ErrorReceived -= OnClientError;
+            client.StateChanged -= OnConnectionStateChanged;
+        }
         _audioCaptureService.AudioDataAvailable -= OnAudioDataAvailable;
         _settingsChangeSubscription?.Dispose();
         _startStopLock.Dispose();
@@ -1202,10 +1269,13 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         catch { /* DisposeAsync を推奨 */ }
 
         _throttleTimer.Dispose();
-        _realtimeClient.TranscriptDeltaReceived -= OnTranscriptDelta;
-        _realtimeClient.TranscriptCompleted -= OnTranscriptCompleted;
-        _realtimeClient.ErrorReceived -= OnClientError;
-        _realtimeClient.StateChanged -= OnConnectionStateChanged;
+        foreach (var client in _distinctClients)
+        {
+            client.TranscriptDeltaReceived -= OnTranscriptDelta;
+            client.TranscriptCompleted -= OnTranscriptCompleted;
+            client.ErrorReceived -= OnClientError;
+            client.StateChanged -= OnConnectionStateChanged;
+        }
         _audioCaptureService.AudioDataAvailable -= OnAudioDataAvailable;
         _settingsChangeSubscription?.Dispose();
         _startStopLock.Dispose();
@@ -1427,19 +1497,46 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     /// </summary>
     internal void ProcessAudioWithVadGate(float[] audio48kHz, AudioCaptureSettings settings)
     {
-        // v1.0.36 並列 2 系統リサンプル:
-        //   48k 入力を VAD 判定用 (16k) と OpenAI 送信用 (24k) に同時分岐 (直系統)。
-        //   - 48k → 16k (_vadResampler) → VAD 判定
-        //   - 48k → 24k (_sendResampler) → OpenAI 送信 (16k 中継を挟まない = Nyquist 12kHz の帯域確保)
-        // 両リサンプラは LatencyMargin を時間ベース (4ms) に揃えてあるので出力は時間同期し、
-        // 16k 512sample (32ms) と 24k 768sample (32ms) を「同じ時間区間の VAD フレームペア」として取り出せる。
+        // 送信レート分岐 (provider 依存):
+        //   OpenAI (InputSampleRate=24000): VAD 判定 16k + 送信 24k の並列 2 系統 (v1.0.36 設計)。
+        //   Gemini (InputSampleRate=16000): Gemini 入力は 16kHz 固定なので VAD 判定フレーム = 送信フレーム。
+        //     24k 系統 (_sendResampler) は回さず、 16k フレーム 1 本を判定にも送信にも使う。
+        bool sendAt16k = _activeClient.InputSampleRate == 16000;
         var resampled16k = _vadResampler.Resample(audio48kHz);
-        var resampled24k = _sendResampler.Resample(audio48kHz);
 
         int frameSize16k = _vad.RequiredFrameSize; // Silero VAD v5 仕様: 512 sample @ 16kHz (32ms)
-        const int frameSize24k = 768;              // 同じ 32ms を 24kHz サンプルで表すと 768
-
         _frameAccumulator ??= new float[frameSize16k];
+
+        if (sendAt16k)
+        {
+            // Gemini: 16k フレームが揃うたびに (VAD 判定フレーム = 送信フレーム = 同一参照) で処理。
+            // ProcessVadFrame は送信フレームを PreRoll に Array.Copy で積むので参照共有でも安全。
+            int offG = 0;
+            while (true)
+            {
+                int copy = Math.Min(frameSize16k - _frameAccumulatorLen, resampled16k.Length - offG);
+                if (copy > 0)
+                {
+                    Array.Copy(resampled16k, offG, _frameAccumulator, _frameAccumulatorLen, copy);
+                    _frameAccumulatorLen += copy;
+                    offG += copy;
+                }
+                if (_frameAccumulatorLen == frameSize16k)
+                {
+                    ProcessVadFrame(_frameAccumulator, _frameAccumulator, settings);
+                    _frameAccumulatorLen = 0;
+                    continue;
+                }
+                if (copy == 0) break;
+            }
+            return;
+        }
+
+        // OpenAI: 48k → 24k 直リサンプル (16k 中継を挟まない = Nyquist 12kHz 確保)。
+        // 両リサンプラは LatencyMargin を時間ベース (4ms) に揃えてあるので出力は時間同期し、
+        // 16k 512sample (32ms) と 24k 768sample (32ms) を「同じ時間区間のフレームペア」として取り出せる。
+        var resampled24k = _sendResampler.Resample(audio48kHz);
+        const int frameSize24k = 768; // 同じ 32ms を 24kHz サンプルで表すと 768
         _frameAccumulator24k ??= new float[frameSize24k];
 
         int off16 = 0, off24 = 0;
@@ -1479,7 +1576,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     /// 1 フレーム (512 サンプル / 32ms) を VAD で判定し、 Silence/InSpeech/Hangover 状態機を回す。
     /// テスト目的で internal (InternalsVisibleTo=RealTimeTranslator.Tests)。
     /// </summary>
-    internal void ProcessVadFrame(float[] frame16kHz, float[] frame24kHz, AudioCaptureSettings settings)
+    internal void ProcessVadFrame(float[] frame16kHz, float[] frameForSend, AudioCaptureSettings settings)
     {
         float prob;
         try
@@ -1490,7 +1587,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         {
             // VAD 推論失敗時は安全側 (= 送信) に倒し、 誤って発話を捨てない。
             Logger.Warn($"VAD 推論失敗 (発話と見なして素通し): {ex.Message}");
-            SendFrameToClient(frame24kHz);
+            SendFrameToClient(frameForSend);
             _lastSpeechUtc = DateTime.UtcNow;
             return;
         }
@@ -1515,7 +1612,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                         var preRollFrame = _preRollBuffer.Dequeue();
                         SendFrameToClient(preRollFrame);
                     }
-                    SendFrameToClient(frame24kHz);
+                    SendFrameToClient(frameForSend);
                     _vadState = VadState.InSpeech;
                     _lastSpeechUtc = DateTime.UtcNow;
                     // v1.0.27: Silence → InSpeech 遷移 = 発話再開。 Silence カウントをリセット。
@@ -1542,8 +1639,8 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                         {
                             // 無音 PCM を送信 (ゼロ埋め PCM16、 24kHz/768 sample = 1536 bytes)。
                             // バイト配列を 1 度だけ確保して使い回す (中身ゼロのまま不変)。
-                            _silencePaddingPcm16 ??= new byte[frame24kHz.Length * 2];
-                            _realtimeClient.SendAudio(_silencePaddingPcm16);
+                            _silencePaddingPcm16 ??= new byte[frameForSend.Length * 2];
+                            _activeClient.SendAudio(_silencePaddingPcm16);
                             // 旧 _skippedSecondsByVad は加算しない (実際には送信してるため UI 表示も「送信中」のまま)
                             break;
                         }
@@ -1555,14 +1652,14 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                         _preRollBuffer.Dequeue();
                         _skippedSecondsByVad += frameSeconds;
                     }
-                    var copy = new float[frame24kHz.Length];
-                    Array.Copy(frame24kHz, copy, frame24kHz.Length);
+                    var copy = new float[frameForSend.Length];
+                    Array.Copy(frameForSend, copy, frameForSend.Length);
                     _preRollBuffer.Enqueue(copy);
                 }
                 break;
 
             case VadState.InSpeech:
-                SendFrameToClient(frame24kHz);
+                SendFrameToClient(frameForSend);
                 if (isSpeech)
                 {
                     _lastSpeechUtc = DateTime.UtcNow;
@@ -1575,7 +1672,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                 break;
 
             case VadState.Hangover:
-                SendFrameToClient(frame24kHz);
+                SendFrameToClient(frameForSend);
                 if (isSpeech)
                 {
                     _vadState = VadState.InSpeech;
@@ -1600,13 +1697,13 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         }
     }
 
-    /// <summary>VAD ゲート通過分のフレームを 24kHz PCM16 に変換して OpenAI へ送信。</summary>
-    private void SendFrameToClient(float[] frame24kHz)
+    /// <summary>VAD ゲート通過分のフレームを PCM16 に変換して active client へ送信。</summary>
+    private void SendFrameToClient(float[] frameForSend)
     {
-        // 24kHz フレームを直接 PCM16 化して送信 (リサンプル不要)。
-        // _sendResampler は 48k→24k 直 (v1.0.36) で出力済みなので、 ここでは float→PCM16 変換だけ行う。
-        var pcm16 = AudioFormatConverter.Float32ToPcm16(frame24kHz);
-        _realtimeClient.SendAudio(pcm16);
+        // フレームは既に provider の送信レート (OpenAI=24k / Gemini=16k) でリサンプル済みなので、
+        // ここでは float→PCM16 変換だけ行う。
+        var pcm16 = AudioFormatConverter.Float32ToPcm16(frameForSend);
+        _activeClient.SendAudio(pcm16);
     }
 
     /// <summary>
@@ -1683,7 +1780,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                 tickCount++;
                 if (tickCount % 60 == 0)
                 {
-                    Logger.Info($"並列リサンプラ同期状態: 16k acc={_frameAccumulatorLen}/{_vad.RequiredFrameSize}, 24k acc={_frameAccumulator24kLen}/768 (両方とも << フレームサイズなら正常)");
+                    Logger.Info($"リサンプラ同期状態: VADacc={_frameAccumulatorLen}/{_vad.RequiredFrameSize}, 送信24kacc={_frameAccumulator24kLen} (Provider={_settingsMonitor.CurrentValue.Provider}; 値が << フレームサイズなら正常。 Gemini は 24kacc 未使用)");
                 }
             }
             catch (OperationCanceledException)
@@ -1726,16 +1823,19 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     /// </summary>
     private long ComputeCurrentTokens()
     {
-        var serverTokens = _realtimeClient.ServerReportedAudioInputTokens;
+        var serverTokens = _activeClient.ServerReportedAudioInputTokens;
         if (serverTokens > 0) return serverTokens;
         return CostEstimator.EstimateTokensFromSamples(
-            _realtimeClient.TotalAudioInputSamples24kHz, 24000);
+            _activeClient.TotalAudioInputSamples24kHz, 24000);
     }
 
     /// <summary>現時点の推定コスト (USD)。 モデル名は OpenAIRealtime.Model から解決。</summary>
     private decimal ComputeCurrentCostUsd()
     {
-        var model = _settingsMonitor.CurrentValue.OpenAIRealtime.Model;
+        var settings = _settingsMonitor.CurrentValue;
+        var model = settings.Provider == TranscriptionProvider.Gemini
+            ? settings.Gemini.Model
+            : settings.OpenAIRealtime.Model;
         return CostEstimator.EstimateUsd(model, ComputeCurrentTokens());
     }
 }

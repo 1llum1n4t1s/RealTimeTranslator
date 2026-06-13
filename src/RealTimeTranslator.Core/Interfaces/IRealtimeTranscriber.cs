@@ -17,6 +17,19 @@ public interface IRealtimeTranscriber : IAsyncDisposable, IDisposable
     ConnectionState State { get; }
 
     /// <summary>
+    /// このプロバイダがサーバーへ送信する PCM16 音声のサンプルレート (Hz)。
+    /// OpenAI=24000 / Gemini=16000。 TranslationPipelineService が送信フレームのレートを
+    /// この値で切り替える (48k→24k or 48k→16k のどちらのリサンプル出力を送るか)。
+    /// </summary>
+    int InputSampleRate { get; }
+
+    /// <summary>
+    /// 送信前にチャネルから DropOldest で破棄された音声チャンクの累計数。
+    /// 字幕が抜けた原因が NW 詰まりか API 遅延か判別する診断メトリクス。
+    /// </summary>
+    long DroppedAudioChunkCount { get; }
+
+    /// <summary>
     /// 接続中セッションで <see cref="SendAudio"/> 経由で実際にサーバーへ送られた
     /// PCM16 サンプル数 (24kHz 換算) の累積。 統計表示・cost 概算・自動 Pause 判定に使う。
     /// セッションをまたぐと <see cref="ConnectAsync"/> 内でリセットされる。
