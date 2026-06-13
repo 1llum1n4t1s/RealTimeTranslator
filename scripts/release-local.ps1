@@ -247,25 +247,25 @@ if (-not $toDelete) {
 }
 
 # ---- 5. packages.lock.json のクリーンアップ (リリース後の working tree clean 化) ----
-# RID 付き publish (dotnet publish -r <rid> --self-contained) は packages.lock.json を汚染する:
-# RID 固有セクション (net10.0/win-x64 等) や self-contained 用の依存が書き足される。
-# この汚染 lock は CI の RestoreLockedMode (Directory.Build.props) で NU1004 になり、
-# lockfile の supply-chain diff 検知も publish churn で無意味化する。
-# --force-evaluate で RID なし clean 状態に戻し、毎回 working tree が clean な状態でリリースを終える
-# (/vava のリリース後 lock drift 手動 commit/revert が不要になる)。
+# RID 付き publish (dotnet publish -r win-x64 --self-contained) 後、 Core/Tests の packages.lock.json から
+# net10.0-windows/win-x64 セクションが剥がれて working tree が dirty になることがある (IDE/裏 restore でも同様)。
+# ci.yml は `dotnet restore -r win-x64` + RestoreLockedMode (Directory.Build.props) で復元するため、 lockfile は
+# win-x64 セクションを保持している必要がある (剥がれた版を commit すると NU1004 で CI が落ちる)。
+# ここで `-r win-x64 --force-evaluate` で win-x64 込みに再生成して HEAD と一致させ、 working tree を clean な
+# 状態でリリースを終える (/vava のリリース後 lock drift 手動 commit/revert が不要になる)。
 # 成果物は既にアップロード済みなので、ここでの失敗はリリースには影響しない → warning に留めて継続する。
 Write-Host '== packages.lock.json クリーンアップ ==' -ForegroundColor Cyan
 try {
-    Invoke-Native 'dotnet restore --force-evaluate' {
-        dotnet restore RealTimeTranslator.slnx --force-evaluate
+    Invoke-Native 'dotnet restore -r win-x64 --force-evaluate' {
+        dotnet restore RealTimeTranslator.slnx -r win-x64 --force-evaluate
     }
-    # clean lock の検証: locked-mode 復元が NU1004 ゼロで通れば RID なし clean 状態
-    Invoke-Native 'dotnet restore --locked-mode (clean lock 検証)' {
-        dotnet restore RealTimeTranslator.slnx --locked-mode
+    # CI と同条件 (-r win-x64 + locked-mode) で検証: NU1004 ゼロなら CI の restore も通る
+    Invoke-Native 'dotnet restore -r win-x64 --locked-mode (CI 同条件検証)' {
+        dotnet restore RealTimeTranslator.slnx -r win-x64 --locked-mode
     }
-    Write-Host '  ✅ packages.lock.json は RID なし clean 状態 (locked-mode 検証 OK)'
+    Write-Host '  ✅ packages.lock.json は win-x64 込み clean 状態 (CI 同条件 locked-mode 検証 OK)'
 } catch {
-    Write-Warning "  packages.lock.json のクリーンアップに失敗しました (アップロード済みリリースには影響なし)。手動で 'dotnet restore RealTimeTranslator.slnx --force-evaluate' を実行してください — $($_.Exception.Message)"
+    Write-Warning "  packages.lock.json のクリーンアップに失敗しました (アップロード済みリリースには影響なし)。手動で 'dotnet restore RealTimeTranslator.slnx -r win-x64 --force-evaluate' を実行してください — $($_.Exception.Message)"
 }
 
 Write-Host "`n🎉 リリース完了: v$version → $BaseUrl" -ForegroundColor Green
