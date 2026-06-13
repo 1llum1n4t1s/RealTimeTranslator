@@ -336,6 +336,62 @@ public sealed class GeminiLiveClientAdversarialTests
 
     [TestMethod]
     [TestCategory("Adversarial")]
+    [Timeout(10000)]
+    public async Task ConnectAsync_ShouldResetSessionCounters_OnNewStart()
+    {
+        await using var client = new GeminiLiveClient();
+        // 前回セッションの累積を模して仕込む。
+        var samplesField = typeof(GeminiLiveClient).GetField(
+            "_totalAudioInputSamples16kHz", BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.IsNotNull(samplesField);
+        samplesField.SetValue(client, 1000L);
+        Assert.AreEqual(1500L, client.TotalAudioInputSamples24kHz, "前提: 16k 1000 → 24k 換算 1500");
+
+        // 不正ホストで接続自体は失敗するが、 ConnectAsync はカウンタリセットを ConnectWebSocketAsync 前に行う。
+        try { await client.ConnectAsync(new GeminiLiveSettings { ApiKey = "k", Endpoint = "wss://evil.example.com/ws" }); }
+        catch { /* 失敗は想定通り */ }
+
+        Assert.AreEqual(0L, client.TotalAudioInputSamples24kHz, "新しい Start で累積サンプルがリセットされる (Codex P2)");
+        Assert.AreEqual(0L, client.DroppedAudioChunkCount, "ドロップ数もリセットされる");
+    }
+
+    [TestMethod]
+    [TestCategory("Adversarial")]
+    public void ClassifyGeminiError_MapsGrpcStatusToKind()
+    {
+        // gRPC status を優先して fatal 種別へ。
+        Assert.AreEqual(OpenAIApiErrorKind.InvalidApiKey, GeminiLiveClient.ClassifyGeminiError("auth", "401", "UNAUTHENTICATED"));
+        Assert.AreEqual(OpenAIApiErrorKind.Forbidden, GeminiLiveClient.ClassifyGeminiError("denied", "403", "PERMISSION_DENIED"));
+        Assert.AreEqual(OpenAIApiErrorKind.QuotaExceeded, GeminiLiveClient.ClassifyGeminiError("quota", "429", "RESOURCE_EXHAUSTED"));
+        Assert.AreEqual(OpenAIApiErrorKind.BadRequest, GeminiLiveClient.ClassifyGeminiError("bad", "400", "INVALID_ARGUMENT"));
+        // 一過性は非 fatal の RateLimit に。
+        Assert.AreEqual(OpenAIApiErrorKind.RateLimit, GeminiLiveClient.ClassifyGeminiError("temp", "503", "UNAVAILABLE"));
+        // status 無しは従来の message/code 分類へフォールバック。
+        Assert.AreEqual(OpenAIApiErrorKind.QuotaExceeded, GeminiLiveClient.ClassifyGeminiError("exceeded your current quota", "", null));
+        // PERMISSION_DENIED は fatal (再接続を止める根拠)。
+        Assert.IsTrue(new OpenAIApiException(
+            GeminiLiveClient.ClassifyGeminiError("x", "403", "PERMISSION_DENIED"), "f", "o").IsFatal);
+    }
+
+    [TestMethod]
+    [TestCategory("Adversarial")]
+    public void ProcessMessage_FatalStatusError_StopsReconnect()
+    {
+        using var client = new GeminiLiveClient();
+        var srField = typeof(GeminiLiveClient).GetField(
+            "_shouldReconnect", BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.IsNotNull(srField);
+        srField.SetValue(client, true); // 接続中を模す
+
+        // gRPC status PERMISSION_DENIED は numeric code だけでは Unknown=非 fatal に倒れていた。
+        InvokeProcessMessage(client, "{\"error\":{\"code\":403,\"status\":\"PERMISSION_DENIED\",\"message\":\"no access\"}}");
+
+        Assert.IsFalse((bool)srField.GetValue(client)!, "fatal status で _shouldReconnect を落とす (Codex P2)");
+        Assert.AreEqual(ConnectionState.Failed, client.State, "fatal は Failed に倒す");
+    }
+
+    [TestMethod]
+    [TestCategory("Adversarial")]
     public void GeminiFriendlyMessageFor_ShouldReferenceGoogleNotOpenAI()
     {
         foreach (var kind in new[]

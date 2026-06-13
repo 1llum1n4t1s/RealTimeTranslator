@@ -157,6 +157,15 @@ public sealed class GeminiLiveClient : Interfaces.IRealtimeTranscriber
                 MaxPartialChars = settings.MaxPartialChars,
             };
             _shouldReconnect = true;
+
+            // 新しい Start ごとにセッション統計をリセットする。 GeminiLiveClient は singleton 共有なので、
+            // リセットしないと前回 Gemini セッションの累積サンプル/ドロップ数が次セッションのトークン/コスト
+            // 表示に混ざる (Codex P2)。 reconnect は ConnectWebSocketAsync 直呼びで本メソッドを通らないため
+            // 累積を維持する。
+            Interlocked.Exchange(ref _totalAudioInputSamples16kHz, 0);
+            Interlocked.Exchange(ref _totalDroppedAudioChunks, 0);
+            Interlocked.Exchange(ref _totalDeltaCount, 0);
+
             _cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             _sendChannel = Channel.CreateBounded<byte[]>(new BoundedChannelOptions(SendChannelCapacity)
             {
@@ -164,7 +173,19 @@ public sealed class GeminiLiveClient : Interfaces.IRealtimeTranscriber
                 SingleReader = true
             });
 
-            await ConnectWebSocketAsync(_cts.Token).ConfigureAwait(false);
+            try
+            {
+                await ConnectWebSocketAsync(_cts.Token).ConfigureAwait(false);
+            }
+            catch
+            {
+                // 初回接続 (Start) が失敗したら背後に再接続/ループ/socket を残さない (Codex P2)。
+                // どの内側 catch から伝播しても一律に再接続を止めて後始末する。 reconnect 経路は
+                // TryReconnectAsync が別管理するため、 ここは初回 Start 専用の後始末。
+                _shouldReconnect = false;
+                await CleanupAsync().ConfigureAwait(false);
+                throw;
+            }
         }
         finally
         {
@@ -427,6 +448,12 @@ public sealed class GeminiLiveClient : Interfaces.IRealtimeTranscriber
             // setupComplete を待ってから Connected にする (Codex 指摘 P2: setup ack 前の audio 送信を防ぐ)。
             await WaitForSetupCompleteAsync(setupTcs.Task, ct).ConfigureAwait(false);
 
+            // setup 待ちの間にサーバーが error フレーム無しで socket を閉じた場合 (proxy/network close、
+            // サーバー都合の無言切断)、 受信ループは Connecting のまま抜けて Reconnecting に上がらない。
+            // 死んだ socket を Connected にして StartCoreAsync が audio を流さないよう健全性を再確認する (Codex P2)。
+            if (_ws is not { State: WebSocketState.Open })
+                throw new InvalidOperationException("Gemini setup 中にサーバーが接続を閉じました (setupComplete 未受信)。");
+
             SetState(ConnectionState.Connected);
         }
         catch (WebSocketException ex) when (ex.InnerException is HttpRequestException httpEx)
@@ -453,6 +480,11 @@ public sealed class GeminiLiveClient : Interfaces.IRealtimeTranscriber
             if (kind != OpenAIApiErrorKind.Unknown)
             {
                 var apiEx = new OpenAIApiException(kind, friendlyMsg, ex.Message);
+                // 401/403 等の fatal は再接続しても回復しない。 ここで _shouldReconnect を落とさないと、 この
+                // catch から throw した例外は後段の catch(OpenAIApiException) に流れず後始末されないため、
+                // network 復帰イベントで Reconnecting に戻り同じ無効キーで再試行してしまう (Codex P2)。
+                if (apiEx.IsFatal)
+                    _shouldReconnect = false;
                 ErrorReceived?.Invoke(apiEx);
                 SetState(apiEx.IsFatal ? ConnectionState.Failed : ConnectionState.Disconnected);
                 throw apiEx;
@@ -464,12 +496,9 @@ public sealed class GeminiLiveClient : Interfaces.IRealtimeTranscriber
         catch (OpenAIApiException)
         {
             // setup ハンドシェイクが Gemini error で終了 (model 不正 / 権限 / 不正 targetLanguage 等)。
-            // ProcessMessage が ErrorReceived (+ fatal 時 Failed) 済みなので二重通知しない。 再接続を止め
-            // (非 fatal error は _shouldReconnect が残るため、 同じ不正 setup を背後で無限リトライしてしまう
-            // — Codex P2)、 起動済みの受信/送信ループと socket を CleanupAsync で畳んでから伝播する。
-            // CleanupAsync が Disconnected に倒す。 Connected には上げず StartCoreAsync に接続失敗を伝える。
-            _shouldReconnect = false;
-            await CleanupAsync().ConfigureAwait(false);
+            // ProcessMessage が ErrorReceived (+ fatal 時 _shouldReconnect=false/Failed) 済みなので二重通知
+            // せずそのまま伝播する。 起動済みループ/socket の後始末は呼び出し元 (ConnectAsync の初回 Start 用
+            // catch、 または TryReconnectAsync の reconnect 管理) が担当する (Codex P2)。
             throw;
         }
         catch (Exception ex)
@@ -547,6 +576,29 @@ public sealed class GeminiLiveClient : Interfaces.IRealtimeTranscriber
             ? "Gemini API から不明なエラーが返されました。"
             : $"Gemini API エラー: {originalMessage}",
     };
+
+    // Gemini error を種別へ分類する。 数値 code だけでなく gRPC status (google.rpc.Code 由来) を優先して見る:
+    // PERMISSION_DENIED / UNAUTHENTICATED / RESOURCE_EXHAUSTED 等は fatal 相当なので、 これを拾わないと
+    // 非 fatal 扱いで再接続を続けてしまう (Codex P2)。 status 不明時は従来の OpenAI 分類 (message+code) へ委譲。
+    internal static OpenAIApiErrorKind ClassifyGeminiError(string? message, string? code, string? status)
+    {
+        var s = status?.Trim() ?? string.Empty;
+        if (s.Equals("UNAUTHENTICATED", StringComparison.OrdinalIgnoreCase))
+            return OpenAIApiErrorKind.InvalidApiKey;
+        if (s.Equals("PERMISSION_DENIED", StringComparison.OrdinalIgnoreCase))
+            return OpenAIApiErrorKind.Forbidden;
+        if (s.Equals("RESOURCE_EXHAUSTED", StringComparison.OrdinalIgnoreCase))
+            return OpenAIApiErrorKind.QuotaExceeded;
+        if (s.Equals("INVALID_ARGUMENT", StringComparison.OrdinalIgnoreCase)
+            || s.Equals("FAILED_PRECONDITION", StringComparison.OrdinalIgnoreCase)
+            || s.Equals("NOT_FOUND", StringComparison.OrdinalIgnoreCase))
+            return OpenAIApiErrorKind.BadRequest;
+        if (s.Equals("UNAVAILABLE", StringComparison.OrdinalIgnoreCase)
+            || s.Equals("DEADLINE_EXCEEDED", StringComparison.OrdinalIgnoreCase))
+            return OpenAIApiErrorKind.RateLimit;
+        // status 無し / 未知は従来の message+code 部分一致分類へ。 status があれば code に連結して手掛かりを増やす。
+        return OpenAIApiException.Classify(message, string.IsNullOrEmpty(s) ? code : $"{code} {s}");
+    }
 
     // setup メッセージを組み立てる。
     // ⚠️ プレビュー API のため translationConfig の階層 (generationConfig 内) は実機要検証。
@@ -747,10 +799,14 @@ public sealed class GeminiLiveClient : Interfaces.IRealtimeTranscriber
             {
                 var originalMessage = err.TryGetProperty("message", out var m) ? m.GetString() ?? "Unknown error" : "Unknown error";
                 var code = err.TryGetProperty("code", out var c) ? c.ToString() : "";
-                var kind = OpenAIApiException.Classify(originalMessage, code);
+                // Gemini error は数値 code に加え gRPC status (PERMISSION_DENIED 等) を持つ。 status を種別判定に
+                // 含めないと Unknown=非 fatal に倒れ、 _shouldReconnect が残って課金事故 banner を出さずに
+                // retry し続ける (Codex P2)。
+                var status = err.TryGetProperty("status", out var st) ? st.GetString() : null;
+                var kind = ClassifyGeminiError(originalMessage, code, status);
                 var friendly = GeminiFriendlyMessageFor(kind, originalMessage);
                 var ex = new OpenAIApiException(kind, friendly, originalMessage);
-                Logger.Error($"Gemini API エラー (kind={kind} code='{code}'): {LogFormatting.TruncateForLog(originalMessage)}");
+                Logger.Error($"Gemini API エラー (kind={kind} code='{code}' status='{status}'): {LogFormatting.TruncateForLog(originalMessage)}");
                 if (ex.IsFatal)
                 {
                     _shouldReconnect = false;
