@@ -167,8 +167,8 @@ public partial class SettingsViewModel : ObservableObject
 
         ProviderOptions = new ReadOnlyCollection<ProviderOption>(new ProviderOption[]
         {
-            new(TranscriptionProvider.OpenAI, "OpenAI Realtime"),
-            new(TranscriptionProvider.Gemini, "Gemini Live Translate"),
+            new(TranscriptionProvider.OpenAI, "OpenAI リアルタイム翻訳"),
+            new(TranscriptionProvider.Gemini, "Gemini ライブ翻訳"),
         });
 
         // 旧 settings.json から新フォント一覧 / 色一覧に存在しない値を持ち越したケース、

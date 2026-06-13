@@ -382,12 +382,14 @@ public sealed class GeminiLiveClient : Interfaces.IRealtimeTranscriber
         _ws.Options.KeepAliveInterval = TimeSpan.FromSeconds(15);
         _ws.Options.KeepAliveTimeout = TimeSpan.FromSeconds(30);
 
-        // Gemini は API キーを URL query ?key= で渡す (Authorization ヘッダではない)。
-        var uri = new Uri($"{_settings.Endpoint}?key={Uri.EscapeDataString(_settings.ApiKey)}");
-        ValidateEndpoint(uri);
-
         try
         {
+            // Gemini は API キーを URL query ?key= で渡す (Authorization ヘッダではない)。
+            // ⚠️ uri 生成 + ValidateEndpoint を try 内に入れる: 不正 endpoint で例外時も最後の
+            //    catch (Exception) が State=Disconnected + ErrorReceived に倒す (try 外だと State が
+            //    Connecting に取り残され ErrorReceived も漏れる — CodeRabbit 指摘)。
+            var uri = new Uri($"{_settings.Endpoint}?key={Uri.EscapeDataString(_settings.ApiKey)}");
+            ValidateEndpoint(uri);
             await _ws.ConnectAsync(uri, ct).ConfigureAwait(false);
             Interlocked.Exchange(ref _reconnectAttempts, 0);
             SetState(ConnectionState.Connected);

@@ -29,7 +29,12 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     // 購読/解除用の重複排除済み client 配列。 テストで openAi==gemini の同一モックを渡されたとき、
     // 同じインスタンスへ 2 回 += すると delta/done が二重発火する (emit 件数が倍) ため参照で排除する。
     private readonly IRealtimeTranscriber[] _distinctClients;
-    private OpenAIRealtimeSettings _cachedRealtimeSettings;
+    // active セッションの provider 別設定スナップショット (Start 時に固定)。 走行中の設定変更や
+    // provider 切替に引きずられないよう、 OpenAI/Gemini の同名設定 (D-7 分割閾値 / 無音 padding /
+    // cost 計算用モデル名) をここに確定させる。 active セッションは _activeClient と常に整合する。
+    private int _activeMaxPartialChars;
+    private int _activeSilencePaddingMs;
+    private string _activeModelForCost = "gpt-realtime-translate";
     private Channel<float[]>? _audioInputChannel;
     private Task? _audioProcessingTask;
     private CancellationTokenSource? _audioProcessingCts;
@@ -256,7 +261,10 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         _settingsService = settingsService;
         _vad = vad;
         _debugAudioRecorder = debugAudioRecorder;
-        _cachedRealtimeSettings = settingsMonitor.CurrentValue.OpenAIRealtime;
+        var initialOpenAi = settingsMonitor.CurrentValue.OpenAIRealtime;
+        _activeMaxPartialChars = initialOpenAi.MaxPartialChars;
+        _activeSilencePaddingMs = initialOpenAi.SilencePaddingMs;
+        _activeModelForCost = initialOpenAi.Model;
         _throttleTimer = new Timer(OnThrottleTimerElapsed, null, Timeout.Infinite, Timeout.Infinite);
 
         // 両 client のイベントを購読する。 非 active client は Connect しないのでイベントを発火しない
@@ -304,7 +312,12 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         _activeClient = provider == TranscriptionProvider.Gemini ? _geminiClient : _openAiClient;
 
         var freshSettings = appSettings.OpenAIRealtime;
-        _cachedRealtimeSettings = freshSettings;
+        // active provider の設定 (D-7 分割閾値 / 無音 padding / cost モデル) を Start 時にスナップショット。
+        // 走行中の設定変更や provider 切替で現セッションが引きずられないようにする (CodeRabbit 指摘)。
+        var activeIsGemini = provider == TranscriptionProvider.Gemini;
+        _activeMaxPartialChars = activeIsGemini ? appSettings.Gemini.MaxPartialChars : freshSettings.MaxPartialChars;
+        _activeSilencePaddingMs = activeIsGemini ? appSettings.Gemini.SilencePaddingMs : freshSettings.SilencePaddingMs;
+        _activeModelForCost = activeIsGemini ? appSettings.Gemini.Model : freshSettings.Model;
 
         // API キー検証 (provider 別)。
         var apiKey = provider == TranscriptionProvider.Gemini ? appSettings.Gemini.ApiKey : freshSettings.ApiKey;
@@ -737,7 +750,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
             // 1 回切るだけだと残り 99,920 文字が partial として残り「育ちすぎる」問題が残存する。
             // ループで _accumulatedText.Length が maxChars 未満になるまで切り続ける。
             // 各 iteration は O(1) のスキャン + O(分割サイズ) の Remove なので、 全体は O(N)。
-            int maxChars = _cachedRealtimeSettings.MaxPartialChars;
+            int maxChars = _activeMaxPartialChars;
             while (maxChars > 0 && _accumulatedText.Length >= maxChars)
             {
                 int splitIdx = FindForcedSplitIndex(_accumulatedText, maxChars);
@@ -1631,7 +1644,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                     //
                     // 送信時間上限: SilencePaddingMs (default 5000ms)。 超えたら送信停止して token 節約。
                     // Silero VAD が次の発話を検知した瞬間に Silence → InSpeech 再遷移して通常送信に戻る。
-                    var paddingMs = _settingsMonitor.CurrentValue.OpenAIRealtime.SilencePaddingMs;
+                    var paddingMs = _activeSilencePaddingMs;
                     if (paddingMs > 0 && _silenceStartUtc != DateTime.MinValue)
                     {
                         var silenceMs = (DateTime.UtcNow - _silenceStartUtc).TotalMilliseconds;
@@ -1829,13 +1842,11 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
             _activeClient.TotalAudioInputSamples24kHz, 24000);
     }
 
-    /// <summary>現時点の推定コスト (USD)。 モデル名は OpenAIRealtime.Model から解決。</summary>
+    /// <summary>現時点の推定コスト (USD)。 モデル名は Start 時にスナップショットした active provider の値。</summary>
     private decimal ComputeCurrentCostUsd()
     {
-        var settings = _settingsMonitor.CurrentValue;
-        var model = settings.Provider == TranscriptionProvider.Gemini
-            ? settings.Gemini.Model
-            : settings.OpenAIRealtime.Model;
-        return CostEstimator.EstimateUsd(model, ComputeCurrentTokens());
+        // active セッションの model スナップショット (_activeModelForCost) を使う。 走行中の
+        // provider/model 変更に引きずられず、 実際に動いている _activeClient と整合する (CodeRabbit 指摘)。
+        return CostEstimator.EstimateUsd(_activeModelForCost, ComputeCurrentTokens());
     }
 }
