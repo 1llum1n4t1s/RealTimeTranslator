@@ -141,7 +141,21 @@ public sealed class GeminiLiveClient : Interfaces.IRealtimeTranscriber
                 await CleanupAsync().ConfigureAwait(false);
             }
 
-            _settings = settings;
+            // セッション開始時のスナップショットを保持する。 SettingsViewModel が in-place 編集する
+            // AppSettings.Gemini をそのまま握ると、 走行中にキー/言語/モデルを変えた後の再接続で現セッションが
+            // 変更後の値を使ってしまう (hot-swap 契約は「次の Start で反映」)。 コピーで断つ (Codex P2)。
+            _settings = new GeminiLiveSettings
+            {
+                ApiKey = settings.ApiKey,
+                OutputLanguage = settings.OutputLanguage,
+                Model = settings.Model,
+                Endpoint = settings.Endpoint,
+                EchoTargetLanguage = settings.EchoTargetLanguage,
+                ReconnectDelayMs = settings.ReconnectDelayMs,
+                MaxReconnectAttempts = settings.MaxReconnectAttempts,
+                SilencePaddingMs = settings.SilencePaddingMs,
+                MaxPartialChars = settings.MaxPartialChars,
+            };
             _shouldReconnect = true;
             _cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             _sendChannel = Channel.CreateBounded<byte[]>(new BoundedChannelOptions(SendChannelCapacity)
@@ -450,10 +464,12 @@ public sealed class GeminiLiveClient : Interfaces.IRealtimeTranscriber
         catch (OpenAIApiException)
         {
             // setup ハンドシェイクが Gemini error で終了 (model 不正 / 権限 / 不正 targetLanguage 等)。
-            // ProcessMessage が ErrorReceived (+ fatal 時 Failed) 済みなので二重通知せず、 Failed でなければ
-            // Disconnected に倒してから伝播する。 Connected にせず StartCoreAsync に接続失敗を伝える (Codex P2)。
-            if (_state != ConnectionState.Failed)
-                SetState(ConnectionState.Disconnected);
+            // ProcessMessage が ErrorReceived (+ fatal 時 Failed) 済みなので二重通知しない。 再接続を止め
+            // (非 fatal error は _shouldReconnect が残るため、 同じ不正 setup を背後で無限リトライしてしまう
+            // — Codex P2)、 起動済みの受信/送信ループと socket を CleanupAsync で畳んでから伝播する。
+            // CleanupAsync が Disconnected に倒す。 Connected には上げず StartCoreAsync に接続失敗を伝える。
+            _shouldReconnect = false;
+            await CleanupAsync().ConfigureAwait(false);
             throw;
         }
         catch (Exception ex)
@@ -511,6 +527,26 @@ public sealed class GeminiLiveClient : Interfaces.IRealtimeTranscriber
         var resolved = ResolveLang(lang);
         return GeminiLanguageCodeMap.TryGetValue(resolved, out var mapped) ? mapped : resolved;
     }
+
+    // Gemini error 用の日本語補助メッセージ。 OpenAIApiException.FriendlyMessageFor は OpenAI の
+    // billing / api-keys URL を案内するため、 Gemini ユーザーを誤誘導する (Codex P2)。 分類 (Kind) は
+    // HTTP 的に汎用なので共有しつつ、 案内文・URL を Google AI Studio / Cloud 向けに差し替える。
+    internal static string GeminiFriendlyMessageFor(OpenAIApiErrorKind kind, string originalMessage) => kind switch
+    {
+        OpenAIApiErrorKind.QuotaExceeded =>
+            "Gemini API のクォータ / 課金上限を超過しました。 Google Cloud / AI Studio で課金設定・残量を確認してください (https://console.cloud.google.com/billing)。",
+        OpenAIApiErrorKind.InvalidApiKey =>
+            "Gemini API キーが無効です。 設定画面で正しいキーを入力するか、 Google AI Studio で再発行してください (https://aistudio.google.com/app/apikey)。",
+        OpenAIApiErrorKind.RateLimit =>
+            "Gemini API のレート制限に達しました。 しばらく待ってから再試行してください。",
+        OpenAIApiErrorKind.Forbidden =>
+            "Gemini API へのアクセス権限がありません。 モデル (gemini-3.5-live-translate-preview) の利用可否や API の有効化状況を確認してください。",
+        OpenAIApiErrorKind.BadRequest =>
+            "Gemini API リクエストが不正でした。 設定値 (Model / Endpoint / OutputLanguage) を確認してください。",
+        _ => string.IsNullOrWhiteSpace(originalMessage)
+            ? "Gemini API から不明なエラーが返されました。"
+            : $"Gemini API エラー: {originalMessage}",
+    };
 
     // setup メッセージを組み立てる。
     // ⚠️ プレビュー API のため translationConfig の階層 (generationConfig 内) は実機要検証。
@@ -712,7 +748,7 @@ public sealed class GeminiLiveClient : Interfaces.IRealtimeTranscriber
                 var originalMessage = err.TryGetProperty("message", out var m) ? m.GetString() ?? "Unknown error" : "Unknown error";
                 var code = err.TryGetProperty("code", out var c) ? c.ToString() : "";
                 var kind = OpenAIApiException.Classify(originalMessage, code);
-                var friendly = OpenAIApiException.FriendlyMessageFor(kind, originalMessage);
+                var friendly = GeminiFriendlyMessageFor(kind, originalMessage);
                 var ex = new OpenAIApiException(kind, friendly, originalMessage);
                 Logger.Error($"Gemini API エラー (kind={kind} code='{code}'): {LogFormatting.TruncateForLog(originalMessage)}");
                 if (ex.IsFatal)

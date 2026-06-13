@@ -307,6 +307,55 @@ public sealed class GeminiLiveClientAdversarialTests
 
     [TestMethod]
     [TestCategory("Adversarial")]
+    [Timeout(10000)]
+    public async Task ConnectAsync_ShouldSnapshotSettings_NotHoldLiveReference()
+    {
+        await using var client = new GeminiLiveClient();
+        var original = new GeminiLiveSettings
+        {
+            ApiKey = "k1",
+            OutputLanguage = "en",
+            Model = "m1",
+            Endpoint = "wss://evil.example.com/ws", // 不正ホストで接続は失敗するが、 _settings は接続前に確定する
+        };
+        try { await client.ConnectAsync(original); }
+        catch { /* 失敗は想定通り */ }
+
+        // 走行中に元オブジェクトを書き換える (SettingsViewModel の in-place 編集を模す)。
+        original.ApiKey = "k2";
+        original.OutputLanguage = "fr";
+
+        var field = typeof(GeminiLiveClient).GetField(
+            "_settings", BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.IsNotNull(field, "_settings フィールドが見つからない");
+        var held = (GeminiLiveSettings)field.GetValue(client)!;
+        Assert.AreEqual("k1", held.ApiKey, "接続時スナップショットなので元オブジェクトの変更に追従しない (Codex P2)");
+        Assert.AreEqual("en", held.OutputLanguage);
+        Assert.AreNotSame(original, held, "live 参照ではなくコピーを保持する");
+    }
+
+    [TestMethod]
+    [TestCategory("Adversarial")]
+    public void GeminiFriendlyMessageFor_ShouldReferenceGoogleNotOpenAI()
+    {
+        foreach (var kind in new[]
+        {
+            OpenAIApiErrorKind.InvalidApiKey, OpenAIApiErrorKind.QuotaExceeded,
+            OpenAIApiErrorKind.Forbidden, OpenAIApiErrorKind.BadRequest, OpenAIApiErrorKind.RateLimit,
+        })
+        {
+            var msg = GeminiLiveClient.GeminiFriendlyMessageFor(kind, "x");
+            Assert.IsFalse(msg.Contains("OpenAI"), $"{kind}: OpenAI を案内してはいけない → {msg}");
+            Assert.IsFalse(msg.Contains("openai.com"), $"{kind}: OpenAI URL を案内してはいけない → {msg}");
+        }
+        // キー無効は Gemini / Google AI Studio へ誘導する。
+        var keyMsg = GeminiLiveClient.GeminiFriendlyMessageFor(OpenAIApiErrorKind.InvalidApiKey, "x");
+        Assert.IsTrue(keyMsg.Contains("Gemini"), "キー無効案内は Gemini に言及する");
+        Assert.IsTrue(keyMsg.Contains("aistudio.google.com"), "キー無効案内は Google AI Studio URL を含む");
+    }
+
+    [TestMethod]
+    [TestCategory("Adversarial")]
     public void MapToGeminiLanguageCode_AmbiguousCodes_MapToBcp47Variants()
     {
         // zh / pt は generic すぎて Gemini が variant を要求するため明示マップ (Codex 指摘 P2)。
