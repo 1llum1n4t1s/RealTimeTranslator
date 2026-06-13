@@ -40,7 +40,7 @@
          v1.0.33〜v1.0.36 で踏んだ「直接参照を独自バージョンに上げてライブラリの期待値とズレた」
          dispatch 不整合 (MissingMethodException) を構造的に予防する。
          将来 Velopack を上げたい場合は VelopackUpdateDialog.Avalonia 側を新 version で再ビルド → publish。 -->
-    <PackageReference Include="VelopackUpdateDialog.Avalonia" Version="1.0.7" />
+    <PackageReference Include="VelopackUpdateDialog.Avalonia" Version="1.0.8" />
   </ItemGroup>
 
   <ItemGroup>
