@@ -101,7 +101,10 @@ public sealed class GeminiLiveClientAdversarialTests
         try { await client.ConnectAsync(settings); }
         catch { /* 失敗は想定通り */ }
 
-        Assert.AreNotEqual(ConnectionState.Connected, client.State, "許可リスト外ホストで Connected にはならない");
+        // ValidateEndpoint が try 内で投げ、 catch(Exception) が Disconnected + ErrorReceived に倒すことまで固定
+        // (Connecting に取り残される回帰を検知 — CodeRabbit nitpick)。
+        Assert.AreEqual(ConnectionState.Disconnected, client.State, "許可リスト外ホストでは Disconnected に倒れる");
+        Assert.IsNotNull(receivedError, "失敗時は ErrorReceived が発火する");
     }
 
     [TestMethod]

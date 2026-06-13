@@ -354,6 +354,23 @@ public partial class SettingsViewModel : ObservableObject
             changed = true;
         }
 
+        // Provider が未定義 enum 値 (settings.json 改竄等) なら OpenAI に矯正 (CodeRabbit 指摘: 起動時 invariant)。
+        if (!Enum.IsDefined(_settings.Provider))
+        {
+            LoggerService.LogInfo($"SettingsViewModel.Sanitize: Provider='{_settings.Provider}' が未定義 → OpenAI に矯正");
+            _settings.Provider = TranscriptionProvider.OpenAI;
+            changed = true;
+        }
+
+        // Gemini の出力言語も OpenAI 同様に一覧外なら 'ja' に矯正 (Provider=Gemini で不正コードを送らないため)。
+        if (string.IsNullOrWhiteSpace(_settings.Gemini.OutputLanguage) ||
+            !OutputLanguageOptions.Any(o => o.Code == _settings.Gemini.OutputLanguage))
+        {
+            LoggerService.LogInfo($"SettingsViewModel.Sanitize: Gemini.OutputLanguage='{_settings.Gemini.OutputLanguage}' が一覧外 → 'ja' に矯正");
+            _settings.Gemini.OutputLanguage = "ja";
+            changed = true;
+        }
+
         // /rere F-003 対応: SilencePaddingMs の旧 default (v1.0.33-35: 8000ms) を新 default (v1.0.36: 5000ms) に
         // 1 度限り migration する。 8000ms ぴったりは旧 default の名残と判定し、 他の値 (7000 / 10000 等) は
         // ユーザーが明示的に設定した可能性があるためそのまま維持する。
