@@ -274,6 +274,25 @@ public sealed class GeminiLiveClientAdversarialTests
         Assert.IsTrue(after - before < 32 * 1024 * 1024, $"50 サイクル後のメモリ成長が異常: {(after - before) / 1024.0:F0}KB");
     }
 
+    // ═══════════════════════════════════════════════════════════════
+    // 🌐 言語コードマッピング (provider 非依存 UI コード → Gemini BCP-47)
+    // ═══════════════════════════════════════════════════════════════
+
+    [TestMethod]
+    [TestCategory("Adversarial")]
+    public void MapToGeminiLanguageCode_AmbiguousCodes_MapToBcp47Variants()
+    {
+        // zh / pt は generic すぎて Gemini が variant を要求するため明示マップ (Codex 指摘 P2)。
+        Assert.AreEqual("zh-Hans", GeminiLiveClient.MapToGeminiLanguageCode("zh"));
+        Assert.AreEqual("pt-BR", GeminiLiveClient.MapToGeminiLanguageCode("pt"));
+        // 明確なコードはそのまま通す。
+        Assert.AreEqual("en", GeminiLiveClient.MapToGeminiLanguageCode("en"));
+        Assert.AreEqual("ko", GeminiLiveClient.MapToGeminiLanguageCode("ko"));
+        // 空/null は ja 既定。
+        Assert.AreEqual("ja", GeminiLiveClient.MapToGeminiLanguageCode(""));
+        Assert.AreEqual("ja", GeminiLiveClient.MapToGeminiLanguageCode(null));
+    }
+
     private static void InvokeProcessMessage(GeminiLiveClient client, string json)
     {
         var method = typeof(GeminiLiveClient).GetMethod(

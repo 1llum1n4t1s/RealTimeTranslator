@@ -441,6 +441,10 @@ public partial class SettingsViewModel : ObservableObject
             if (value != null && _settings.Provider != value.Value)
             {
                 _settings.Provider = value.Value;
+                // 出力言語は provider 共通概念。 切替時に表示中の言語 (ComboBox = OpenAIRealtime.OutputLanguage) を
+                // Gemini にも同期する。 既存ユーザーが OpenAI=英語のまま Gemini に切替→言語を触らず Start しても、
+                // Gemini が既定 ja ではなく表示どおりの言語で開始する (Codex 指摘 P2)。
+                _settings.Gemini.OutputLanguage = _settings.OpenAIRealtime.OutputLanguage;
                 OnPropertyChanged();
                 OnPropertyChanged(nameof(IsGeminiSelected));
                 OnPropertyChanged(nameof(IsOpenAISelected));

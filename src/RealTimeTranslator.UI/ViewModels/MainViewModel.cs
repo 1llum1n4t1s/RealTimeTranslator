@@ -219,6 +219,16 @@ public partial class MainViewModel : ObservableObject, IDisposable
     /// </summary>
     public bool CanStart => SelectedProcess != null && !IsRunning && !IsLoading && IsApiKeyConfigured;
 
+    /// <summary>
+    /// 選択中プロバイダの API キーが設定済みかを判定する。 Provider=Gemini なら Gemini.ApiKey、
+    /// それ以外は OpenAIRealtime.ApiKey を見る。 これで Gemini 選択時に Gemini キーだけで Start が有効になり、
+    /// 逆に OpenAI キーがあっても Gemini 未設定なら Start が無効化される (Codex 指摘 P1: Start ゲートの provider 連動)。
+    /// </summary>
+    private static bool ComputeApiKeyConfigured(AppSettings settings) =>
+        settings.Provider == TranscriptionProvider.Gemini
+            ? !string.IsNullOrWhiteSpace(settings.Gemini.ApiKey)
+            : !string.IsNullOrWhiteSpace(settings.OpenAIRealtime.ApiKey);
+
     public SettingsViewModel SettingsVM => _settingsViewModel;
 
     /// <summary>翻訳ログタブの ViewModel を MainWindow.axaml から binding 経由でアクセスする用。</summary>
@@ -248,7 +258,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
         _settings = optionsMonitor.CurrentValue;
         _lastApiKey = _settings.OpenAIRealtime.ApiKey;
         _lastOutputLanguage = _settings.OpenAIRealtime.OutputLanguage;
-        IsApiKeyConfigured = !string.IsNullOrWhiteSpace(_settings.OpenAIRealtime.ApiKey);
+        IsApiKeyConfigured = ComputeApiKeyConfigured(_settings);
 
         // 設定変更のイベントを購読。settings.json は DPAPI 暗号化済み API キーで保存されているため、
         // hot-reload された AppSettings も in-place で復号してから消費する。
@@ -265,7 +275,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
             // API キーの設定状態を UI スレッドで反映（CanStart 再評価が走る）
             Dispatcher.UIThread.Post(() =>
             {
-                IsApiKeyConfigured = !string.IsNullOrWhiteSpace(newSettings.OpenAIRealtime.ApiKey);
+                IsApiKeyConfigured = ComputeApiKeyConfigured(newSettings);
             });
         });
 

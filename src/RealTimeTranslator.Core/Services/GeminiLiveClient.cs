@@ -64,6 +64,11 @@ public sealed class GeminiLiveClient : Interfaces.IRealtimeTranscriber
     private readonly SemaphoreSlim _connectLock = new(1, 1);
     private readonly SemaphoreSlim _wsSendLock = new(1, 1);
 
+    // setupComplete ハンドシェイク待ち: 接続ごとに作り直し、 ProcessMessage が setupComplete 受信で完了させる。
+    // これが完了するまで State=Connected にしない → SendAudio が audio を流さない (Gemini は setupComplete 前の
+    // realtimeInput を無視/拒否するため、 発話直後に Start しても頭が欠けない — Codex 指摘 P2)。
+    private volatile TaskCompletionSource? _setupCompleteTcs;
+
     private readonly HashSet<string> _seenEventTypes = new(StringComparer.Ordinal);
     private readonly object _seenEventTypesLock = new();
     private const int MaxSeenEventTypes = 256;
@@ -392,13 +397,23 @@ public sealed class GeminiLiveClient : Interfaces.IRealtimeTranscriber
             ValidateEndpoint(uri);
             await _ws.ConnectAsync(uri, ct).ConfigureAwait(false);
             Interlocked.Exchange(ref _reconnectAttempts, 0);
-            SetState(ConnectionState.Connected);
             Logger.Info("Gemini Live WebSocket 接続成功");
+
+            // setupComplete ハンドシェイク待ちを接続ごとに用意 (Connected 確定前に作る)。
+            var setupTcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            _setupCompleteTcs = setupTcs;
+
+            // 受信ループを先に起動 (setupComplete を拾うため)。 送信ループも起動するが、 SendAudio が
+            // State!=Connected で弾くのでハンドシェイク完了まで audio は流れない。
+            _receiveTask = Task.Run(() => ReceiveLoopAsync(_cts!.Token), _cts!.Token);
+            _sendTask = Task.Run(() => SendLoopAsync(_cts!.Token), _cts!.Token);
 
             await SendSetupAsync(ct).ConfigureAwait(false);
 
-            _receiveTask = Task.Run(() => ReceiveLoopAsync(_cts!.Token), _cts!.Token);
-            _sendTask = Task.Run(() => SendLoopAsync(_cts!.Token), _cts!.Token);
+            // setupComplete を待ってから Connected にする (Codex 指摘 P2: setup ack 前の audio 送信を防ぐ)。
+            await WaitForSetupCompleteAsync(setupTcs.Task, ct).ConfigureAwait(false);
+
+            SetState(ConnectionState.Connected);
         }
         catch (WebSocketException ex) when (ex.InnerException is HttpRequestException httpEx)
         {
@@ -444,12 +459,49 @@ public sealed class GeminiLiveClient : Interfaces.IRealtimeTranscriber
     private async Task SendSetupAsync(CancellationToken ct)
     {
         var bytes = BuildSetupMessage(_settings);
-        Logger.Info($"Gemini Live setup 送信: model='{_settings.Model}' targetLang='{ResolveLang(_settings.OutputLanguage)}' echo={_settings.EchoTargetLanguage}");
+        Logger.Info($"Gemini Live setup 送信: model='{_settings.Model}' targetLang='{MapToGeminiLanguageCode(_settings.OutputLanguage)}' echo={_settings.EchoTargetLanguage}");
         await _ws!.SendAsync(bytes, WebSocketMessageType.Text, true, ct).ConfigureAwait(false);
+    }
+
+    // setupComplete を最大 10 秒待つ。 ⚠️ プレビュー API のため setupComplete が想定形と違う可能性 →
+    // タイムアウトしても brick させず警告ログのみで Connected に進む (頭欠け対策の handshake は通常ケースで
+    // 効き、 異常時は従来挙動に degrade)。 接続キャンセル (Disconnect) は正規ルートで伝播させる。
+    private async Task WaitForSetupCompleteAsync(Task setupCompleteTask, CancellationToken ct)
+    {
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeoutCts.CancelAfter(TimeSpan.FromSeconds(10));
+        try
+        {
+            await setupCompleteTask.WaitAsync(timeoutCts.Token).ConfigureAwait(false);
+            Logger.Info("Gemini Live setup ハンドシェイク完了 → audio 送信を許可");
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (OperationCanceledException)
+        {
+            Logger.Warn("Gemini setup ハンドシェイクが 10 秒で未完了 (setupComplete 未受信)。 接続は継続するが頭欠けの可能性あり。");
+        }
     }
 
     private static string ResolveLang(string? lang)
         => string.IsNullOrWhiteSpace(lang) ? "ja" : lang;
+
+    // UI の provider 非依存な言語コードを Gemini Live Translate が期待する BCP-47 ターゲットへ正規化する。
+    // ⚠️ zh / pt は generic すぎて Gemini が variant (zh-Hans/zh-Hant, pt-BR/pt-PT) を要求するため明示マップ
+    //    (Codex 指摘 P2)。 プレビュー API のため variant の綴りは実機で要検証。 一覧外コードはそのまま通す。
+    private static readonly Dictionary<string, string> GeminiLanguageCodeMap = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["zh"] = "zh-Hans", // 中文 → 簡体字を既定に
+        ["pt"] = "pt-BR",   // Português → ブラジルを既定に
+    };
+
+    internal static string MapToGeminiLanguageCode(string? lang)
+    {
+        var resolved = ResolveLang(lang);
+        return GeminiLanguageCodeMap.TryGetValue(resolved, out var mapped) ? mapped : resolved;
+    }
 
     // setup メッセージを組み立てる。
     // ⚠️ プレビュー API のため translationConfig の階層 (generationConfig 内) は実機要検証。
@@ -467,7 +519,7 @@ public sealed class GeminiLiveClient : Interfaces.IRealtimeTranscriber
                     outputAudioTranscription = new { },
                     translationConfig = new
                     {
-                        targetLanguageCode = ResolveLang(settings.OutputLanguage),
+                        targetLanguageCode = MapToGeminiLanguageCode(settings.OutputLanguage),
                         echoTargetLanguage = settings.EchoTargetLanguage,
                     },
                 },
@@ -606,11 +658,12 @@ public sealed class GeminiLiveClient : Interfaces.IRealtimeTranscriber
             // 配列/プリミティブ root は無視 (以降の TryGetProperty が InvalidOperationException を投げるため)。
             if (root.ValueKind != JsonValueKind.Object) return;
 
-            // setupComplete: セッション確立シグナル。
+            // setupComplete: セッション確立シグナル。 ハンドシェイク待ちを解除して Connected 遷移を進める。
             if (root.TryGetProperty("setupComplete", out _))
             {
                 LogFirstSighting("setupComplete");
                 Logger.Info("Gemini Live setup 完了 (セッション確立)");
+                _setupCompleteTcs?.TrySetResult();
                 return;
             }
 
