@@ -41,6 +41,8 @@ public sealed class VadGateTests
         public ConnectionState State => ConnectionState.Connected;
         public long TotalAudioInputSamples24kHz { get; private set; }
         public long ServerReportedAudioInputTokens => 0;
+        public int InputSampleRate => 24000;
+        public long DroppedAudioChunkCount => 0;
         public List<int> SentAudioByteLengths { get; } = new();
 #pragma warning disable CS0067 // テストでは未使用
         public event Action<string>? TranscriptDeltaReceived;

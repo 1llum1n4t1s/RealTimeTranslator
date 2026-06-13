@@ -95,6 +95,9 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
 
     public ConnectionState State => _state;
 
+    /// <inheritdoc />
+    public int InputSampleRate => 24000;
+
     /// <summary>
     /// 送信前にチャネルから DropOldest で破棄された音声チャンクの累計数。
     /// 字幕が抜けた原因が NW 詰まりか API 遅延か判別する診断メトリクス。

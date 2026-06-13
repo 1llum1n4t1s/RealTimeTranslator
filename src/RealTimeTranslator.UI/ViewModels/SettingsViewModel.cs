@@ -165,6 +165,12 @@ public partial class SettingsViewModel : ObservableObject
             new("hi", "हिन्दी")
         });
 
+        ProviderOptions = new ReadOnlyCollection<ProviderOption>(new ProviderOption[]
+        {
+            new(TranscriptionProvider.OpenAI, "OpenAI リアルタイム翻訳"),
+            new(TranscriptionProvider.Gemini, "Gemini ライブ翻訳"),
+        });
+
         // 旧 settings.json から新フォント一覧 / 色一覧に存在しない値を持ち越したケース、
         // 範囲外のサイズ / 行数 / 言語が入っているケースを、 起動時にデフォルトへ矯正する。
         // ComboBox が未選択状態で出る UX バグ ( setter が呼ばれず実態とのズレが続く ) を防ぐ。
@@ -348,6 +354,23 @@ public partial class SettingsViewModel : ObservableObject
             changed = true;
         }
 
+        // Provider が未定義 enum 値 (settings.json 改竄等) なら OpenAI に矯正 (CodeRabbit 指摘: 起動時 invariant)。
+        if (!Enum.IsDefined(_settings.Provider))
+        {
+            LoggerService.LogInfo($"SettingsViewModel.Sanitize: Provider='{_settings.Provider}' が未定義 → OpenAI に矯正");
+            _settings.Provider = TranscriptionProvider.OpenAI;
+            changed = true;
+        }
+
+        // Gemini の出力言語も OpenAI 同様に一覧外なら 'ja' に矯正 (Provider=Gemini で不正コードを送らないため)。
+        if (string.IsNullOrWhiteSpace(_settings.Gemini.OutputLanguage) ||
+            !OutputLanguageOptions.Any(o => o.Code == _settings.Gemini.OutputLanguage))
+        {
+            LoggerService.LogInfo($"SettingsViewModel.Sanitize: Gemini.OutputLanguage='{_settings.Gemini.OutputLanguage}' が一覧外 → 'ja' に矯正");
+            _settings.Gemini.OutputLanguage = "ja";
+            changed = true;
+        }
+
         // /rere F-003 対応: SilencePaddingMs の旧 default (v1.0.33-35: 8000ms) を新 default (v1.0.36: 5000ms) に
         // 1 度限り migration する。 8000ms ぴったりは旧 default の名残と判定し、 他の値 (7000 / 10000 等) は
         // ユーザーが明示的に設定した可能性があるためそのまま維持する。
@@ -374,6 +397,9 @@ public partial class SettingsViewModel : ObservableObject
     public ReadOnlyCollection<int> MaxLinesList { get; }
     public ReadOnlyCollection<double> DisplayDurations { get; }
     public ReadOnlyCollection<OutputLanguageOption> OutputLanguageOptions { get; }
+
+    /// <summary>翻訳プロバイダの選択肢 (OpenAI / Gemini)。</summary>
+    public ReadOnlyCollection<ProviderOption> ProviderOptions { get; }
     public ReadOnlyCollection<VadPresetOption> VadPresetOptions { get; }
     public ReadOnlyCollection<AutoPauseOption> AutoPauseOptions { get; }
     public ReadOnlyCollection<TranslationLogRetentionOption> TranslationLogRetentionOptions { get; }
@@ -406,9 +432,57 @@ public partial class SettingsViewModel : ObservableObject
                ?? OutputLanguageOptions[0];
         set
         {
-            if (value != null && _settings.OpenAIRealtime.OutputLanguage != value.Code)
+            if (value != null && (_settings.OpenAIRealtime.OutputLanguage != value.Code
+                                  || _settings.Gemini.OutputLanguage != value.Code))
             {
+                // 出力言語は provider 共通概念。 OpenAI / Gemini 両方の OutputLanguage を同期する
+                // (ユーザーは「翻訳先言語」を 1 回選べば、 どちらの provider でも同じ言語になる)。
                 _settings.OpenAIRealtime.OutputLanguage = value.Code;
+                _settings.Gemini.OutputLanguage = value.Code;
+                OnPropertyChanged();
+                ScheduleAutoSave();
+            }
+        }
+    }
+
+    // ───── プロバイダ選択 + Gemini 設定（自動保存付き） ─────
+
+    /// <summary>
+    /// 翻訳プロバイダ (OpenAI / Gemini)。 切替は再起動不要 (hot-swap): 次の翻訳開始で反映される。
+    /// </summary>
+    public ProviderOption? SelectedProvider
+    {
+        get => ProviderOptions.FirstOrDefault(p => p.Value == _settings.Provider) ?? ProviderOptions[0];
+        set
+        {
+            if (value != null && _settings.Provider != value.Value)
+            {
+                _settings.Provider = value.Value;
+                // 出力言語は provider 共通概念。 切替時に表示中の言語 (ComboBox = OpenAIRealtime.OutputLanguage) を
+                // Gemini にも同期する。 既存ユーザーが OpenAI=英語のまま Gemini に切替→言語を触らず Start しても、
+                // Gemini が既定 ja ではなく表示どおりの言語で開始する (Codex 指摘 P2)。
+                _settings.Gemini.OutputLanguage = _settings.OpenAIRealtime.OutputLanguage;
+                OnPropertyChanged();
+                OnPropertyChanged(nameof(IsGeminiSelected));
+                OnPropertyChanged(nameof(IsOpenAISelected));
+                ScheduleAutoSave();
+            }
+        }
+    }
+
+    /// <summary>Gemini が選択中か (XAML で入力欄の強調・有効化に使う)。</summary>
+    public bool IsGeminiSelected => _settings.Provider == TranscriptionProvider.Gemini;
+    /// <summary>OpenAI が選択中か。</summary>
+    public bool IsOpenAISelected => _settings.Provider == TranscriptionProvider.OpenAI;
+
+    public string GeminiApiKey
+    {
+        get => _settings.Gemini.ApiKey;
+        set
+        {
+            if (_settings.Gemini.ApiKey != value)
+            {
+                _settings.Gemini.ApiKey = value;
                 OnPropertyChanged();
                 ScheduleAutoSave();
             }
@@ -952,9 +1026,11 @@ public partial class SettingsViewModel : ObservableObject
     [RelayCommand]
     private async Task TestApiConnectionAsync()
     {
-        if (string.IsNullOrWhiteSpace(_settings.OpenAIRealtime.ApiKey))
+        var isGemini = _settings.Provider == TranscriptionProvider.Gemini;
+        var apiKey = isGemini ? _settings.Gemini.ApiKey : _settings.OpenAIRealtime.ApiKey;
+        if (string.IsNullOrWhiteSpace(apiKey))
         {
-            ApiTestResult = "APIキーを入力してください";
+            ApiTestResult = isGemini ? "Gemini APIキーを入力してください" : "APIキーを入力してください";
             return;
         }
 
@@ -963,7 +1039,9 @@ public partial class SettingsViewModel : ObservableObject
 
         try
         {
-            var (success, message) = await OpenAIRealtimeClient.TestConnectionAsync(_settings.OpenAIRealtime);
+            var (success, message) = isGemini
+                ? await GeminiLiveClient.TestConnectionAsync(_settings.Gemini)
+                : await OpenAIRealtimeClient.TestConnectionAsync(_settings.OpenAIRealtime);
             ApiTestResult = message;
         }
         catch (Exception ex)
@@ -980,6 +1058,7 @@ public partial class SettingsViewModel : ObservableObject
 // 値型 DTO は record + primary constructor で表現 (Equals/GetHashCode/ToString 自動生成)。
 // 文字列比較のみで使われており参照同値性は要求されないため record 化で挙動同値。
 public sealed record OutputLanguageOption(string Code, string DisplayName);
+public sealed record ProviderOption(TranscriptionProvider Value, string DisplayName);
 public sealed record ColorOption(string Name, string Value);
 public sealed record SettingsSavedEventArgs(AppSettings Settings);
 

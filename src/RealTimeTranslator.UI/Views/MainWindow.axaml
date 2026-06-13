@@ -281,6 +281,63 @@
                               DataContext="{Binding SettingsVM}">
                     <StackPanel Margin="0,0,0,16" x:DataType="vm:SettingsViewModel">
 
+                        <!-- ═══ 翻訳プロバイダ選択 (OpenAI / Gemini hot-swap) ═══ -->
+                        <TextBlock Text="翻訳プロバイダ" FontSize="20" FontWeight="Bold" Margin="0,0,0,8"/>
+                        <TextBlock Text="OpenAI Realtime か Google Gemini Live Translate を選べるよ。 切り替えは次に「開始」したときから反映されるよ💕"
+                                   FontSize="12" Foreground="{DynamicResource Brush.FG2}"
+                                   TextWrapping="Wrap" Margin="0,0,0,8"/>
+                        <ComboBox ItemsSource="{Binding ProviderOptions}"
+                                  SelectedItem="{Binding SelectedProvider, Mode=TwoWay}"
+                                  HorizontalAlignment="Stretch" Margin="0,0,0,20">
+                            <ComboBox.ItemTemplate>
+                                <DataTemplate x:DataType="vm:ProviderOption">
+                                    <TextBlock Text="{Binding DisplayName}"/>
+                                </DataTemplate>
+                            </ComboBox.ItemTemplate>
+                        </ComboBox>
+
+                        <!-- ═══ Gemini API設定 (IsGeminiSelected) ═══ -->
+                        <StackPanel IsVisible="{Binding IsGeminiSelected}">
+                            <TextBlock Text="Gemini API設定" FontSize="20" FontWeight="Bold" Margin="0,0,0,16"/>
+                            <HeaderedContentControl Header="Gemini APIキー">
+                                <StackPanel>
+                                    <TextBox Text="{Binding GeminiApiKey, Mode=TwoWay}"
+                                             PasswordChar="*"
+                                             PlaceholderText="AI...（Google AI Studio で発行）"
+                                             Margin="0,0,0,10"/>
+                                    <Button Content="接続テスト"
+                                            Command="{Binding TestApiConnectionCommand}"
+                                            IsEnabled="{Binding IsTestingApi, Converter={StaticResource InverseBoolConverter}}"
+                                            Margin="0,0,0,8"/>
+                                    <TextBox Text="{Binding ApiTestResult, Mode=OneWay}"
+                                             IsReadOnly="True" TextWrapping="Wrap"
+                                             BorderThickness="0" Background="Transparent" FontSize="13"
+                                             IsVisible="{Binding ApiTestResult, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"/>
+                                </StackPanel>
+                            </HeaderedContentControl>
+                            <Border Padding="14,12" Margin="0,16,0,0"
+                                    Background="#1A33AAFF" BorderBrush="#8033AAFF"
+                                    BorderThickness="1" CornerRadius="10">
+                                <StackPanel>
+                                    <TextBlock Text="🔑 Gemini APIキーの取得方法" FontSize="14" FontWeight="Bold" Margin="0,0,0,6"/>
+                                    <TextBlock TextWrapping="Wrap" FontSize="12" LineHeight="18">
+                                        <Run Text="Google AI Studio にログインして「Get API key」からキーを発行してね。 下のページから取れるよ:"/>
+                                    </TextBlock>
+                                    <Border Padding="8,4" Margin="0,6,0,0" CornerRadius="4"
+                                            Background="{DynamicResource Brush.Border}" HorizontalAlignment="Left">
+                                        <SelectableTextBlock Text="https://aistudio.google.com/apikey"
+                                                              FontFamily="Consolas,Menlo,monospace" FontSize="12"/>
+                                    </Border>
+                                    <TextBlock TextWrapping="Wrap" FontSize="11" LineHeight="16" Margin="0,10,0,0"
+                                               Foreground="{DynamicResource Brush.FG2}">
+                                        <Run Text="💰 Gemini Live Translate は約 $0.023/分 (~$1.4/時間)。 モデルはプレビュー版だよ。"/>
+                                    </TextBlock>
+                                </StackPanel>
+                            </Border>
+                        </StackPanel>
+
+                        <!-- ═══ OpenAI API設定 (IsOpenAISelected) ═══ -->
+                        <StackPanel IsVisible="{Binding IsOpenAISelected}">
                         <TextBlock Text="OpenAI API設定" FontSize="20" FontWeight="Bold" Margin="0,0,0,16"/>
 
                         <!-- API Key -->
@@ -548,6 +605,7 @@
                                 </Border>
                             </StackPanel>
                         </Border>
+                        </StackPanel>
 
                     </StackPanel>
                 </ScrollViewer>

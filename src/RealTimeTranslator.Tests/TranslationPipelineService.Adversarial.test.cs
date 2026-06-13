@@ -149,6 +149,8 @@ public sealed class TranslationPipelineServiceAdversarialTests
         public ConnectionState State { get; private set; } = ConnectionState.Disconnected;
         public long TotalAudioInputSamples24kHz => 0;
         public long ServerReportedAudioInputTokens => 0;
+        public int InputSampleRate => 24000;
+        public long DroppedAudioChunkCount => 0;
         public event Action<string>? TranscriptDeltaReceived;
         public event Action<string>? TranscriptCompleted;
 #pragma warning disable CS0067
@@ -232,6 +234,8 @@ public sealed class TranslationPipelineServiceAdversarialTests
         public ConnectionState State { get; private set; } = ConnectionState.Disconnected;
         public long TotalAudioInputSamples24kHz => 0;
         public long ServerReportedAudioInputTokens => 0;
+        public int InputSampleRate => 24000;
+        public long DroppedAudioChunkCount => 0;
         public event Action<string>? TranscriptDeltaReceived;
         public event Action<string>? TranscriptCompleted;
 #pragma warning disable CS0067

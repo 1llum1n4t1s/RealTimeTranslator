@@ -50,6 +50,8 @@ internal sealed class TestRealtimeTranscriber : IRealtimeTranscriber
     public ConnectionState State { get; private set; } = ConnectionState.Disconnected;
     public long TotalAudioInputSamples24kHz => 0;
     public long ServerReportedAudioInputTokens => 0;
+    public int InputSampleRate => 24000;
+    public long DroppedAudioChunkCount => 0;
     public event Action<string>? TranscriptDeltaReceived;
     public event Action<string>? TranscriptCompleted;
 #pragma warning disable CS0067 // ErrorReceived は Raise ヘルパーがなく未使用 (将来 error 発火 mock が必要になったら RaiseError を追加して解除)
