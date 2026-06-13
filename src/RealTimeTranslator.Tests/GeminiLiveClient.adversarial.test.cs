@@ -222,6 +222,30 @@ public sealed class GeminiLiveClientAdversarialTests
 
     [TestMethod]
     [TestCategory("Adversarial")]
+    public void ProcessMessage_ErrorJson_ShouldFaultSetupHandshake()
+    {
+        using var client = new GeminiLiveClient();
+        Exception? received = null;
+        client.ErrorReceived += ex => received = ex;
+
+        // 接続フローの setup ハンドシェイク待ちを模して _setupCompleteTcs を仕込む。
+        var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var field = typeof(GeminiLiveClient).GetField(
+            "_setupCompleteTcs", BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.IsNotNull(field, "_setupCompleteTcs フィールドが見つからない");
+        field.SetValue(client, tcs);
+
+        // setup が setupComplete ではなく error JSON を返したケース。
+        InvokeProcessMessage(client, "{\"error\":{\"code\":400,\"message\":\"invalid model\"}}");
+
+        Assert.IsNotNull(received, "error 受信で ErrorReceived が発火する");
+        Assert.IsTrue(tcs.Task.IsFaulted,
+            "error 受信で setup ハンドシェイク待ちが fault する (タイムアウト degrade で Connected に上げない — Codex P2)");
+        _ = tcs.Task.Exception; // 観測して unobserved task exception を防ぐ
+    }
+
+    [TestMethod]
+    [TestCategory("Adversarial")]
     public void ProcessMessage_GarbageJson_ShouldNotThrow()
     {
         using var client = new GeminiLiveClient();

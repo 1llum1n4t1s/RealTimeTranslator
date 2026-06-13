@@ -447,6 +447,15 @@ public sealed class GeminiLiveClient : Interfaces.IRealtimeTranscriber
             SetState(ConnectionState.Disconnected);
             throw;
         }
+        catch (OpenAIApiException)
+        {
+            // setup ハンドシェイクが Gemini error で終了 (model 不正 / 権限 / 不正 targetLanguage 等)。
+            // ProcessMessage が ErrorReceived (+ fatal 時 Failed) 済みなので二重通知せず、 Failed でなければ
+            // Disconnected に倒してから伝播する。 Connected にせず StartCoreAsync に接続失敗を伝える (Codex P2)。
+            if (_state != ConnectionState.Failed)
+                SetState(ConnectionState.Disconnected);
+            throw;
+        }
         catch (Exception ex)
         {
             Logger.Error("Gemini WebSocket 接続失敗", ex);
@@ -711,6 +720,9 @@ public sealed class GeminiLiveClient : Interfaces.IRealtimeTranscriber
                     _shouldReconnect = false;
                     SetState(ConnectionState.Failed);
                 }
+                // setup ハンドシェイク待ちを error で fault させる: これが無いとタイムアウト degrade で
+                // Connected に上がり、 サーバーが既に拒否したセッションへ audio を送る事故になる (Codex P2)。
+                _setupCompleteTcs?.TrySetException(ex);
                 ErrorReceived?.Invoke(ex);
                 return;
             }
