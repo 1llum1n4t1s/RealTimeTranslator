@@ -8,6 +8,15 @@
         "resolved": "1.0.46",
         "contentHash": "miv7ofJUEva5x4RBmXBZs8K27dXnN+Obq2AcwolqsZENWLy6cejNA3f4SRq8ejBTvUHV7wqNbtGJ3osKfKd3tQ=="
       },
+      "Microsoft.CognitiveServices.Speech": {
+        "type": "Direct",
+        "requested": "[1.43.0, )",
+        "resolved": "1.43.0",
+        "contentHash": "bO37mcisf5I5Mg8ZvGxH0f/jCjFG7fvnUs7FCnN1zAt+VCvbRzs7nS+RN7wvscAP7N0DkhYWDgT0ASPtq5BqOQ==",
+        "dependencies": {
+          "Azure.Core": "1.44.1"
+        }
+      },
       "Microsoft.ML.OnnxRuntime": {
         "type": "Direct",
         "requested": "[1.26.0, )",
@@ -44,6 +53,21 @@
         "requested": "[10.0.9, )",
         "resolved": "10.0.9",
         "contentHash": "vXp+vBQbTkMrDzUiPCxo1KvzfaAvZWuSRS2P7e5orhtV7ZuePKAB3Cqc9dH2YHUavRJyA2uWd2yrL6hl2VoJ5g=="
+      },
+      "Azure.Core": {
+        "type": "Transitive",
+        "resolved": "1.44.1",
+        "contentHash": "YyznXLQZCregzHvioip07/BkzjuWNXogJEVz9T5W6TwjNr17ax41YGzYMptlo2G10oLCuVPoyva62y0SIRDixg==",
+        "dependencies": {
+          "Microsoft.Bcl.AsyncInterfaces": "6.0.0",
+          "System.ClientModel": "1.1.0",
+          "System.Memory.Data": "6.0.0"
+        }
+      },
+      "Microsoft.Bcl.AsyncInterfaces": {
+        "type": "Transitive",
+        "resolved": "6.0.0",
+        "contentHash": "UcSjPsst+DfAdJGVDsu346FX0ci0ah+lw3WRtn18NUwEqRt70HaOQ7lI72vy3+1LxtqI3T5GWwV39rQSrCzAeg=="
       },
       "Microsoft.Extensions.DependencyInjection": {
         "type": "Transitive",
@@ -116,6 +140,19 @@
           "Microsoft.Windows.SDK.Win32Metadata": "63.0.31-preview"
         }
       },
+      "System.ClientModel": {
+        "type": "Transitive",
+        "resolved": "1.1.0",
+        "contentHash": "UocOlCkxLZrG2CKMAAImPcldJTxeesHnHGHwhJ0pNlZEvEXcWKuQvVOER2/NiOkJGRJk978SNdw3j6/7O9H1lg==",
+        "dependencies": {
+          "System.Memory.Data": "1.0.2"
+        }
+      },
+      "System.Memory.Data": {
+        "type": "Transitive",
+        "resolved": "6.0.0",
+        "contentHash": "ntFHArH3I4Lpjf5m4DCXQHJuGwWPNVJPaAvM95Jy/u+2Yzt2ryiyIN04LAogkjP9DeRcEOiviAjQotfmPq/FrQ=="
+      },
       "System.Numerics.Tensors": {
         "type": "Transitive",
         "resolved": "9.0.0",
@@ -123,6 +160,15 @@
       }
     },
     "net10.0-windows10.0.20348/win-x64": {
+      "Microsoft.CognitiveServices.Speech": {
+        "type": "Direct",
+        "requested": "[1.43.0, )",
+        "resolved": "1.43.0",
+        "contentHash": "bO37mcisf5I5Mg8ZvGxH0f/jCjFG7fvnUs7FCnN1zAt+VCvbRzs7nS+RN7wvscAP7N0DkhYWDgT0ASPtq5BqOQ==",
+        "dependencies": {
+          "Azure.Core": "1.44.1"
+        }
+      },
       "Microsoft.ML.OnnxRuntime": {
         "type": "Direct",
         "requested": "[1.26.0, )",

@@ -143,13 +143,14 @@ public sealed class AzureSpeechTranslationClient : Interfaces.IRealtimeTranscrib
 
     private void StartRecognizer()
     {
+        // SpeechTranslationConfig は Speech SDK 1.43 では IDisposable 非実装のため using 不可 (CS1674)。
         var config = SpeechTranslationConfig.FromSubscription(_settings.ApiKey, _settings.Region);
         config.SpeechRecognitionLanguage = ResolveSourceLocale(_settings.SourceLanguage);
         _targetLang = MapToAzureTargetLanguage(_settings.OutputLanguage);
         config.AddTargetLanguage(_targetLang);
 
         // 16kHz / 16bit / mono PCM の push stream。 TranslationPipelineService が 16k にリサンプルした PCM16 を流す。
-        var format = AudioStreamFormat.GetWaveFormatPCM(16000, 16, 1);
+        using var format = AudioStreamFormat.GetWaveFormatPCM(16000, 16, 1);
         _pushStream = AudioInputStream.CreatePushStream(format);
         _audioConfig = AudioConfig.FromStreamInput(_pushStream);
         _recognizer = new TranslationRecognizer(config, _audioConfig);
@@ -325,10 +326,11 @@ public sealed class AzureSpeechTranslationClient : Interfaces.IRealtimeTranscrib
         AudioConfig? audioConfig = null;
         try
         {
+            // SpeechTranslationConfig は Speech SDK 1.43 では IDisposable 非実装のため using 不可 (CS1674)。
             var config = SpeechTranslationConfig.FromSubscription(settings.ApiKey, settings.Region);
             config.SpeechRecognitionLanguage = ResolveSourceLocale(settings.SourceLanguage);
             config.AddTargetLanguage(MapToAzureTargetLanguage(settings.OutputLanguage));
-            var format = AudioStreamFormat.GetWaveFormatPCM(16000, 16, 1);
+            using var format = AudioStreamFormat.GetWaveFormatPCM(16000, 16, 1);
             push = AudioInputStream.CreatePushStream(format);
             audioConfig = AudioConfig.FromStreamInput(push);
             recognizer = new TranslationRecognizer(config, audioConfig);
