@@ -692,7 +692,25 @@ public sealed class SpeechmaticsRealtimeClient : Interfaces.IRealtimeTranscriber
 
                 if (result.MessageType == WebSocketMessageType.Close)
                 {
-                    Logger.Warn("Speechmatics WebSocket サーバーからクローズ受信");
+                    // close payload に not_authorised / quota_exceeded 等の致命理由が入ることがある。
+                    // in-band Error と同様に分類し、 fatal なら reconnect せず Failed + fatal バナーを出す
+                    // (放置すると無効キー / クォータ枯渇でも reconnect 上限まで無駄に再試行する。 Codex 指摘)。
+                    var closeDesc = result.CloseStatusDescription ?? string.Empty;
+                    Logger.Warn($"Speechmatics WebSocket サーバーからクローズ受信 (status={result.CloseStatus}, desc='{LogFormatting.TruncateForLog(closeDesc)}')");
+                    if (!string.IsNullOrWhiteSpace(closeDesc))
+                    {
+                        var closeKind = ClassifySpeechmaticsError(closeDesc, closeDesc);
+                        if (closeKind != OpenAIApiErrorKind.Unknown)
+                        {
+                            var ex = new OpenAIApiException(closeKind, SpeechmaticsFriendlyMessageFor(closeKind, closeDesc), closeDesc);
+                            if (ex.IsFatal)
+                            {
+                                _shouldReconnect = false;
+                                SetState(ConnectionState.Failed);
+                            }
+                            ErrorReceived?.Invoke(ex);
+                        }
+                    }
                     break;
                 }
 
@@ -782,15 +800,26 @@ public sealed class SpeechmaticsRealtimeClient : Interfaces.IRealtimeTranscriber
                         var wreason = root.TryGetProperty("reason", out var wr) ? wr.GetString() ?? "" : "";
                         if (IsTerminalWarning(wtype))
                         {
-                            // duration_limit_exceeded 等。 サーバーは以降の audio を無視し EndOfStream 相当に振る舞う。
-                            // 放置すると Connected のまま SendAudio が黙って捨てられ字幕が出なくなるため、 通知した上で
-                            // socket を Abort → 受信ループ終了 → reconnect で新セッションを張り直す (Codex 指摘)。
+                            // duration_limit_exceeded 等。 サーバーは以降の audio を無視し EndOfStream 相当に振る舞い、
+                            // 最後に残りの AddTranslation + EndOfTranscript を送ってくる。 即 Abort すると受信ループが
+                            // それらの前に終了し末尾翻訳を取りこぼすため、 SendAudio だけ止めて (Reconnecting) socket は
+                            // 開いたまま EndOfTranscript or 短いタイムアウトを待ってから Abort → reconnect する (Codex 指摘)。
                             var msg = $"Speechmatics: 1 発話の長さ上限に達しました ({wtype})。以降の音声は無視されるため接続を張り直します。";
                             Logger.Warn(msg + (string.IsNullOrEmpty(wreason) ? "" : $" reason={LogFormatting.TruncateForLog(wreason)}"));
                             ErrorReceived?.Invoke(new InvalidOperationException(msg));
                             if (_shouldReconnect && _state == ConnectionState.Connected)
-                                SetState(ConnectionState.Reconnecting);
-                            try { _ws?.Abort(); } catch { /* 受信ループを終了させて reconnect に倒すための Abort */ }
+                            {
+                                SetState(ConnectionState.Reconnecting); // SendAudio は State!=Connected で止まる。
+                                var eot = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                                _endOfTranscriptSignal = eot;
+                                var wsSnapshot = _ws;
+                                _ = Task.Run(async () =>
+                                {
+                                    try { await eot.Task.WaitAsync(TimeSpan.FromSeconds(3)).ConfigureAwait(false); }
+                                    catch (Exception ex) when (ex is TimeoutException or OperationCanceledException) { }
+                                    try { wsSnapshot?.Abort(); } catch { /* 受信ループ終了 → reconnect */ }
+                                });
+                            }
                         }
                         else if (IsTranslationDisablingWarning(wtype))
                         {
