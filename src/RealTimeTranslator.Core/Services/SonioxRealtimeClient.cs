@@ -73,6 +73,10 @@ public sealed class SonioxRealtimeClient : Interfaces.IRealtimeTranscriber
     // graceful stop 時に end-of-stream フレームを送ったあと、 サーバーの最終 finished を待つためのシグナル。
     private volatile TaskCompletionSource<bool>? _finishedSignal;
 
+    // connect (config 送信) 後のグレース期間中に受信ループが in-band error を観測したか。 400 config 拒否は
+    // 非 fatal (BadRequest) で Failed にならないため、 Failed 判定だけでは取りこぼす (Codex 指摘)。
+    private volatile bool _errorObservedSinceConnect;
+
     // ⚠️ Soniox は 16kHz 送信。 OpenAI 互換の「24kHz 換算サンプル数」を返すため ×1.5 する。
     private long _totalAudioInputSamples16kHz;
 
@@ -487,6 +491,7 @@ public sealed class SonioxRealtimeClient : Interfaces.IRealtimeTranscriber
             Logger.Info("Soniox Realtime WebSocket 接続成功");
 
             // 受信・送信ループを起動。 SendAudio は State!=Connected で弾くので config 送信完了まで audio は流れない。
+            _errorObservedSinceConnect = false; // loop 起動前にリセット (グレース期間中の error 観測検出用)。
             _receiveTask = Task.Run(() => ReceiveLoopAsync(_cts!.Token), _cts!.Token);
             _sendTask = Task.Run(() => SendLoopAsync(_cts!.Token), _cts!.Token);
 
@@ -502,8 +507,10 @@ public sealed class SonioxRealtimeClient : Interfaces.IRealtimeTranscriber
             if (_ws is not { State: WebSocketState.Open })
                 throw new InvalidOperationException("Soniox config 送信後にサーバーが接続を閉じました。");
 
-            if (_state == ConnectionState.Failed)
-                // 受信ループが既に ErrorReceived 発火 + Failed 済み。 Connected で上書きせず connect を中断する
+            // Failed (fatal error) だけでなく、 グレース期間中に観測した非 fatal の config 拒否 (400 BadRequest 等)
+            // でも connect を中断する。 これをしないと拒否されたセッションで audio capture を開始してしまう。
+            if (_state == ConnectionState.Failed || _errorObservedSinceConnect)
+                // 受信ループが既に ErrorReceived 発火済み。 Connected で上書きせず connect を中断する
                 // (OpenAIApiException は下の catch で二重通知せず伝播)。
                 throw new OpenAIApiException(OpenAIApiErrorKind.Unknown,
                     "Soniox 接続が config 直後に失敗しました (キー / 言語設定を確認してください)。", "config rejected");
@@ -719,6 +726,7 @@ public sealed class SonioxRealtimeClient : Interfaces.IRealtimeTranscriber
                 var friendly = SonioxFriendlyMessageFor(kind, originalMessage);
                 var ex = new OpenAIApiException(kind, friendly, originalMessage);
                 Logger.Error($"Soniox API エラー (kind={kind} code='{code}'): {LogFormatting.TruncateForLog(originalMessage)}");
+                _errorObservedSinceConnect = true; // connect グレース期間中なら ConnectWebSocketAsync が拾って中断する。
                 if (ex.IsFatal)
                 {
                     _shouldReconnect = false;

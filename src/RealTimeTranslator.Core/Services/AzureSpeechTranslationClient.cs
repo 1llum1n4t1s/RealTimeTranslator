@@ -220,9 +220,12 @@ public sealed class AzureSpeechTranslationClient : Interfaces.IRealtimeTranscrib
         Logger.Error($"Azure 認識エラー (kind={kind} code={e.ErrorCode}): {LogFormatting.TruncateForLog(e.ErrorDetails)}");
         ErrorReceived?.Invoke(ex);
 
-        if (ex.IsFatal)
+        // Azure の BadRequest は「無効なパラメータ / 非対応の音声フォーマット」(MS docs: CancellationErrorCode)。
+        // 源言語ロケール / 出力言語が無効といった設定エラーで、 同じ設定での再接続では回復しない。 reconnect ループに
+        // 入って上限まで無駄に試行し続けず、 fatal 扱いで停止してユーザーに設定見直しを促す (Codex 指摘)。
+        if (ex.IsFatal || kind == OpenAIApiErrorKind.BadRequest)
         {
-            // 回復不能 (認証 / クォータ / 権限)。 再接続せず Failed に倒す → pipeline がキャプチャ停止。
+            // 回復不能 (認証 / クォータ / 権限 / 不正設定)。 再接続せず Failed に倒す → pipeline がキャプチャ停止。
             _shouldReconnect = false;
             SetState(ConnectionState.Failed);
             return;
