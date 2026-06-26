@@ -992,8 +992,13 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
             // API から transcript が空で done が来た場合 (response.done fallback 経路など) は
             // 直前まで delta で蓄積してきた _accumulatedText を確定字幕として使う。
             // transcript が空でなければ「セッション累積の全文」が来ている前提で扱う。
+            // transcript が空 = プロバイダが「この発話/応答は確定」と通知する hard finalize 境界
+            // (Soniox <end> / Speechmatics AddTranslation / Azure Recognized / OpenAI response.done fallback)。
+            // 句読点なしの trailing も確定させる必要があるかの判定に使う (下記 trailing 処理参照)。
+            bool hardFinalize = string.IsNullOrEmpty(transcript);
+
             string effective;
-            if (string.IsNullOrEmpty(transcript))
+            if (hardFinalize)
             {
                 // fallback 経路 (response.done で transcript が空): 既存の確定累積 + 直前の delta 蓄積。
                 // この経路は稀なので ToString() の O(N) コストは許容。
@@ -1072,13 +1077,36 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                     start = i + 1;
                 }
             }
-            // 残りの未完結部分 (trailing) は _currentSegmentId で emit。
+            // 残りの未完結部分 (trailing) の扱い。
             if (start < newPortion.Length)
             {
                 var trailing = newPortion[start..];
                 if (!string.IsNullOrWhiteSpace(trailing))
                 {
-                    emissions.Add((_currentSegmentId, trailing, false));
+                    if (hardFinalize)
+                    {
+                        // hard finalize (空 done) の trailing は句読点が無くても「確定済みセグメント」。
+                        // 確定文として emit し SegmentId を回転 + finalized 累積へ追加する。 これをしないと、
+                        // 連続する短い確定セグメント ("Yes"→"No" 等) が同一 SegmentId を再利用し、
+                        // OverlayViewModel.AddOrUpdateSubtitle が前の字幕を上書きしてしまう (Codex 指摘)。
+                        if (!IsSimilarToRecentEmission(trailing))
+                        {
+                            emissions.Add((_currentSegmentId, trailing, true));
+                            RecordEmission(trailing);
+                        }
+                        else
+                        {
+                            Logger.Info($"OnTranscriptCompleted: trailing 類似重複抑制 内容='{TruncateForLog(trailing)}'");
+                        }
+                        _currentSegmentId = Guid.NewGuid().ToString();
+                        _lastFinalizedTranscript.Append(trailing);
+                    }
+                    else
+                    {
+                        // 累積 done (OpenAI 等、 transcript 非空) の trailing は本当に未完結なので partial のまま。
+                        // 次回の累積 done で続きが届くため SegmentId は据え置き。
+                        emissions.Add((_currentSegmentId, trailing, false));
+                    }
                 }
             }
 

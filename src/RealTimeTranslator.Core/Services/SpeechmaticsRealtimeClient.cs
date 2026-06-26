@@ -935,6 +935,7 @@ public sealed class SpeechmaticsRealtimeClient : Interfaces.IRealtimeTranscriber
             case "timelimit_exceeded":      // 契約使用量クォータ到達 (アカウントレベル) → 回復不能
             case "insufficient_funds":
                 return OpenAIApiErrorKind.QuotaExceeded;
+            case "not_allowed":             // 公式 (close 4003) = 要求した操作の権限なし → 回復不能
             case "forbidden":
             case "unsupported_language_pair":
                 return OpenAIApiErrorKind.Forbidden;

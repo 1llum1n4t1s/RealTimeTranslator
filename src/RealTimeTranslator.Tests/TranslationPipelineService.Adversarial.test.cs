@@ -523,6 +523,28 @@ public sealed class TranslationPipelineServiceAdversarialTests
         Assert.AreEqual(0, emitted.Count(x => x.IsFinal), "空 done かつ事前 state 無しでは emit ゼロのはず");
     }
 
+    /// <adversarial category="boundary" severity="high" />
+    [TestMethod]
+    [TestCategory("SentenceSplitBoundary")]
+    public void OnTranscriptCompleted_HardFinalizePunctuationlessTrailing_DistinctSegmentIds()
+    {
+        // Speechmatics AddTranslation / Soniox <end> / Azure Recognized パターン: 句読点なしの確定セグメントを
+        // 空 done (hard finalize) で確定させる。 trailing を確定 + SegmentId 回転しないと、 連続する短い確定
+        // ("Yes"→"No") が同一 SegmentId を再利用し overlay 上で上書きされる (Codex 指摘の回帰防止)。
+        var (pipeline, transcriber, emitted) = CreatePipeline();
+        transcriber.RaiseDelta("Yes");
+        transcriber.RaiseDone("");
+        transcriber.RaiseDelta("No");
+        transcriber.RaiseDone("");
+
+        var finals = emitted.Where(x => x.IsFinal).ToList();
+        Assert.AreEqual(2, finals.Count, "句読点なしの確定セグメント 2 件が個別に確定するはず");
+        Assert.AreEqual("Yes", finals[0].TranslatedText);
+        Assert.AreEqual("No", finals[1].TranslatedText);
+        Assert.AreNotEqual(finals[0].SegmentId, finals[1].SegmentId,
+            "連続する確定セグメントは別 SegmentId でなければ overlay 上で上書きされてしまう");
+    }
+
     /// <adversarial category="boundary" severity="med" />
     [TestMethod]
     [TestCategory("SentenceSplitBoundary")]

@@ -356,6 +356,28 @@ public sealed class AzureSpeechTranslationClient : Interfaces.IRealtimeTranscrib
     private void OnSessionStopped(object? sender, SessionEventArgs e)
     {
         Logger.Info("Azure セッション停止");
+        // ハンドラは CleanupRecognizerAsync が StopContinuousRecognitionAsync の前に外すため、 ここに届く
+        // SessionStopped は「Canceled を伴わないサービス起因の予期しない停止」。 Connected のまま放置すると
+        // SendAudio が終了済みセッションに書き続け、 reconnect も UI 停止も起きないため、 非 fatal 扱いで
+        // reconnect に倒す (Codex 指摘)。 Canceled 由来で既に Failed/Reconnecting の場合は state ガードで何もしない。
+        if (_shouldReconnect && _state == ConnectionState.Connected
+            && Interlocked.CompareExchange(ref _disposed, 0, 0) == 0)
+        {
+            SetState(ConnectionState.Reconnecting);
+            lock (_reconnectTaskLock)
+            {
+                if (Interlocked.CompareExchange(ref _disposed, 0, 0) != 0)
+                {
+                    SetState(ConnectionState.Disconnected);
+                    return;
+                }
+                if (_reconnectLoopTask.IsCompleted)
+                {
+                    var token = _reconnectShutdownCts.Token;
+                    _reconnectLoopTask = Task.Run(() => TryReconnectAsync(token), CancellationToken.None);
+                }
+            }
+        }
     }
 
     internal static string AzureFriendlyMessageFor(OpenAIApiErrorKind kind, string originalMessage) => kind switch
