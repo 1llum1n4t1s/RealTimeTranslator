@@ -790,6 +790,12 @@ public sealed class SpeechmaticsRealtimeClient : Interfaces.IRealtimeTranscriber
                         if (LogFormatting.ShouldLogAtCount(count))
                             Logger.Info($"Speechmatics AddTranslation #{count}: '{LogFormatting.TruncateForLog(text, 20)}' 長={text.Length}");
                         TranscriptDeltaReceived?.Invoke(text);
+                        // 公式ドキュメント (実機監査) より AddTranslation は pause 区切りの「確定済みセグメント」
+                        // (AddPartialTranslation が work-in-progress)。 EndOfTranscript (ストリーム終端) まで確定を
+                        // 待つと、 句読点なしの短い発話 ("Yes" 等) が partial のまま次発話と融合してしまう。 そこで
+                        // Soniox の <end> トークンと同様、 セグメントごとに空 done を流して Pipeline 側に確定させる
+                        // (空 done = _accumulatedText を完結文として flush + 新 SegmentId 発行)。 Codex 指摘。
+                        TranscriptCompleted?.Invoke("");
                     }
                     return;
 

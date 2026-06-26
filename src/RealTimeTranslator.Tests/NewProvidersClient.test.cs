@@ -184,6 +184,25 @@ public sealed class NewProvidersClientTests
 
     [TestMethod]
     [TestCategory("Adversarial")]
+    public void Speechmatics_ProcessMessage_AddTranslation_ShouldFinalizeSegment()
+    {
+        using var client = new SpeechmaticsRealtimeClient();
+        string? delta = null;
+        bool completed = false;
+        client.TranscriptDeltaReceived += d => delta = d;
+        client.TranscriptCompleted += _ => completed = true;
+
+        // AddTranslation は pause 区切りの確定セグメント → delta 後に空 done で確定させる
+        // (句読点なしの短い発話が次発話と融合するのを防ぐ)。
+        InvokeProcessMessageSm(client,
+            "{\"message\":\"AddTranslation\",\"language\":\"en\",\"results\":[{\"content\":\"Yes\"}]}");
+
+        Assert.AreEqual("Yes", delta);
+        Assert.IsTrue(completed, "AddTranslation はセグメントごとに TranscriptCompleted を発火するべき");
+    }
+
+    [TestMethod]
+    [TestCategory("Adversarial")]
     public void Speechmatics_ProcessMessage_PartialTranslation_ShouldNotRaiseDelta()
     {
         using var client = new SpeechmaticsRealtimeClient();
