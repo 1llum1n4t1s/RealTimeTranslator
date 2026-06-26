@@ -116,10 +116,14 @@ public sealed class AzureSpeechTranslationClient : Interfaces.IRealtimeTranscrib
             _shouldReconnect = true;
             // 前回 disconnect でキャンセル済みなら shutdown CTS を作り直す (新セッションの reconnect が即終了しないように)。
             // 直前の reconnect は DisconnectAsync の StopReconnectLoopAsync で停止・await 済みのため安全に差し替えられる。
-            if (_reconnectShutdownCts.IsCancellationRequested)
+            // OnCanceled が同じロック下で .Token を読むため、 差し替えもロック内で行い破棄中アクセスを防ぐ。
+            lock (_reconnectTaskLock)
             {
-                _reconnectShutdownCts.Dispose();
-                _reconnectShutdownCts = new CancellationTokenSource();
+                if (_reconnectShutdownCts.IsCancellationRequested)
+                {
+                    _reconnectShutdownCts.Dispose();
+                    _reconnectShutdownCts = new CancellationTokenSource();
+                }
             }
 
             if (string.IsNullOrWhiteSpace(_settings.ApiKey) || string.IsNullOrWhiteSpace(_settings.Region))
@@ -232,6 +236,14 @@ public sealed class AzureSpeechTranslationClient : Interfaces.IRealtimeTranscrib
             SetState(ConnectionState.Reconnecting);
             lock (_reconnectTaskLock)
             {
+                // _disposed の再チェックと _reconnectShutdownCts.Token 読み取りを同一ロック内で行う。
+                // Dispose 側も同じロック下で CTS を破棄するため、 破棄済み CTS の .Token を読んで
+                // SDK コールバックスレッド上で ObjectDisposedException → プロセスクラッシュする TOCTOU を塞ぐ。
+                if (Interlocked.CompareExchange(ref _disposed, 0, 0) != 0)
+                {
+                    SetState(ConnectionState.Disconnected);
+                    return;
+                }
                 // 同時に複数走らせない (in-flight ガードもあるが、 await 対象のタスク参照を 1 本に保つ)。
                 if (_reconnectLoopTask.IsCompleted)
                 {
@@ -453,7 +465,8 @@ public sealed class AzureSpeechTranslationClient : Interfaces.IRealtimeTranscrib
         _shouldReconnect = false;
         // DisconnectAsync が reconnect ループを cancel + await するため、 ここに来た時点でループは停止済み。
         DisconnectAsync().GetAwaiter().GetResult();
-        _reconnectShutdownCts.Dispose();
+        // CTS 破棄は OnCanceled の .Token 読み取りと同じロック下で (SDK コールバックスレッドとの競合回避)。
+        lock (_reconnectTaskLock) { _reconnectShutdownCts.Dispose(); }
         _connectLock.Dispose();
     }
 
@@ -462,7 +475,7 @@ public sealed class AzureSpeechTranslationClient : Interfaces.IRealtimeTranscrib
         if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0) return;
         _shouldReconnect = false;
         await DisconnectAsync().ConfigureAwait(false);
-        _reconnectShutdownCts.Dispose();
+        lock (_reconnectTaskLock) { _reconnectShutdownCts.Dispose(); }
         _connectLock.Dispose();
     }
 

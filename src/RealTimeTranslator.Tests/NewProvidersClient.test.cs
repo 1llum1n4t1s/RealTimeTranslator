@@ -266,15 +266,18 @@ public sealed class NewProvidersClientTests
 
     [TestMethod]
     [TestCategory("Adversarial")]
-    public void Speechmatics_ClassifyError_AuthAndQuotaAreFatal()
+    public void Speechmatics_ClassifyError_FatalVsRecoverable()
     {
-        // provider 固有 type を fatal 種別にマッピング (Unknown=非 fatal で再接続ループに陥るのを防ぐ)。
+        // not_authorised (4001) と timelimit_exceeded (契約使用量クォータ到達=4006) は回復不能 → fatal。
         Assert.AreEqual(OpenAIApiErrorKind.InvalidApiKey, SpeechmaticsRealtimeClient.ClassifySpeechmaticsError("not_authorised", "bad key"));
-        Assert.AreEqual(OpenAIApiErrorKind.QuotaExceeded, SpeechmaticsRealtimeClient.ClassifySpeechmaticsError("quota_exceeded", "no quota"));
-        Assert.AreEqual(OpenAIApiErrorKind.QuotaExceeded, SpeechmaticsRealtimeClient.ClassifySpeechmaticsError("timelimit_exceeded", "limit"));
-        // これらの種別が IsFatal であることを確認 (非 fatal だと認証/クォータ失敗でも再接続ループに陥る)。
+        Assert.AreEqual(OpenAIApiErrorKind.QuotaExceeded, SpeechmaticsRealtimeClient.ClassifySpeechmaticsError("timelimit_exceeded", "usage quota reached"));
         Assert.IsTrue(new OpenAIApiException(OpenAIApiErrorKind.InvalidApiKey, "", "").IsFatal);
         Assert.IsTrue(new OpenAIApiException(OpenAIApiErrorKind.QuotaExceeded, "", "").IsFatal);
+
+        // ⚠️ quota_exceeded (4005) は公式には「同時接続数上限」= 一時的。 RateLimit (非 fatal) でなければ、
+        // 同時接続上限に一瞬当たっただけで回復可能なセッションを永久に殺してしまう (実機監査で誤分類を発見・修正)。
+        Assert.AreEqual(OpenAIApiErrorKind.RateLimit, SpeechmaticsRealtimeClient.ClassifySpeechmaticsError("quota_exceeded", "concurrent connections"));
+        Assert.IsFalse(new OpenAIApiException(OpenAIApiErrorKind.RateLimit, "", "").IsFatal);
     }
 
     [TestMethod]

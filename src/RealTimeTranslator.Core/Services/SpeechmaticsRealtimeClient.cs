@@ -155,7 +155,7 @@ public sealed class SpeechmaticsRealtimeClient : Interfaces.IRealtimeTranscriber
             Interlocked.Exchange(ref _totalAudioInputSamples16kHz, 0);
             Interlocked.Exchange(ref _totalDroppedAudioChunks, 0);
             Interlocked.Exchange(ref _totalDeltaCount, 0);
-            Interlocked.Exchange(ref _audioSeqNo, 0);
+            // _audioSeqNo は ConnectWebSocketAsync (初回 / reconnect 共通) でリセットするためここでは不要。
 
             _cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             _sendChannel = Channel.CreateBounded<byte[]>(new BoundedChannelOptions(SendChannelCapacity)
@@ -489,6 +489,11 @@ public sealed class SpeechmaticsRealtimeClient : Interfaces.IRealtimeTranscriber
     private async Task ConnectWebSocketAsync(CancellationToken ct)
     {
         SetState(ConnectionState.Connecting);
+        // _audioSeqNo は WebSocket セッション単位 (StartRecognition ごと) の AddAudio 連番。 reconnect は
+        // この経路だけを通り ConnectAsync を経由しないため、 ここでリセットしないと前セッションの値が残り、
+        // 次の graceful stop で EndOfStream.last_seq_no が過大になりサーバーが来ない audio を待ち続ける
+        // (EndOfTranscript が来ず末尾翻訳を取りこぼす)。 Codex 指摘。
+        Interlocked.Exchange(ref _audioSeqNo, 0);
         _ws?.Dispose();
         _ws = new ClientWebSocket();
         _ws.Options.KeepAliveInterval = TimeSpan.FromSeconds(15);
@@ -906,21 +911,27 @@ public sealed class SpeechmaticsRealtimeClient : Interfaces.IRealtimeTranscriber
     // 出ない)、 残りは OpenAI 分類に委譲する (Codex 指摘)。
     internal static OpenAIApiErrorKind ClassifySpeechmaticsError(string? type, string reason)
     {
+        // ⚠️ 公式ドキュメント (https://docs.speechmatics.com/rt-api-ref close-code / error type 表) を実機監査で確認:
+        //  - quota_exceeded (4005) = 「契約あたりの同時接続数上限」= 一時的。 数秒バックオフで回復するため **非 fatal** (RateLimit)。
+        //    課金枯渇ではない。 ここを QuotaExceeded(fatal) にすると、 同時接続上限に一瞬当たっただけで回復可能なセッションを
+        //    永久に殺し、 誤った課金エラーバナーを出す (当初その誤分類で実装していた — 監査で修正)。
+        //  - timelimit_exceeded (4006) = 「契約の使用量クォータ到達 (アカウントレベル)」= 回復不能なので **fatal** (QuotaExceeded)。
+        //  - not_authorised (4001) = 認証失敗 = fatal。
         switch ((type ?? string.Empty).ToLowerInvariant())
         {
             case "not_authorised":
             case "not_authorized":
             case "invalid_api_key":
                 return OpenAIApiErrorKind.InvalidApiKey;
-            case "quota_exceeded":
+            case "quota_exceeded":          // 同時接続数上限 (一時的) → リトライ可能
+            case "rate_limit_exceeded":
+                return OpenAIApiErrorKind.RateLimit;
+            case "timelimit_exceeded":      // 契約使用量クォータ到達 (アカウントレベル) → 回復不能
             case "insufficient_funds":
-            case "timelimit_exceeded":   // セッション時間上限。 再接続しても同条件では回復しないため fatal 扱い。
                 return OpenAIApiErrorKind.QuotaExceeded;
             case "forbidden":
             case "unsupported_language_pair":
                 return OpenAIApiErrorKind.Forbidden;
-            case "rate_limit_exceeded":
-                return OpenAIApiErrorKind.RateLimit;
             default:
                 return OpenAIApiException.Classify(reason, type);
         }
