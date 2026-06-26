@@ -70,6 +70,9 @@ public sealed class SonioxRealtimeClient : Interfaces.IRealtimeTranscriber
 
     private long _totalDeltaCount;
 
+    // graceful stop 時に end-of-stream フレームを送ったあと、 サーバーの最終 finished を待つためのシグナル。
+    private volatile TaskCompletionSource<bool>? _finishedSignal;
+
     // ⚠️ Soniox は 16kHz 送信。 OpenAI 互換の「24kHz 換算サンプル数」を返すため ×1.5 する。
     private long _totalAudioInputSamples16kHz;
 
@@ -219,6 +222,9 @@ public sealed class SonioxRealtimeClient : Interfaces.IRealtimeTranscriber
     public async Task DisconnectAsync()
     {
         _shouldReconnect = false;
+        // graceful stop: 受信ループを cancel する前に end-of-stream を宣言し、 サーバーが返す最終
+        // translation tokens + finished を取りこぼさないよう短時間ドレインする。
+        await TryFinalizeStreamAsync().ConfigureAwait(false);
         try { _cts?.Cancel(); }
         catch (ObjectDisposedException) { }
 
@@ -236,6 +242,51 @@ public sealed class SonioxRealtimeClient : Interfaces.IRealtimeTranscriber
         finally
         {
             _connectLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// graceful stop 時のみ呼ぶ。 Soniox プロトコルでは空 WebSocket フレームで end-of-stream を宣言すると
+    /// サーバーが最後の translation tokens を確定し <c>finished</c> を返す。 受信ループ (この時点ではまだ
+    /// cancel していない) がそれらを処理する猶予を最大数秒与えてから、 呼び出し元が cancel する。
+    /// best-effort: 失敗しても停止処理は続行する。
+    /// </summary>
+    private async Task TryFinalizeStreamAsync()
+    {
+        var ws = _ws;
+        if (ws is not { State: WebSocketState.Open } || _state != ConnectionState.Connected)
+            return;
+
+        var finished = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _finishedSignal = finished;
+        try
+        {
+            using var opCts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+            await _wsSendLock.WaitAsync(opCts.Token).ConfigureAwait(false);
+            try
+            {
+                // 空 binary フレーム = end-of-stream シグナル。
+                await ws.SendAsync(ReadOnlyMemory<byte>.Empty, WebSocketMessageType.Binary, true, opCts.Token).ConfigureAwait(false);
+            }
+            finally
+            {
+                _wsSendLock.Release();
+            }
+
+            // 受信ループが最終 tokens + finished を処理するのを最大 3 秒待つ。
+            await finished.Task.WaitAsync(TimeSpan.FromSeconds(3)).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is OperationCanceledException or TimeoutException or WebSocketException or ObjectDisposedException)
+        {
+            Logger.Debug($"Soniox end-of-stream 送信/ドレイン 想定内例外: {ex.GetType().Name}");
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn($"Soniox end-of-stream 送信/ドレイン 想定外例外: {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            _finishedSignal = null;
         }
     }
 
@@ -286,21 +337,36 @@ public sealed class SonioxRealtimeClient : Interfaces.IRealtimeTranscriber
             var configBytes = BuildConfigMessage(settings);
             await ws.SendAsync(configBytes, WebSocketMessageType.Text, true, timeoutCts.Token).ConfigureAwait(false);
 
-            var buffer = new byte[8192];
-            var result = await ws.ReceiveAsync(buffer, timeoutCts.Token).ConfigureAwait(false);
-            var json = Encoding.UTF8.GetString(buffer, 0, result.Count);
-
-            using var doc = JsonDocument.Parse(json, s_jsonDocumentOptions);
-            var root = doc.RootElement;
-
-            string message;
-            if (root.ValueKind == JsonValueKind.Object &&
-                (root.TryGetProperty("error_code", out _) || root.TryGetProperty("error_message", out _)))
+            // Soniox は config 受理時に pre-audio ack を返さない (プロトコル上、 config 後はすぐ audio 送信)。
+            // そのため応答受信を 10 秒フルでブロックすると、 正常なキーでもサーバーが何も返さずタイムアウト扱いに
+            // なってしまう。 短いグレース期間だけ error を待ち、 何も来なければ「キー有効」とみなす (error は通常即時)。
+            string message = "接続成功！Soniox APIキーは有効です。";
+            using (var graceCts = CancellationTokenSource.CreateLinkedTokenSource(ct))
             {
-                var errMsg = root.TryGetProperty("error_message", out var m) ? m.GetString() : "不明なエラー";
-                return (false, $"APIエラー: {errMsg}");
+                graceCts.CancelAfter(TimeSpan.FromSeconds(2));
+                try
+                {
+                    var buffer = new byte[8192];
+                    var result = await ws.ReceiveAsync(buffer, graceCts.Token).ConfigureAwait(false);
+                    if (result.MessageType != WebSocketMessageType.Close)
+                    {
+                        var json = Encoding.UTF8.GetString(buffer, 0, result.Count);
+                        using var doc = JsonDocument.Parse(json, s_jsonDocumentOptions);
+                        var root = doc.RootElement;
+                        if (root.ValueKind == JsonValueKind.Object &&
+                            (root.TryGetProperty("error_code", out _) || root.TryGetProperty("error_message", out _)))
+                        {
+                            var errMsg = root.TryGetProperty("error_message", out var m) ? m.GetString() : "不明なエラー";
+                            return (false, $"APIエラー: {errMsg}");
+                        }
+                        // 非 error メッセージ (tokens 等) を受信 → 接続成立とみなす。
+                    }
+                }
+                catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                {
+                    // グレース期間内に error が来なかった → キー有効 (正常系。 タイムアウト扱いにしない)。
+                }
             }
-            message = "接続成功！Soniox APIキーは有効です。";
 
             try
             {
@@ -668,6 +734,7 @@ public sealed class SonioxRealtimeClient : Interfaces.IRealtimeTranscriber
             {
                 LogFirstSighting("finished");
                 TranscriptCompleted?.Invoke("");
+                _finishedSignal?.TrySetResult(true);
             }
         }
         catch (JsonException ex)

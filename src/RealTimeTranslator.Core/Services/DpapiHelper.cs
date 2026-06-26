@@ -74,7 +74,8 @@ internal static class DpapiHelper
     }
 
     /// <summary>
-    /// AppSettings 内の機微フィールド（OpenAIRealtime.ApiKey / Gemini.ApiKey）を in-place で復号する。
+    /// AppSettings 内の全機微フィールド（OpenAIRealtime.ApiKey / Gemini.ApiKey / Soniox.ApiKey /
+    /// Speechmatics.ApiKey / Azure.ApiKey）を in-place で復号する。
     /// 設定読み込み直後と <see cref="Microsoft.Extensions.Options.IOptionsMonitor{TOptions}.OnChange"/> 後に
     /// 呼ぶことで、後段のコンシューマは平文を扱える。
     /// </summary>

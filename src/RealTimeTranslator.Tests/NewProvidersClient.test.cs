@@ -188,6 +188,46 @@ public sealed class NewProvidersClientTests
         InvokeProcessMessageSm(client, "{\"message\":\"RecognitionStarted\",\"id\":\"abc\"}");
     }
 
+    [TestMethod]
+    [TestCategory("Adversarial")]
+    public void Speechmatics_ProcessMessage_TranslationDisablingWarning_ShouldRaiseError()
+    {
+        using var client = new SpeechmaticsRealtimeClient();
+        Exception? err = null;
+        client.ErrorReceived += e => err = e;
+
+        // 翻訳ペア非対応 Warning は握りつぶさず ErrorReceived で通知 (字幕が出ない原因をユーザーに知らせる)。
+        InvokeProcessMessageSm(client,
+            "{\"message\":\"Warning\",\"type\":\"unsupported_translation_pair\",\"reason\":\"ja->xx not supported\"}");
+
+        Assert.IsNotNull(err, "翻訳無効 Warning で ErrorReceived が発火するべき");
+    }
+
+    [TestMethod]
+    [TestCategory("Adversarial")]
+    public void Speechmatics_ProcessMessage_BenignWarning_ShouldNotRaiseError()
+    {
+        using var client = new SpeechmaticsRealtimeClient();
+        Exception? err = null;
+        client.ErrorReceived += e => err = e;
+
+        // 翻訳に影響しない Warning は通知しない (ノイズを増やさない)。
+        InvokeProcessMessageSm(client,
+            "{\"message\":\"Warning\",\"type\":\"duration_limit_exceeded\",\"reason\":\"info only\"}");
+
+        Assert.IsNull(err, "翻訳に影響しない Warning では ErrorReceived を発火しないべき");
+    }
+
+    [TestMethod]
+    [TestCategory("Adversarial")]
+    public void Speechmatics_IsTranslationDisablingWarning_ShouldClassify()
+    {
+        Assert.IsTrue(SpeechmaticsRealtimeClient.IsTranslationDisablingWarning("unsupported_translation_pair"));
+        Assert.IsTrue(SpeechmaticsRealtimeClient.IsTranslationDisablingWarning("empty_translation_target_list"));
+        Assert.IsFalse(SpeechmaticsRealtimeClient.IsTranslationDisablingWarning("duration_limit_exceeded"));
+        Assert.IsFalse(SpeechmaticsRealtimeClient.IsTranslationDisablingWarning(null));
+    }
+
     // ═══════════════════════════════════════════════════════════════
     // 🟪 Azure (Speech SDK ラッパ)
     // ═══════════════════════════════════════════════════════════════
@@ -213,6 +253,7 @@ public sealed class NewProvidersClientTests
     public async Task Azure_DisconnectAndDispose_BeforeConnect_ShouldNotCrash()
     {
         var client = new AzureSpeechTranslationClient();
+        await client.DisconnectAsync();
         await client.DisconnectAsync();
         await client.DisposeAsync();
         await client.DisposeAsync();

@@ -77,6 +77,11 @@ public sealed class SpeechmaticsRealtimeClient : Interfaces.IRealtimeTranscriber
     private long _totalDeltaCount;
     private long _totalAudioInputSamples16kHz;
 
+    // 送信した AddAudio (binary) メッセージ数。 graceful stop の EndOfStream.last_seq_no に使う。
+    private long _audioSeqNo;
+    // graceful stop 時に EndOfStream を送ったあと、 サーバーの EndOfTranscript を待つためのシグナル。
+    private volatile TaskCompletionSource<bool>? _endOfTranscriptSignal;
+
     public ConnectionState State => _state;
 
     /// <inheritdoc />
@@ -150,6 +155,7 @@ public sealed class SpeechmaticsRealtimeClient : Interfaces.IRealtimeTranscriber
             Interlocked.Exchange(ref _totalAudioInputSamples16kHz, 0);
             Interlocked.Exchange(ref _totalDroppedAudioChunks, 0);
             Interlocked.Exchange(ref _totalDeltaCount, 0);
+            Interlocked.Exchange(ref _audioSeqNo, 0);
 
             _cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             _sendChannel = Channel.CreateBounded<byte[]>(new BoundedChannelOptions(SendChannelCapacity)
@@ -215,6 +221,9 @@ public sealed class SpeechmaticsRealtimeClient : Interfaces.IRealtimeTranscriber
     public async Task DisconnectAsync()
     {
         _shouldReconnect = false;
+        // graceful stop: 受信ループを cancel する前に EndOfStream を宣言し、 サーバーが返す最終
+        // AddTranslation + EndOfTranscript を取りこぼさないよう短時間ドレインする。
+        await TryFinalizeStreamAsync().ConfigureAwait(false);
         try { _cts?.Cancel(); }
         catch (ObjectDisposedException) { }
 
@@ -232,6 +241,55 @@ public sealed class SpeechmaticsRealtimeClient : Interfaces.IRealtimeTranscriber
         finally
         {
             _connectLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// graceful stop 時のみ呼ぶ。 Speechmatics は <c>EndOfStream</c> (<c>last_seq_no</c> = 送信した AddAudio 数)
+    /// で「これ以上 audio は来ない」を宣言し、 サーバーが最終 <c>AddTranslation</c> + <c>EndOfTranscript</c> を返す。
+    /// 受信ループ (この時点ではまだ cancel していない) がそれらを処理する猶予を最大数秒与えてから、 呼び出し元が
+    /// cancel する。 best-effort: 失敗しても停止処理は続行する。
+    /// </summary>
+    private async Task TryFinalizeStreamAsync()
+    {
+        var ws = _ws;
+        if (ws is not { State: WebSocketState.Open } || _state != ConnectionState.Connected)
+            return;
+
+        var eot = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _endOfTranscriptSignal = eot;
+        try
+        {
+            var endOfStream = JsonSerializer.SerializeToUtf8Bytes(new
+            {
+                message = "EndOfStream",
+                last_seq_no = Interlocked.Read(ref _audioSeqNo),
+            });
+            using var opCts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+            await _wsSendLock.WaitAsync(opCts.Token).ConfigureAwait(false);
+            try
+            {
+                await ws.SendAsync(endOfStream, WebSocketMessageType.Text, true, opCts.Token).ConfigureAwait(false);
+            }
+            finally
+            {
+                _wsSendLock.Release();
+            }
+
+            // 受信ループが最終 AddTranslation + EndOfTranscript を処理するのを最大 3 秒待つ。
+            await eot.Task.WaitAsync(TimeSpan.FromSeconds(3)).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is OperationCanceledException or TimeoutException or WebSocketException or ObjectDisposedException)
+        {
+            Logger.Debug($"Speechmatics EndOfStream 送信/ドレイン 想定内例外: {ex.GetType().Name}");
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn($"Speechmatics EndOfStream 送信/ドレイン 想定外例外: {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            _endOfTranscriptSignal = null;
         }
     }
 
@@ -282,29 +340,50 @@ public sealed class SpeechmaticsRealtimeClient : Interfaces.IRealtimeTranscriber
             var startBytes = BuildStartRecognitionMessage(settings);
             await ws.SendAsync(startBytes, WebSocketMessageType.Text, true, timeoutCts.Token).ConfigureAwait(false);
 
+            // Speechmatics は handshake 直後に Info (認識品質 / 同時接続数等) を RecognitionStarted ack より
+            // 先に送ることがある。 最初の 1 通だけで成功判定すると、 無効な StartRecognition でも Info 先着で
+            // 成功扱いになってしまう。 RecognitionStarted / Error が来るか timeout するまで読み続ける。
+            string message = "接続成功！Speechmatics APIキーは有効です。";
+            string? translationWarning = null;
             var buffer = new byte[8192];
-            var result = await ws.ReceiveAsync(buffer, timeoutCts.Token).ConfigureAwait(false);
-            var json = Encoding.UTF8.GetString(buffer, 0, result.Count);
+            while (true)
+            {
+                var result = await ws.ReceiveAsync(buffer, timeoutCts.Token).ConfigureAwait(false);
+                if (result.MessageType == WebSocketMessageType.Close)
+                    return (false, "サーバーが接続を閉じました。StartRecognition が拒否された可能性があります。");
 
-            using var doc = JsonDocument.Parse(json, s_jsonDocumentOptions);
-            var root = doc.RootElement;
-            var msgType = root.ValueKind == JsonValueKind.Object && root.TryGetProperty("message", out var mt)
-                ? mt.GetString() : null;
+                using var ms = new MemoryStream();
+                ms.Write(buffer, 0, result.Count);
+                while (!result.EndOfMessage)
+                {
+                    result = await ws.ReceiveAsync(buffer, timeoutCts.Token).ConfigureAwait(false);
+                    ms.Write(buffer, 0, result.Count);
+                }
+                var json = Encoding.UTF8.GetString(ms.GetBuffer(), 0, (int)ms.Length);
 
-            string message;
-            if (msgType == "RecognitionStarted")
-            {
-                message = "接続成功！Speechmatics APIキーは有効です。";
+                using var doc = JsonDocument.Parse(json, s_jsonDocumentOptions);
+                var root = doc.RootElement;
+                var msgType = root.ValueKind == JsonValueKind.Object && root.TryGetProperty("message", out var mt)
+                    ? mt.GetString() : null;
+
+                if (msgType == "RecognitionStarted")
+                    break; // ハンドシェイク成立 → 成功
+                if (msgType == "Error")
+                {
+                    var reason = root.TryGetProperty("reason", out var r) ? r.GetString() : "不明なエラー";
+                    return (false, $"APIエラー: {reason}");
+                }
+                if (msgType == "Warning")
+                {
+                    var wtype = root.TryGetProperty("type", out var wt) ? wt.GetString() : null;
+                    if (IsTranslationDisablingWarning(wtype))
+                        translationWarning = $"ただし翻訳が無効です ({wtype})。源言語 / 出力言語の組み合わせを確認してください。";
+                }
+                // Info / Warning / その他は読み飛ばして RecognitionStarted を待つ。
             }
-            else if (msgType == "Error")
-            {
-                var reason = root.TryGetProperty("reason", out var r) ? r.GetString() : "不明なエラー";
-                return (false, $"APIエラー: {reason}");
-            }
-            else
-            {
-                message = $"接続成功 ({msgType ?? "応答受信"})";
-            }
+
+            if (translationWarning != null)
+                message = $"接続成功 (キーは有効) {translationWarning}";
 
             try
             {
@@ -504,7 +583,9 @@ public sealed class SpeechmaticsRealtimeClient : Interfaces.IRealtimeTranscriber
         }
         catch (OperationCanceledException)
         {
-            Logger.Warn("Speechmatics RecognitionStarted が 10 秒で未受信。 接続は継続するが頭欠けの可能性あり。");
+            // RecognitionStarted を待たずに Connected へ進むと ack 前に音声送信が始まる。
+            // タイムアウトは失敗として扱い、 接続確立を中断する (再接続ループが拾う)。
+            throw new TimeoutException("Speechmatics RecognitionStarted が 10 秒で未受信です。接続を開始できません。");
         }
     }
 
@@ -570,6 +651,8 @@ public sealed class SpeechmaticsRealtimeClient : Interfaces.IRealtimeTranscriber
                     _wsSendLock.Release();
                 }
                 Interlocked.Add(ref _totalAudioInputSamples16kHz, audioBatch.WrittenCount / 2);
+                // AddAudio 1 メッセージ = seq_no +1 (EndOfStream.last_seq_no 用)。
+                Interlocked.Increment(ref _audioSeqNo);
             }
         }
         catch (OperationCanceledException) { }
@@ -676,7 +759,27 @@ public sealed class SpeechmaticsRealtimeClient : Interfaces.IRealtimeTranscriber
                 case "EndOfTranscript":
                     Logger.Info("Speechmatics EndOfTranscript 受信");
                     TranscriptCompleted?.Invoke("");
+                    _endOfTranscriptSignal?.TrySetResult(true);
                     return;
+
+                case "Warning":
+                    {
+                        var wtype = root.TryGetProperty("type", out var wt) ? wt.GetString() : null;
+                        var wreason = root.TryGetProperty("reason", out var wr) ? wr.GetString() ?? "" : "";
+                        if (IsTranslationDisablingWarning(wtype))
+                        {
+                            // 非対応の翻訳ペア等で翻訳が走らない → socket は開いたままだが字幕は一切出ない。
+                            // 握りつぶすとユーザーは「繋がっているのに字幕が出ない」原因が分からないため通知する。
+                            var msg = $"Speechmatics: 翻訳が無効です ({wtype})。源言語 ({ResolveLang(_settings.SourceLanguage, "en")}) → 出力言語 ({ResolveLang(_settings.OutputLanguage, "ja")}) の組み合わせがサポートされていない可能性があります。設定を確認してください。";
+                            Logger.Warn(msg + (string.IsNullOrEmpty(wreason) ? "" : $" reason={LogFormatting.TruncateForLog(wreason)}"));
+                            ErrorReceived?.Invoke(new InvalidOperationException(msg));
+                        }
+                        else
+                        {
+                            Logger.Info($"Speechmatics Warning (type='{wtype}'): {LogFormatting.TruncateForLog(wreason)}");
+                        }
+                        return;
+                    }
 
                 case "Error":
                     {
@@ -696,7 +799,7 @@ public sealed class SpeechmaticsRealtimeClient : Interfaces.IRealtimeTranscriber
                         return;
                     }
 
-                // AddPartialTranslation / AddTranscript / AddPartialTranscript / AudioAdded / Info / Warning は破棄。
+                // AddPartialTranslation / AddTranscript / AddPartialTranscript / AudioAdded / Info は破棄。
                 default:
                     return;
             }
@@ -720,6 +823,12 @@ public sealed class SpeechmaticsRealtimeClient : Interfaces.IRealtimeTranscriber
         }
         return sb.ToString();
     }
+
+    // 翻訳が走らなくなる Speechmatics の Warning タイプ (socket は開いたまま字幕が出ない状態になる)。
+    // これらは握りつぶさず ErrorReceived でユーザーに通知する。
+    internal static bool IsTranslationDisablingWarning(string? type)
+        => string.Equals(type, "unsupported_translation_pair", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(type, "empty_translation_target_list", StringComparison.OrdinalIgnoreCase);
 
     internal static string SpeechmaticsFriendlyMessageFor(OpenAIApiErrorKind kind, string originalMessage) => kind switch
     {

@@ -108,7 +108,7 @@ public sealed class AzureSpeechTranslationClient : Interfaces.IRealtimeTranscrib
             try
             {
                 StartRecognizer();
-                await _recognizer!.StartContinuousRecognitionAsync().ConfigureAwait(false);
+                await _recognizer!.StartContinuousRecognitionAsync().WaitAsync(ct).ConfigureAwait(false);
                 Logger.Info($"Azure Speech 翻訳開始: region='{_settings.Region}' source='{ResolveSourceLocale(_settings.SourceLanguage)}' target='{_targetLang}'");
                 SetState(ConnectionState.Connected);
             }
@@ -193,8 +193,9 @@ public sealed class AzureSpeechTranslationClient : Interfaces.IRealtimeTranscrib
         var friendly = AzureFriendlyMessageFor(kind, e.ErrorDetails ?? string.Empty);
         var ex = new OpenAIApiException(kind, friendly, e.ErrorDetails ?? $"ErrorCode={e.ErrorCode}");
         Logger.Error($"Azure 認識エラー (kind={kind} code={e.ErrorCode}): {LogFormatting.TruncateForLog(e.ErrorDetails)}");
-        if (ex.IsFatal)
-            SetState(ConnectionState.Failed);
+        // 非 fatal (レート制限 / BadRequest 等) でも Connected のままだと SendAudio が通り続けるため、
+        // 少なくとも Disconnected に落とす (fatal は Failed)。
+        SetState(ex.IsFatal ? ConnectionState.Failed : ConnectionState.Disconnected);
         ErrorReceived?.Invoke(ex);
     }
 
@@ -360,8 +361,14 @@ public sealed class AzureSpeechTranslationClient : Interfaces.IRealtimeTranscrib
                 var result = await tcs.Task.WaitAsync(timeoutCts.Token).ConfigureAwait(false);
                 return result;
             }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                // 呼び出し元 (ユーザー) が接続テストを中断 → 成功扱いにせずキャンセルを伝播。
+                throw;
+            }
             catch (OperationCanceledException)
             {
+                // 4 秒 timeout で Canceled が来なかった = 認証は通った (キー / Region 有効)。
                 return (true, "接続成功！Azure Speech のキー / Region は有効です。");
             }
         }

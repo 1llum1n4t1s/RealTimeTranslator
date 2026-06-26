@@ -375,21 +375,25 @@ public partial class SettingsViewModel : ObservableObject
         }
 
         // 追加 provider (Soniox / Speechmatics / Azure) の出力言語も一覧外なら 'ja' に矯正。
+        // (OpenAI/Gemini と同様、 矯正内容をログに残してトラブルシュート時に追えるようにする。)
         if (string.IsNullOrWhiteSpace(_settings.Soniox.OutputLanguage) ||
             !OutputLanguageOptions.Any(o => o.Code == _settings.Soniox.OutputLanguage))
         {
+            LoggerService.LogInfo($"SettingsViewModel.Sanitize: Soniox.OutputLanguage='{_settings.Soniox.OutputLanguage}' が一覧外 → 'ja' に矯正");
             _settings.Soniox.OutputLanguage = "ja";
             changed = true;
         }
         if (string.IsNullOrWhiteSpace(_settings.Speechmatics.OutputLanguage) ||
             !OutputLanguageOptions.Any(o => o.Code == _settings.Speechmatics.OutputLanguage))
         {
+            LoggerService.LogInfo($"SettingsViewModel.Sanitize: Speechmatics.OutputLanguage='{_settings.Speechmatics.OutputLanguage}' が一覧外 → 'ja' に矯正");
             _settings.Speechmatics.OutputLanguage = "ja";
             changed = true;
         }
         if (string.IsNullOrWhiteSpace(_settings.Azure.OutputLanguage) ||
             !OutputLanguageOptions.Any(o => o.Code == _settings.Azure.OutputLanguage))
         {
+            LoggerService.LogInfo($"SettingsViewModel.Sanitize: Azure.OutputLanguage='{_settings.Azure.OutputLanguage}' が一覧外 → 'ja' に矯正");
             _settings.Azure.OutputLanguage = "ja";
             changed = true;
         }

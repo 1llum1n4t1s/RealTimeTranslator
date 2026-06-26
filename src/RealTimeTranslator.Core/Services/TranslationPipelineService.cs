@@ -365,6 +365,15 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
             throw ex;
         }
 
+        // Azure は ApiKey に加え Region 必須。 AzureSpeechTranslationClient.ConnectAsync も検証するが、
+        // そこは try/catch で包まれず ErrorOccurred に乗らないため、 他 provider と通知経路を揃えてここで弾く。
+        if (provider == TranscriptionProvider.Azure && string.IsNullOrWhiteSpace(appSettings.Azure.Region))
+        {
+            var ex = new InvalidOperationException("Azure の Region が設定されていません。設定画面で Region を入力してください。");
+            ErrorOccurred?.Invoke(this, ex);
+            throw ex;
+        }
+
         Logger.Info($"翻訳パイプライン開始 (Provider={provider}, OutputLanguage='{outputLanguage}', Model='{modelForCost}')");
 
         // 前セッションの累積 transcript / SegmentId をリセットしないと、 再 Start 時に
