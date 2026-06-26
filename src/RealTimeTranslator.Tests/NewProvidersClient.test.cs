@@ -115,6 +115,9 @@ public sealed class NewProvidersClientTests
         Assert.AreEqual(OpenAIApiErrorKind.QuotaExceeded, SonioxRealtimeClient.ClassifySonioxError("", "monthly budget exhausted"));
         Assert.AreEqual(OpenAIApiErrorKind.InvalidApiKey, SonioxRealtimeClient.ClassifySonioxError("401", "bad key"));
         Assert.AreEqual(OpenAIApiErrorKind.RateLimit, SonioxRealtimeClient.ClassifySonioxError("429", "slow down"));
+        // 種別が実際に IsFatal であることまで確認 (再接続ループ防止の核心。 fatal 判定が変わったら検知する)。
+        Assert.IsTrue(new OpenAIApiException(OpenAIApiErrorKind.QuotaExceeded, "", "").IsFatal);
+        Assert.IsTrue(new OpenAIApiException(OpenAIApiErrorKind.InvalidApiKey, "", "").IsFatal);
     }
 
     [TestMethod]
@@ -252,6 +255,9 @@ public sealed class NewProvidersClientTests
         Assert.AreEqual(OpenAIApiErrorKind.InvalidApiKey, SpeechmaticsRealtimeClient.ClassifySpeechmaticsError("not_authorised", "bad key"));
         Assert.AreEqual(OpenAIApiErrorKind.QuotaExceeded, SpeechmaticsRealtimeClient.ClassifySpeechmaticsError("quota_exceeded", "no quota"));
         Assert.AreEqual(OpenAIApiErrorKind.QuotaExceeded, SpeechmaticsRealtimeClient.ClassifySpeechmaticsError("timelimit_exceeded", "limit"));
+        // これらの種別が IsFatal であることを確認 (非 fatal だと認証/クォータ失敗でも再接続ループに陥る)。
+        Assert.IsTrue(new OpenAIApiException(OpenAIApiErrorKind.InvalidApiKey, "", "").IsFatal);
+        Assert.IsTrue(new OpenAIApiException(OpenAIApiErrorKind.QuotaExceeded, "", "").IsFatal);
     }
 
     [TestMethod]
