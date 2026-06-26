@@ -241,11 +241,27 @@ public sealed class NewProvidersClientTests
         Exception? err = null;
         client.ErrorReceived += e => err = e;
 
-        // 翻訳に影響しない Warning は通知しない (ノイズを増やさない)。
+        // 翻訳に影響せず終了でもない Warning は通知しない (ノイズを増やさない)。
+        // ※ duration_limit_exceeded は terminal warning なので別テストで通知を検証する。
         InvokeProcessMessageSm(client,
-            "{\"message\":\"Warning\",\"type\":\"duration_limit_exceeded\",\"reason\":\"info only\"}");
+            "{\"message\":\"Warning\",\"type\":\"low_quality_audio\",\"reason\":\"info only\"}");
 
-        Assert.IsNull(err, "翻訳に影響しない Warning では ErrorReceived を発火しないべき");
+        Assert.IsNull(err, "良性 Warning では ErrorReceived を発火しないべき");
+    }
+
+    [TestMethod]
+    [TestCategory("Adversarial")]
+    public void Speechmatics_ProcessMessage_TerminalWarning_ShouldRaiseError()
+    {
+        using var client = new SpeechmaticsRealtimeClient();
+        Exception? err = null;
+        client.ErrorReceived += e => err = e;
+
+        // duration_limit_exceeded は以降の音声が無視される terminal warning → 通知する。
+        InvokeProcessMessageSm(client,
+            "{\"message\":\"Warning\",\"type\":\"duration_limit_exceeded\",\"reason\":\"limit reached\"}");
+
+        Assert.IsNotNull(err, "terminal warning で ErrorReceived が発火するべき");
     }
 
     [TestMethod]
