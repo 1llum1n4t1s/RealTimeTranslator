@@ -261,6 +261,20 @@ public sealed class SonioxRealtimeClient : Interfaces.IRealtimeTranscriber
         _finishedSignal = finished;
         try
         {
+            // 先に送信チャンネルを閉じて送信ループに残バッファ (キュー済み PCM) を送り切らせる。
+            // これをしないと end-of-stream マーカーの後ろにキュー音声が送られたり cancel で捨てられ、
+            // 末尾の発話フレームが翻訳されないまま失われる (Codex 指摘)。
+            _sendChannel?.Writer.TryComplete();
+            var sendTask = _sendTask;
+            if (sendTask != null)
+            {
+                try { await sendTask.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false); }
+                catch (Exception ex) when (ex is TimeoutException or OperationCanceledException)
+                {
+                    Logger.Debug($"Soniox 送信ループのドレイン待ちが想定内例外: {ex.GetType().Name}");
+                }
+            }
+
             using var opCts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
             await _wsSendLock.WaitAsync(opCts.Token).ConfigureAwait(false);
             try
@@ -476,11 +490,23 @@ public sealed class SonioxRealtimeClient : Interfaces.IRealtimeTranscriber
             _receiveTask = Task.Run(() => ReceiveLoopAsync(_cts!.Token), _cts!.Token);
             _sendTask = Task.Run(() => SendLoopAsync(_cts!.Token), _cts!.Token);
 
-            // config メッセージ送信 (Soniox は pre-audio ack を返さないため、 送信後ただちに Connected にする)。
+            // config メッセージ送信 (Soniox は pre-audio ack を返さない)。
             await SendConfigAsync(ct).ConfigureAwait(false);
+
+            // config 直後に受信ループが in-band error (無効キー / 非対応言語) を処理して Failed に
+            // している可能性がある。 短いグレースで観測してから Connected にする (Failed を上書きして
+            // 拒否後に audio 送信を始めてしまうのを防ぐ。 Codex 指摘)。
+            try { await Task.Delay(250, ct).ConfigureAwait(false); }
+            catch (OperationCanceledException) { throw; }
 
             if (_ws is not { State: WebSocketState.Open })
                 throw new InvalidOperationException("Soniox config 送信後にサーバーが接続を閉じました。");
+
+            if (_state == ConnectionState.Failed)
+                // 受信ループが既に ErrorReceived 発火 + Failed 済み。 Connected で上書きせず connect を中断する
+                // (OpenAIApiException は下の catch で二重通知せず伝播)。
+                throw new OpenAIApiException(OpenAIApiErrorKind.Unknown,
+                    "Soniox 接続が config 直後に失敗しました (キー / 言語設定を確認してください)。", "config rejected");
 
             SetState(ConnectionState.Connected);
         }
@@ -689,7 +715,7 @@ public sealed class SonioxRealtimeClient : Interfaces.IRealtimeTranscriber
                 var originalMessage = root.TryGetProperty("error_message", out var m)
                     ? m.GetString() ?? "Unknown error" : "Unknown error";
                 var code = root.TryGetProperty("error_code", out var c) ? c.ToString() : "";
-                var kind = OpenAIApiException.Classify(originalMessage, code);
+                var kind = ClassifySonioxError(code, originalMessage);
                 var friendly = SonioxFriendlyMessageFor(kind, originalMessage);
                 var ex = new OpenAIApiException(kind, friendly, originalMessage);
                 Logger.Error($"Soniox API エラー (kind={kind} code='{code}'): {LogFormatting.TruncateForLog(originalMessage)}");
@@ -709,14 +735,18 @@ public sealed class SonioxRealtimeClient : Interfaces.IRealtimeTranscriber
             {
                 LogFirstSighting("tokens");
                 var sb = new StringBuilder();
+                var sawEndpoint = false;
                 foreach (var tok in tokens.EnumerateArray())
                 {
                     if (tok.ValueKind != JsonValueKind.Object) continue;
+                    var text = tok.TryGetProperty("text", out var t) ? t.GetString() : null;
+                    // endpoint detection 有効時、 発話境界は特殊トークン "<end>" で届く。 字幕には出さず、
+                    // ここで文を確定させる (短い無音区切りの発話が次発話と融合するのを防ぐ。 Codex 指摘)。
+                    if (string.Equals(text, "<end>", StringComparison.Ordinal)) { sawEndpoint = true; continue; }
                     var status = tok.TryGetProperty("translation_status", out var st) ? st.GetString() : null;
                     if (!string.Equals(status, "translation", StringComparison.Ordinal)) continue;
                     var isFinal = tok.TryGetProperty("is_final", out var f) && f.ValueKind == JsonValueKind.True;
                     if (!isFinal) continue;
-                    var text = tok.TryGetProperty("text", out var t) ? t.GetString() : null;
                     if (!string.IsNullOrEmpty(text)) sb.Append(text);
                 }
                 if (sb.Length > 0)
@@ -726,6 +756,11 @@ public sealed class SonioxRealtimeClient : Interfaces.IRealtimeTranscriber
                     if (LogFormatting.ShouldLogAtCount(count))
                         Logger.Info($"Soniox translation delta #{count}: '{LogFormatting.TruncateForLog(delta, 20)}' 長={delta.Length}");
                     TranscriptDeltaReceived?.Invoke(delta);
+                }
+                if (sawEndpoint)
+                {
+                    LogFirstSighting("endpoint");
+                    TranscriptCompleted?.Invoke("");
                 }
             }
 
@@ -741,6 +776,25 @@ public sealed class SonioxRealtimeClient : Interfaces.IRealtimeTranscriber
         {
             Logger.Warn("Soniox JSON パースエラー", ex);
         }
+    }
+
+    // Soniox は数値 error_code (HTTP 類似) を返す。 既知コード / メッセージを先に判定して fatal 種別に正しく
+    // マッピングし (402 残高枯渇等は OpenAI 分類だと Unknown=非 fatal になり再接続ループに陥る)、 残りは
+    // OpenAI 分類に委譲する (Codex 指摘)。
+    internal static OpenAIApiErrorKind ClassifySonioxError(string code, string message)
+    {
+        var m = message ?? string.Empty;
+        if (code == "402"
+            || m.Contains("balance", StringComparison.OrdinalIgnoreCase)
+            || m.Contains("quota", StringComparison.OrdinalIgnoreCase)
+            || m.Contains("budget", StringComparison.OrdinalIgnoreCase)
+            || m.Contains("exhausted", StringComparison.OrdinalIgnoreCase))
+            return OpenAIApiErrorKind.QuotaExceeded;
+        if (code == "401") return OpenAIApiErrorKind.InvalidApiKey;
+        if (code == "403") return OpenAIApiErrorKind.Forbidden;
+        if (code == "429") return OpenAIApiErrorKind.RateLimit;
+        if (code == "400") return OpenAIApiErrorKind.BadRequest;
+        return OpenAIApiException.Classify(message, code);
     }
 
     // Soniox error 用の日本語補助メッセージ (OpenAI の billing/api-keys URL でユーザーを誤誘導しないため差し替え)。

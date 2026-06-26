@@ -93,6 +93,32 @@ public sealed class NewProvidersClientTests
 
     [TestMethod]
     [TestCategory("Adversarial")]
+    public void Soniox_ProcessMessage_EndpointToken_ShouldRaiseCompleted()
+    {
+        using var client = new SonioxRealtimeClient();
+        bool completed = false;
+        client.TranscriptCompleted += _ => completed = true;
+
+        // endpoint detection の "<end>" トークンで文を確定 (TranscriptCompleted 発火) するべき。
+        InvokeProcessMessage(client,
+            "{\"tokens\":[{\"text\":\"<end>\",\"is_final\":true}]}");
+
+        Assert.IsTrue(completed, "<end> トークンで TranscriptCompleted が発火するべき");
+    }
+
+    [TestMethod]
+    [TestCategory("Adversarial")]
+    public void Soniox_ClassifyError_QuotaAndAuthAreFatal()
+    {
+        // 402 / balance 系は QuotaExceeded、 401 は InvalidApiKey (どちらも IsFatal で再接続ループを止める)。
+        Assert.AreEqual(OpenAIApiErrorKind.QuotaExceeded, SonioxRealtimeClient.ClassifySonioxError("402", "Organization balance exhausted"));
+        Assert.AreEqual(OpenAIApiErrorKind.QuotaExceeded, SonioxRealtimeClient.ClassifySonioxError("", "monthly budget exhausted"));
+        Assert.AreEqual(OpenAIApiErrorKind.InvalidApiKey, SonioxRealtimeClient.ClassifySonioxError("401", "bad key"));
+        Assert.AreEqual(OpenAIApiErrorKind.RateLimit, SonioxRealtimeClient.ClassifySonioxError("429", "slow down"));
+    }
+
+    [TestMethod]
+    [TestCategory("Adversarial")]
     public void Soniox_ProcessMessage_Error_ShouldNotCrash()
     {
         using var client = new SonioxRealtimeClient();
@@ -216,6 +242,16 @@ public sealed class NewProvidersClientTests
             "{\"message\":\"Warning\",\"type\":\"duration_limit_exceeded\",\"reason\":\"info only\"}");
 
         Assert.IsNull(err, "翻訳に影響しない Warning では ErrorReceived を発火しないべき");
+    }
+
+    [TestMethod]
+    [TestCategory("Adversarial")]
+    public void Speechmatics_ClassifyError_AuthAndQuotaAreFatal()
+    {
+        // provider 固有 type を fatal 種別にマッピング (Unknown=非 fatal で再接続ループに陥るのを防ぐ)。
+        Assert.AreEqual(OpenAIApiErrorKind.InvalidApiKey, SpeechmaticsRealtimeClient.ClassifySpeechmaticsError("not_authorised", "bad key"));
+        Assert.AreEqual(OpenAIApiErrorKind.QuotaExceeded, SpeechmaticsRealtimeClient.ClassifySpeechmaticsError("quota_exceeded", "no quota"));
+        Assert.AreEqual(OpenAIApiErrorKind.QuotaExceeded, SpeechmaticsRealtimeClient.ClassifySpeechmaticsError("timelimit_exceeded", "limit"));
     }
 
     [TestMethod]

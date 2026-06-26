@@ -260,6 +260,20 @@ public sealed class SpeechmaticsRealtimeClient : Interfaces.IRealtimeTranscriber
         _endOfTranscriptSignal = eot;
         try
         {
+            // 先に送信チャンネルを閉じて送信ループに残バッファ (キュー済み AddAudio) を送り切らせる。
+            // Speechmatics は EndOfStream 後の audio を無視するため、 これをしないと末尾の AddAudio が
+            // EOS の後ろに送られて捨てられ、 最後の翻訳が失われる (Codex 指摘)。 last_seq_no は送り切った後に確定。
+            _sendChannel?.Writer.TryComplete();
+            var sendTask = _sendTask;
+            if (sendTask != null)
+            {
+                try { await sendTask.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false); }
+                catch (Exception ex) when (ex is TimeoutException or OperationCanceledException)
+                {
+                    Logger.Debug($"Speechmatics 送信ループのドレイン待ちが想定内例外: {ex.GetType().Name}");
+                }
+            }
+
             var endOfStream = JsonSerializer.SerializeToUtf8Bytes(new
             {
                 message = "EndOfStream",
@@ -784,8 +798,8 @@ public sealed class SpeechmaticsRealtimeClient : Interfaces.IRealtimeTranscriber
                 case "Error":
                     {
                         var reason = root.TryGetProperty("reason", out var r) ? r.GetString() ?? "Unknown error" : "Unknown error";
-                        var type = root.TryGetProperty("type", out var ty) ? ty.GetString() : "";
-                        var kind = OpenAIApiException.Classify(reason, type);
+                        var type = root.TryGetProperty("type", out var ty) ? ty.GetString() ?? "" : "";
+                        var kind = ClassifySpeechmaticsError(type, reason);
                         var friendly = SpeechmaticsFriendlyMessageFor(kind, reason);
                         var ex = new OpenAIApiException(kind, friendly, reason);
                         Logger.Error($"Speechmatics API エラー (kind={kind} type='{type}'): {LogFormatting.TruncateForLog(reason)}");
@@ -822,6 +836,31 @@ public sealed class SpeechmaticsRealtimeClient : Interfaces.IRealtimeTranscriber
                 sb.Append(c.GetString());
         }
         return sb.ToString();
+    }
+
+    // Speechmatics の in-band Error は provider 固有の type を返す。 既知 type を fatal 種別に先にマッピングし
+    // (OpenAI 分類だと Unknown=非 fatal になり、 認証失敗 / クォータ枯渇でも再接続ループに陥って fatal バナーが
+    // 出ない)、 残りは OpenAI 分類に委譲する (Codex 指摘)。
+    internal static OpenAIApiErrorKind ClassifySpeechmaticsError(string? type, string reason)
+    {
+        switch ((type ?? string.Empty).ToLowerInvariant())
+        {
+            case "not_authorised":
+            case "not_authorized":
+            case "invalid_api_key":
+                return OpenAIApiErrorKind.InvalidApiKey;
+            case "quota_exceeded":
+            case "insufficient_funds":
+            case "timelimit_exceeded":   // セッション時間上限。 再接続しても同条件では回復しないため fatal 扱い。
+                return OpenAIApiErrorKind.QuotaExceeded;
+            case "forbidden":
+            case "unsupported_language_pair":
+                return OpenAIApiErrorKind.Forbidden;
+            case "rate_limit_exceeded":
+                return OpenAIApiErrorKind.RateLimit;
+            default:
+                return OpenAIApiException.Classify(reason, type);
+        }
     }
 
     // 翻訳が走らなくなる Speechmatics の Warning タイプ (socket は開いたまま字幕が出ない状態になる)。
