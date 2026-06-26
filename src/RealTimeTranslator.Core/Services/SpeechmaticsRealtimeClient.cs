@@ -758,9 +758,9 @@ public sealed class SpeechmaticsRealtimeClient : Interfaces.IRealtimeTranscriber
 
                 case "AddTranslation":
                     // 確定翻訳のみ採用。 results[].content を連結して delta として流す。
-                    // (AddPartialTranslation は破棄 — 確定だけ使い二重表示・無限成長を防ぐ。
-                    //  日本語ターゲット前提で content は空白なしで連結する。)
-                    var text = JoinResults(root);
+                    // (AddPartialTranslation は破棄 — 確定だけ使い二重表示・無限成長を防ぐ。)
+                    // 出力言語が空白区切り (英 / 西 / 独 等) ならセグメント間に空白を入れる (CJK は直結)。
+                    var text = JoinResults(root, !IsCjkOutputLanguage(_settings.OutputLanguage));
                     if (!string.IsNullOrEmpty(text))
                     {
                         var count = Interlocked.Increment(ref _totalDeltaCount);
@@ -780,7 +780,19 @@ public sealed class SpeechmaticsRealtimeClient : Interfaces.IRealtimeTranscriber
                     {
                         var wtype = root.TryGetProperty("type", out var wt) ? wt.GetString() : null;
                         var wreason = root.TryGetProperty("reason", out var wr) ? wr.GetString() ?? "" : "";
-                        if (IsTranslationDisablingWarning(wtype))
+                        if (IsTerminalWarning(wtype))
+                        {
+                            // duration_limit_exceeded 等。 サーバーは以降の audio を無視し EndOfStream 相当に振る舞う。
+                            // 放置すると Connected のまま SendAudio が黙って捨てられ字幕が出なくなるため、 通知した上で
+                            // socket を Abort → 受信ループ終了 → reconnect で新セッションを張り直す (Codex 指摘)。
+                            var msg = $"Speechmatics: 1 発話の長さ上限に達しました ({wtype})。以降の音声は無視されるため接続を張り直します。";
+                            Logger.Warn(msg + (string.IsNullOrEmpty(wreason) ? "" : $" reason={LogFormatting.TruncateForLog(wreason)}"));
+                            ErrorReceived?.Invoke(new InvalidOperationException(msg));
+                            if (_shouldReconnect && _state == ConnectionState.Connected)
+                                SetState(ConnectionState.Reconnecting);
+                            try { _ws?.Abort(); } catch { /* 受信ループを終了させて reconnect に倒すための Abort */ }
+                        }
+                        else if (IsTranslationDisablingWarning(wtype))
                         {
                             // 非対応の翻訳ペア等で翻訳が走らない → socket は開いたままだが字幕は一切出ない。
                             // 握りつぶすとユーザーは「繋がっているのに字幕が出ない」原因が分からないため通知する。
@@ -824,7 +836,16 @@ public sealed class SpeechmaticsRealtimeClient : Interfaces.IRealtimeTranscriber
         }
     }
 
-    private static string JoinResults(JsonElement root)
+    // 出力言語が CJK (日本語 / 中国語 / 韓国語) なら単語間に空白を入れない。 それ以外 (英語 / スペイン語 /
+    // ドイツ語等の空白区切り言語) は results セグメントを直結すると "Hello"+"world"="Helloworld" と繋がるため、
+    // セグメント間に空白を入れる (句読点で始まるセグメントの前は入れない)。 Codex 指摘。
+    internal static bool IsCjkOutputLanguage(string? lang)
+    {
+        var l = (lang ?? string.Empty).ToLowerInvariant();
+        return l.StartsWith("ja") || l.StartsWith("zh") || l.StartsWith("ko") || l.StartsWith("yue");
+    }
+
+    internal static string JoinResults(JsonElement root, bool spaceDelimited)
     {
         if (!root.TryGetProperty("results", out var results) || results.ValueKind != JsonValueKind.Array)
             return string.Empty;
@@ -832,10 +853,23 @@ public sealed class SpeechmaticsRealtimeClient : Interfaces.IRealtimeTranscriber
         foreach (var res in results.EnumerateArray())
         {
             if (res.ValueKind != JsonValueKind.Object) continue;
-            if (res.TryGetProperty("content", out var c) && c.ValueKind == JsonValueKind.String)
-                sb.Append(c.GetString());
+            if (!res.TryGetProperty("content", out var c) || c.ValueKind != JsonValueKind.String) continue;
+            var content = c.GetString();
+            if (string.IsNullOrEmpty(content)) continue;
+
+            if (spaceDelimited && sb.Length > 0 && !StartsWithClosingPunctuation(content))
+                sb.Append(' ');
+            sb.Append(content);
         }
         return sb.ToString();
+    }
+
+    // 直前に空白を入れたくない「閉じ / 後続」系の句読点で始まるか (例: ", . ! ? ) ] 」)。
+    private static bool StartsWithClosingPunctuation(string content)
+    {
+        var ch = content[0];
+        return ch is ',' or '.' or '!' or '?' or ';' or ':' or ')' or ']' or '}'
+            or '、' or '。' or '！' or '？' or '」' or '）' or '’' or '”';
     }
 
     // Speechmatics の in-band Error は provider 固有の type を返す。 既知 type を fatal 種別に先にマッピングし
@@ -862,6 +896,11 @@ public sealed class SpeechmaticsRealtimeClient : Interfaces.IRealtimeTranscriber
                 return OpenAIApiException.Classify(reason, type);
         }
     }
+
+    // セッションを実質終了させる Speechmatics の Warning タイプ。 サーバーは以降の audio を無視し
+    // EndOfStream 相当に振る舞うため、 通知 + reconnect で新セッションを張り直す必要がある。
+    internal static bool IsTerminalWarning(string? type)
+        => string.Equals(type, "duration_limit_exceeded", StringComparison.OrdinalIgnoreCase);
 
     // 翻訳が走らなくなる Speechmatics の Warning タイプ (socket は開いたまま字幕が出ない状態になる)。
     // これらは握りつぶさず ErrorReceived でユーザーに通知する。

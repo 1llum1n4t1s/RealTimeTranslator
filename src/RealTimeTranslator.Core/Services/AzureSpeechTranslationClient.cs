@@ -13,7 +13,8 @@ namespace RealTimeTranslator.Core.Services;
 /// <see cref="PushAudioInputStream"/> を <see cref="Interfaces.IRealtimeTranscriber"/> でラップする。
 ///
 /// 主な特徴 / 差分:
-///  - 接続 / 再接続 / KeepAlive は SDK が内部管理する (本クラスは reconnect ループを持たない)
+///  - KeepAlive / セッション内の一時的な切断回復は SDK が内部管理するが、 Canceled(Error) で打ち切られた
+///    場合は SDK が自動再開しないため、 非 fatal エラー時のみ本クラスが recognizer を張り直す reconnect を持つ
 ///  - 入力音声: <b>16kHz</b>/PCM16/mono (<see cref="InputSampleRate"/>=16000)。 PushStream に生 PCM16 を Write
 ///  - 源言語を明示指定する (SpeechRecognitionLanguage はロケール、 例 "en-US")。 出力言語へ翻訳
 ///  - <see cref="TranslationRecognizer.Recognized"/> の確定翻訳のみを delta として流す
@@ -36,6 +37,11 @@ public sealed class AzureSpeechTranslationClient : Interfaces.IRealtimeTranscrib
     private long _totalDeltaCount;
     private volatile ConnectionState _state = ConnectionState.Disconnected;
     private readonly SemaphoreSlim _connectLock = new(1, 1);
+
+    // Azure SDK は Canceled(Error) 後に自動再開しないため、 非 fatal エラーでは自前で recognizer を張り直す。
+    private volatile bool _shouldReconnect;
+    private int _reconnectAttempts;
+    private int _reconnectInFlight;
 
     public ConnectionState State => _state;
 
@@ -100,6 +106,8 @@ public sealed class AzureSpeechTranslationClient : Interfaces.IRealtimeTranscrib
             Interlocked.Exchange(ref _totalAudioInputSamples16kHz, 0);
             Interlocked.Exchange(ref _totalDroppedAudioChunks, 0);
             Interlocked.Exchange(ref _totalDeltaCount, 0);
+            Interlocked.Exchange(ref _reconnectAttempts, 0);
+            _shouldReconnect = true;
 
             if (string.IsNullOrWhiteSpace(_settings.ApiKey) || string.IsNullOrWhiteSpace(_settings.Region))
                 throw new InvalidOperationException("Azure Speech の APIキー / Region が設定されていません。");
@@ -193,10 +201,93 @@ public sealed class AzureSpeechTranslationClient : Interfaces.IRealtimeTranscrib
         var friendly = AzureFriendlyMessageFor(kind, e.ErrorDetails ?? string.Empty);
         var ex = new OpenAIApiException(kind, friendly, e.ErrorDetails ?? $"ErrorCode={e.ErrorCode}");
         Logger.Error($"Azure 認識エラー (kind={kind} code={e.ErrorCode}): {LogFormatting.TruncateForLog(e.ErrorDetails)}");
-        // 非 fatal (レート制限 / BadRequest 等) でも Connected のままだと SendAudio が通り続けるため、
-        // 少なくとも Disconnected に落とす (fatal は Failed)。
-        SetState(ex.IsFatal ? ConnectionState.Failed : ConnectionState.Disconnected);
         ErrorReceived?.Invoke(ex);
+
+        if (ex.IsFatal)
+        {
+            // 回復不能 (認証 / クォータ / 権限)。 再接続せず Failed に倒す → pipeline がキャプチャ停止。
+            _shouldReconnect = false;
+            SetState(ConnectionState.Failed);
+            return;
+        }
+
+        // 非 fatal (レート制限 / BadRequest / 一時的なサービス・ネットワーク断)。 Azure SDK は Canceled(Error)
+        // 後に自動再開しないため、 Disconnected のまま放置すると SendAudio が黙って捨てられ「繋がってるのに
+        // 字幕が出ない」状態になる。 recognizer を張り直す reconnect を起動する (Codex 指摘)。
+        if (_shouldReconnect)
+        {
+            SetState(ConnectionState.Reconnecting);
+            _ = Task.Run(() => TryReconnectAsync(), CancellationToken.None);
+        }
+        else
+        {
+            SetState(ConnectionState.Disconnected);
+        }
+    }
+
+    /// <summary>
+    /// 非 fatal な Canceled(Error) 後に recognizer を張り直す。 他クライアントの WebSocket reconnect と同型
+    /// (指数バックオフ + 上限 + in-flight ガード)。 _shouldReconnect=false (= ユーザー停止) で抜ける。
+    /// </summary>
+    private async Task TryReconnectAsync()
+    {
+        if (Interlocked.CompareExchange(ref _reconnectInFlight, 1, 0) != 0) return;
+        try
+        {
+            while (_shouldReconnect
+                   && _state != ConnectionState.Connected
+                   && _state != ConnectionState.Failed
+                   && Interlocked.CompareExchange(ref _disposed, 0, 0) == 0)
+            {
+                var attempt = Interlocked.Increment(ref _reconnectAttempts);
+                if (attempt > _settings.MaxReconnectAttempts)
+                {
+                    Logger.Error($"Azure 再接続上限 ({_settings.MaxReconnectAttempts}) 到達");
+                    _shouldReconnect = false;
+                    SetState(ConnectionState.Failed);
+                    ErrorReceived?.Invoke(new InvalidOperationException(
+                        $"Azure 再接続の上限（{_settings.MaxReconnectAttempts}回）に達しました。接続を確認してください。"));
+                    return;
+                }
+
+                var shift = Math.Min(attempt - 1, 30);
+                var baseDelay = (int)Math.Min((long)_settings.ReconnectDelayMs << shift, 30000L);
+                var jitter = (Random.Shared.NextDouble() * 0.4) - 0.2;
+                var delay = (int)Math.Clamp(baseDelay * (1.0 + jitter), 100, 30000);
+                Logger.Info($"Azure 再接続試行 {attempt}/{_settings.MaxReconnectAttempts}（{delay}ms 後）");
+                try { await Task.Delay(delay).ConfigureAwait(false); }
+                catch (OperationCanceledException) { return; }
+
+                if (!_shouldReconnect) return;
+
+                await _connectLock.WaitAsync().ConfigureAwait(false);
+                try
+                {
+                    if (!_shouldReconnect || _state == ConnectionState.Connected || _state == ConnectionState.Failed)
+                        return;
+
+                    await CleanupRecognizerAsync().ConfigureAwait(false);
+                    SetState(ConnectionState.Connecting);
+                    StartRecognizer();
+                    await _recognizer!.StartContinuousRecognitionAsync().WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+                    Logger.Info("Azure 再接続成功");
+                    Interlocked.Exchange(ref _reconnectAttempts, 0);
+                    SetState(ConnectionState.Connected);
+                }
+                catch (Exception ex)
+                {
+                    Logger.Warn($"Azure 再接続失敗: {ex.GetType().Name}: {ex.Message}");
+                }
+                finally
+                {
+                    _connectLock.Release();
+                }
+            }
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _reconnectInFlight, 0);
+        }
     }
 
     private void OnSessionStopped(object? sender, SessionEventArgs e)
@@ -248,6 +339,7 @@ public sealed class AzureSpeechTranslationClient : Interfaces.IRealtimeTranscrib
 
     public async Task DisconnectAsync()
     {
+        _shouldReconnect = false; // 走行中の reconnect ループを次のチェックで抜けさせる。
         if (!await _connectLock.WaitAsync(TimeSpan.FromSeconds(3)).ConfigureAwait(false))
         {
             Logger.Warn("DisconnectAsync: _connectLock 取得が 3 秒でタイムアウト、強制クリーンアップに進む (Azure)");
@@ -265,11 +357,18 @@ public sealed class AzureSpeechTranslationClient : Interfaces.IRealtimeTranscrib
         }
     }
 
-    private async Task CleanupAsync()
+    // recognizer / pushStream / audioConfig だけを破棄する (状態遷移は呼び出し元に委ねる)。
+    // reconnect は Connecting → Connected に進めたいので Disconnected を挟みたくない。
+    private async Task CleanupRecognizerAsync()
     {
         var recognizer = _recognizer;
         if (recognizer != null)
         {
+            // 先にハンドラを外す → 破棄に伴う Canceled で reconnect が二重起動するのを防ぐ。
+            recognizer.Recognized -= OnRecognized;
+            recognizer.Canceled -= OnCanceled;
+            recognizer.SessionStopped -= OnSessionStopped;
+
             try
             {
                 await recognizer.StopContinuousRecognitionAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
@@ -278,10 +377,6 @@ public sealed class AzureSpeechTranslationClient : Interfaces.IRealtimeTranscrib
             {
                 Logger.Debug($"Azure StopContinuousRecognitionAsync 想定内例外: {ex.GetType().Name}: {ex.Message}");
             }
-
-            recognizer.Recognized -= OnRecognized;
-            recognizer.Canceled -= OnCanceled;
-            recognizer.SessionStopped -= OnSessionStopped;
         }
 
         try { _pushStream?.Close(); } catch { /* 二重 Close は無視 */ }
@@ -292,13 +387,18 @@ public sealed class AzureSpeechTranslationClient : Interfaces.IRealtimeTranscrib
         _recognizer = null;
         _audioConfig = null;
         _pushStream = null;
+    }
 
+    private async Task CleanupAsync()
+    {
+        await CleanupRecognizerAsync().ConfigureAwait(false);
         SetState(ConnectionState.Disconnected);
     }
 
     public void Dispose()
     {
         if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0) return;
+        _shouldReconnect = false;
         DisconnectAsync().GetAwaiter().GetResult();
         _connectLock.Dispose();
     }
@@ -306,6 +406,7 @@ public sealed class AzureSpeechTranslationClient : Interfaces.IRealtimeTranscrib
     public async ValueTask DisposeAsync()
     {
         if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0) return;
+        _shouldReconnect = false;
         await DisconnectAsync().ConfigureAwait(false);
         _connectLock.Dispose();
     }

@@ -1,5 +1,6 @@
 using System.Reflection;
 using System.Text;
+using System.Text.Json;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using RealTimeTranslator.Core.Models;
 using RealTimeTranslator.Core.Services;
@@ -258,6 +259,37 @@ public sealed class NewProvidersClientTests
         // これらの種別が IsFatal であることを確認 (非 fatal だと認証/クォータ失敗でも再接続ループに陥る)。
         Assert.IsTrue(new OpenAIApiException(OpenAIApiErrorKind.InvalidApiKey, "", "").IsFatal);
         Assert.IsTrue(new OpenAIApiException(OpenAIApiErrorKind.QuotaExceeded, "", "").IsFatal);
+    }
+
+    [TestMethod]
+    [TestCategory("Adversarial")]
+    public void Speechmatics_JoinResults_SpaceDelimitedInsertsSpaces_CjkConcatenates()
+    {
+        using var doc = JsonDocument.Parse("{\"results\":[{\"content\":\"Hello\"},{\"content\":\"world\"},{\"content\":\".\"}]}");
+        // 空白区切り言語: セグメント間に空白、 ただし句読点 "." の前は入れない。
+        Assert.AreEqual("Hello world.", SpeechmaticsRealtimeClient.JoinResults(doc.RootElement, spaceDelimited: true));
+        // CJK: 直結 (従来動作)。
+        Assert.AreEqual("Helloworld.", SpeechmaticsRealtimeClient.JoinResults(doc.RootElement, spaceDelimited: false));
+    }
+
+    [TestMethod]
+    [TestCategory("Adversarial")]
+    public void Speechmatics_IsCjkOutputLanguage_ShouldClassify()
+    {
+        Assert.IsTrue(SpeechmaticsRealtimeClient.IsCjkOutputLanguage("ja"));
+        Assert.IsTrue(SpeechmaticsRealtimeClient.IsCjkOutputLanguage("zh-Hans"));
+        Assert.IsTrue(SpeechmaticsRealtimeClient.IsCjkOutputLanguage("ko"));
+        Assert.IsFalse(SpeechmaticsRealtimeClient.IsCjkOutputLanguage("en"));
+        Assert.IsFalse(SpeechmaticsRealtimeClient.IsCjkOutputLanguage("de"));
+    }
+
+    [TestMethod]
+    [TestCategory("Adversarial")]
+    public void Speechmatics_IsTerminalWarning_ShouldClassify()
+    {
+        Assert.IsTrue(SpeechmaticsRealtimeClient.IsTerminalWarning("duration_limit_exceeded"));
+        Assert.IsFalse(SpeechmaticsRealtimeClient.IsTerminalWarning("unsupported_translation_pair"));
+        Assert.IsFalse(SpeechmaticsRealtimeClient.IsTerminalWarning(null));
     }
 
     [TestMethod]
