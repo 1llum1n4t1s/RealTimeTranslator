@@ -83,5 +83,8 @@ internal static class DpapiHelper
         if (settings is null) return;
         settings.OpenAIRealtime.ApiKey = TryDecrypt(settings.OpenAIRealtime.ApiKey);
         settings.Gemini.ApiKey = TryDecrypt(settings.Gemini.ApiKey);
+        settings.Soniox.ApiKey = TryDecrypt(settings.Soniox.ApiKey);
+        settings.Speechmatics.ApiKey = TryDecrypt(settings.Speechmatics.ApiKey);
+        settings.Azure.ApiKey = TryDecrypt(settings.Azure.ApiKey);
     }
 }

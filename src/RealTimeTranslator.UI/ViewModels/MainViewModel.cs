@@ -220,14 +220,19 @@ public partial class MainViewModel : ObservableObject, IDisposable
     public bool CanStart => SelectedProcess != null && !IsRunning && !IsLoading && IsApiKeyConfigured;
 
     /// <summary>
-    /// 選択中プロバイダの API キーが設定済みかを判定する。 Provider=Gemini なら Gemini.ApiKey、
-    /// それ以外は OpenAIRealtime.ApiKey を見る。 これで Gemini 選択時に Gemini キーだけで Start が有効になり、
-    /// 逆に OpenAI キーがあっても Gemini 未設定なら Start が無効化される (Codex 指摘 P1: Start ゲートの provider 連動)。
+    /// 選択中プロバイダの API キーが設定済みかを判定する。 Provider に応じて対応する設定の ApiKey を見る。
+    /// これで選択中 provider のキーだけで Start が有効になり、 逆に別 provider のキーがあっても選択中
+    /// provider が未設定なら Start が無効化される (Codex 指摘 P1: Start ゲートの provider 連動)。
     /// </summary>
     private static bool ComputeApiKeyConfigured(AppSettings settings) =>
-        settings.Provider == TranscriptionProvider.Gemini
-            ? !string.IsNullOrWhiteSpace(settings.Gemini.ApiKey)
-            : !string.IsNullOrWhiteSpace(settings.OpenAIRealtime.ApiKey);
+        settings.Provider switch
+        {
+            TranscriptionProvider.Gemini => !string.IsNullOrWhiteSpace(settings.Gemini.ApiKey),
+            TranscriptionProvider.Soniox => !string.IsNullOrWhiteSpace(settings.Soniox.ApiKey),
+            TranscriptionProvider.Speechmatics => !string.IsNullOrWhiteSpace(settings.Speechmatics.ApiKey),
+            TranscriptionProvider.Azure => !string.IsNullOrWhiteSpace(settings.Azure.ApiKey),
+            _ => !string.IsNullOrWhiteSpace(settings.OpenAIRealtime.ApiKey),
+        };
 
     public SettingsViewModel SettingsVM => _settingsViewModel;
 
