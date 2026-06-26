@@ -42,6 +42,12 @@ public sealed class AzureSpeechTranslationClient : Interfaces.IRealtimeTranscrib
     private volatile bool _shouldReconnect;
     private int _reconnectAttempts;
     private int _reconnectInFlight;
+    // 終了要求 (Disconnect/Dispose) を reconnect ループへ伝える CTS と、 停止を await するためのタスク参照。
+    // fire-and-forget だと _connectLock を待機/保持中の reconnect を待たずに Dispose して ObjectDisposedException
+    // になるため、 必ず cancel + await してから cleanup / dispose する。
+    private CancellationTokenSource _reconnectShutdownCts = new();
+    private Task _reconnectLoopTask = Task.CompletedTask;
+    private readonly object _reconnectTaskLock = new();
 
     public ConnectionState State => _state;
 
@@ -108,6 +114,13 @@ public sealed class AzureSpeechTranslationClient : Interfaces.IRealtimeTranscrib
             Interlocked.Exchange(ref _totalDeltaCount, 0);
             Interlocked.Exchange(ref _reconnectAttempts, 0);
             _shouldReconnect = true;
+            // 前回 disconnect でキャンセル済みなら shutdown CTS を作り直す (新セッションの reconnect が即終了しないように)。
+            // 直前の reconnect は DisconnectAsync の StopReconnectLoopAsync で停止・await 済みのため安全に差し替えられる。
+            if (_reconnectShutdownCts.IsCancellationRequested)
+            {
+                _reconnectShutdownCts.Dispose();
+                _reconnectShutdownCts = new CancellationTokenSource();
+            }
 
             if (string.IsNullOrWhiteSpace(_settings.ApiKey) || string.IsNullOrWhiteSpace(_settings.Region))
                 throw new InvalidOperationException("Azure Speech の APIキー / Region が設定されていません。");
@@ -214,10 +227,18 @@ public sealed class AzureSpeechTranslationClient : Interfaces.IRealtimeTranscrib
         // 非 fatal (レート制限 / BadRequest / 一時的なサービス・ネットワーク断)。 Azure SDK は Canceled(Error)
         // 後に自動再開しないため、 Disconnected のまま放置すると SendAudio が黙って捨てられ「繋がってるのに
         // 字幕が出ない」状態になる。 recognizer を張り直す reconnect を起動する (Codex 指摘)。
-        if (_shouldReconnect)
+        if (_shouldReconnect && Interlocked.CompareExchange(ref _disposed, 0, 0) == 0)
         {
             SetState(ConnectionState.Reconnecting);
-            _ = Task.Run(() => TryReconnectAsync(), CancellationToken.None);
+            lock (_reconnectTaskLock)
+            {
+                // 同時に複数走らせない (in-flight ガードもあるが、 await 対象のタスク参照を 1 本に保つ)。
+                if (_reconnectLoopTask.IsCompleted)
+                {
+                    var token = _reconnectShutdownCts.Token;
+                    _reconnectLoopTask = Task.Run(() => TryReconnectAsync(token), CancellationToken.None);
+                }
+            }
         }
         else
         {
@@ -229,12 +250,13 @@ public sealed class AzureSpeechTranslationClient : Interfaces.IRealtimeTranscrib
     /// 非 fatal な Canceled(Error) 後に recognizer を張り直す。 他クライアントの WebSocket reconnect と同型
     /// (指数バックオフ + 上限 + in-flight ガード)。 _shouldReconnect=false (= ユーザー停止) で抜ける。
     /// </summary>
-    private async Task TryReconnectAsync()
+    private async Task TryReconnectAsync(CancellationToken token)
     {
         if (Interlocked.CompareExchange(ref _reconnectInFlight, 1, 0) != 0) return;
         try
         {
             while (_shouldReconnect
+                   && !token.IsCancellationRequested
                    && _state != ConnectionState.Connected
                    && _state != ConnectionState.Failed
                    && Interlocked.CompareExchange(ref _disposed, 0, 0) == 0)
@@ -255,24 +277,31 @@ public sealed class AzureSpeechTranslationClient : Interfaces.IRealtimeTranscrib
                 var jitter = (Random.Shared.NextDouble() * 0.4) - 0.2;
                 var delay = (int)Math.Clamp(baseDelay * (1.0 + jitter), 100, 30000);
                 Logger.Info($"Azure 再接続試行 {attempt}/{_settings.MaxReconnectAttempts}（{delay}ms 後）");
-                try { await Task.Delay(delay).ConfigureAwait(false); }
+                try { await Task.Delay(delay, token).ConfigureAwait(false); }
                 catch (OperationCanceledException) { return; }
 
-                if (!_shouldReconnect) return;
+                if (!_shouldReconnect || token.IsCancellationRequested) return;
 
-                await _connectLock.WaitAsync().ConfigureAwait(false);
+                // lock 取得は try/finally の外。 OCE で取得失敗した場合に Release してしまわないため。
+                try { await _connectLock.WaitAsync(token).ConfigureAwait(false); }
+                catch (OperationCanceledException) { return; }
                 try
                 {
-                    if (!_shouldReconnect || _state == ConnectionState.Connected || _state == ConnectionState.Failed)
+                    if (!_shouldReconnect || token.IsCancellationRequested
+                        || _state == ConnectionState.Connected || _state == ConnectionState.Failed)
                         return;
 
                     await CleanupRecognizerAsync().ConfigureAwait(false);
                     SetState(ConnectionState.Connecting);
                     StartRecognizer();
-                    await _recognizer!.StartContinuousRecognitionAsync().WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+                    await _recognizer!.StartContinuousRecognitionAsync().WaitAsync(TimeSpan.FromSeconds(10), token).ConfigureAwait(false);
                     Logger.Info("Azure 再接続成功");
                     Interlocked.Exchange(ref _reconnectAttempts, 0);
                     SetState(ConnectionState.Connected);
+                }
+                catch (OperationCanceledException)
+                {
+                    return;
                 }
                 catch (Exception ex)
                 {
@@ -287,6 +316,28 @@ public sealed class AzureSpeechTranslationClient : Interfaces.IRealtimeTranscrib
         finally
         {
             Interlocked.Exchange(ref _reconnectInFlight, 0);
+        }
+    }
+
+    /// <summary>
+    /// reconnect ループに終了を要求し、 完了を待つ。 Disconnect / Dispose から呼ぶ。 これを待たずに
+    /// _connectLock / CTS を破棄すると、 lock 待機/保持中の reconnect が ObjectDisposedException になる。
+    /// </summary>
+    private async Task StopReconnectLoopAsync()
+    {
+        _shouldReconnect = false;
+        try { _reconnectShutdownCts.Cancel(); }
+        catch (ObjectDisposedException) { }
+
+        Task t;
+        lock (_reconnectTaskLock) { t = _reconnectLoopTask; }
+        if (!t.IsCompleted)
+        {
+            try { await t.WaitAsync(TimeSpan.FromSeconds(6)).ConfigureAwait(false); }
+            catch (Exception ex) when (ex is TimeoutException or OperationCanceledException)
+            {
+                Logger.Warn($"Azure reconnect ループ停止待ちが想定内例外: {ex.GetType().Name}");
+            }
         }
     }
 
@@ -339,7 +390,8 @@ public sealed class AzureSpeechTranslationClient : Interfaces.IRealtimeTranscrib
 
     public async Task DisconnectAsync()
     {
-        _shouldReconnect = false; // 走行中の reconnect ループを次のチェックで抜けさせる。
+        // 先に reconnect ループを cancel + await してから lock を取る (lock 競合 / 破棄後アクセスを防ぐ)。
+        await StopReconnectLoopAsync().ConfigureAwait(false);
         if (!await _connectLock.WaitAsync(TimeSpan.FromSeconds(3)).ConfigureAwait(false))
         {
             Logger.Warn("DisconnectAsync: _connectLock 取得が 3 秒でタイムアウト、強制クリーンアップに進む (Azure)");
@@ -399,7 +451,9 @@ public sealed class AzureSpeechTranslationClient : Interfaces.IRealtimeTranscrib
     {
         if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0) return;
         _shouldReconnect = false;
+        // DisconnectAsync が reconnect ループを cancel + await するため、 ここに来た時点でループは停止済み。
         DisconnectAsync().GetAwaiter().GetResult();
+        _reconnectShutdownCts.Dispose();
         _connectLock.Dispose();
     }
 
@@ -408,6 +462,7 @@ public sealed class AzureSpeechTranslationClient : Interfaces.IRealtimeTranscrib
         if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0) return;
         _shouldReconnect = false;
         await DisconnectAsync().ConfigureAwait(false);
+        _reconnectShutdownCts.Dispose();
         _connectLock.Dispose();
     }
 
@@ -452,7 +507,7 @@ public sealed class AzureSpeechTranslationClient : Interfaces.IRealtimeTranscrib
                 }
             };
 
-            await recognizer.StartContinuousRecognitionAsync().ConfigureAwait(false);
+            await recognizer.StartContinuousRecognitionAsync().WaitAsync(ct).ConfigureAwait(false);
 
             // 認証失敗なら数秒以内に Canceled が来る。 来なければ接続自体は成立とみなす。
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -472,6 +527,11 @@ public sealed class AzureSpeechTranslationClient : Interfaces.IRealtimeTranscrib
                 // 4 秒 timeout で Canceled が来なかった = 認証は通った (キー / Region 有効)。
                 return (true, "接続成功！Azure Speech のキー / Region は有効です。");
             }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // 呼び出し元キャンセルは汎用 catch でエラー文字列化せず、 そのまま伝播する。
+            throw;
         }
         catch (Exception ex)
         {
