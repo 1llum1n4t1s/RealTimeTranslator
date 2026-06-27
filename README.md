@@ -14,7 +14,7 @@ Windows 向けのリアルタイム字幕翻訳デスクトップアプリです
 
 - **プロセス単位の音声キャプチャ**: 対象プロセスの音声のみを取得します。
 - **ストリーミング翻訳**: 翻訳 API に音声をストリーミング送信し、翻訳テキストを逐次受け取って表示します。
-- **翻訳プロバイダの選択**: OpenAI Realtime / Google Gemini Live Translate を「API設定」タブで切り替えられます（既定は OpenAI、再起動不要で次の翻訳開始から反映）。
+- **翻訳プロバイダの選択**: OpenAI / Google Gemini / Soniox / Speechmatics / Azure AI Speech の 5 つの翻訳プロバイダを「API設定」タブで切り替えられます（既定は OpenAI、再起動不要で次の翻訳開始から反映）。Soniox はリアルタイム約 $0.12/時間で最安。
 - **半透明オーバーレイ字幕**: 透過・最前面・クリック透過対応のウィンドウに字幕を表示します。フォント・色・表示時間・行数を設定で調整可能。
 - **日本語フォント同梱**: 字幕に最適な日本語フォント 5 種類 (IBM Plex Sans JP / Noto Sans JP / LINE Seed JP / Zen Maru Gothic / M PLUS Rounded 1c) を同梱しており、OS にフォントが入っていなくても綺麗な字幕表示が可能です。
 - **背景色 12 種類**: 字幕の見やすさをシーンに合わせて選べる多色背景。枠色は背景の輝度から自動派生して常に視認性を保ちます。
@@ -28,7 +28,7 @@ Windows 向けのリアルタイム字幕翻訳デスクトップアプリです
 | --- | --- |
 | OS | Windows 11 / Windows Server 2022（Build 20348 以降） |
 | アーキテクチャ | x64 のみ |
-| 必須 | OpenAI または Google Gemini の API キー |
+| 必須 | いずれかの翻訳プロバイダ（OpenAI / Gemini / Soniox / Speechmatics / Azure）の API キー |
 
 ## インストール
 
