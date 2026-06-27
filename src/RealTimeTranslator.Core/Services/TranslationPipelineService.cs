@@ -20,11 +20,16 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     private static readonly TimeSpan DeltaThrottle = TimeSpan.FromMilliseconds(20);
 
     private readonly IAudioCaptureService _audioCaptureService;
-    // プロバイダ 2 実装 + 現在 active な参照。 hot-swap: StartCoreAsync で Provider を見て
+    // プロバイダ N 実装 + 現在 active な参照。 hot-swap: StartCoreAsync で Provider を見て
     // _activeClient を選び直す (走行中は切り替わらない。 設定変更は次の Start で反映)。
-    // 送信レート分岐は _activeClient.InputSampleRate (OpenAI=24000 / Gemini=16000) で行う。
+    // 送信レート分岐は _activeClient.InputSampleRate (OpenAI=24000 / その他=16000) で行う。
     private readonly IRealtimeTranscriber _openAiClient;
     private readonly IRealtimeTranscriber _geminiClient;
+    private readonly IRealtimeTranscriber _sonioxClient;
+    private readonly IRealtimeTranscriber _speechmaticsClient;
+    private readonly IRealtimeTranscriber _azureClient;
+    // Provider → client の解決表 (StartCoreAsync で active を引く)。 未知 Provider は OpenAI に倒す。
+    private readonly Dictionary<TranscriptionProvider, IRealtimeTranscriber> _clientsByProvider;
     private IRealtimeTranscriber _activeClient;
     // 購読/解除用の重複排除済み client 配列。 テストで openAi==gemini の同一モックを渡されたとき、
     // 同じインスタンスへ 2 回 += すると delta/done が二重発火する (emit 件数が倍) ため参照で排除する。
@@ -213,21 +218,25 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     // 走行中のデバッグ録音 ON/OFF 切替を即反映するための設定変更購読。 Dispose で解除する。
     private IDisposable? _settingsChangeSubscription;
 
-    // 本番 DI 用: OpenAI/Gemini の具象 client を 2 つ注入する。
+    // 本番 DI 用: OpenAI/Gemini/Soniox/Speechmatics/Azure の具象 client を注入する。
     public TranslationPipelineService(
         IAudioCaptureService audioCaptureService,
         OpenAIRealtimeClient openAiClient,
         GeminiLiveClient geminiClient,
+        SonioxRealtimeClient sonioxClient,
+        SpeechmaticsRealtimeClient speechmaticsClient,
+        AzureSpeechTranslationClient azureClient,
         IOptionsMonitor<AppSettings> settingsMonitor,
         ISettingsService settingsService,
         IVoiceActivityDetector vad,
         IDebugAudioRecorder? debugAudioRecorder = null)
-        : this(audioCaptureService, openAiClient, geminiClient, settingsMonitor, settingsService, vad, debugAudioRecorder, sentinel: default)
+        : this(audioCaptureService, openAiClient, geminiClient, sonioxClient, speechmaticsClient, azureClient,
+               settingsMonitor, settingsService, vad, debugAudioRecorder, sentinel: default)
     {
     }
 
-    // テスト用: 単一の IRealtimeTranscriber モックを openAi/gemini 兼用で受ける
-    // (テストは Provider=OpenAI 既定で active=openAi のため Gemini 固有経路は通らない)。
+    // テスト用: 単一の IRealtimeTranscriber モックを全 provider 兼用で受ける
+    // (テストは Provider=OpenAI 既定で active=openAi のため他 provider 固有経路は通らない)。
     internal TranslationPipelineService(
         IAudioCaptureService audioCaptureService,
         IRealtimeTranscriber transcriber,
@@ -235,7 +244,8 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         ISettingsService settingsService,
         IVoiceActivityDetector vad,
         IDebugAudioRecorder? debugAudioRecorder = null)
-        : this(audioCaptureService, transcriber, transcriber, settingsMonitor, settingsService, vad, debugAudioRecorder, sentinel: default)
+        : this(audioCaptureService, transcriber, transcriber, transcriber, transcriber, transcriber,
+               settingsMonitor, settingsService, vad, debugAudioRecorder, sentinel: default)
     {
     }
 
@@ -244,6 +254,9 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         IAudioCaptureService audioCaptureService,
         IRealtimeTranscriber openAiClient,
         IRealtimeTranscriber geminiClient,
+        IRealtimeTranscriber sonioxClient,
+        IRealtimeTranscriber speechmaticsClient,
+        IRealtimeTranscriber azureClient,
         IOptionsMonitor<AppSettings> settingsMonitor,
         ISettingsService settingsService,
         IVoiceActivityDetector vad,
@@ -253,10 +266,21 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         _audioCaptureService = audioCaptureService;
         _openAiClient = openAiClient;
         _geminiClient = geminiClient;
+        _sonioxClient = sonioxClient;
+        _speechmaticsClient = speechmaticsClient;
+        _azureClient = azureClient;
         _activeClient = openAiClient; // 既定 (Start 時に Provider で再選択)
-        _distinctClients = ReferenceEquals(openAiClient, geminiClient)
-            ? new[] { openAiClient }
-            : new[] { openAiClient, geminiClient };
+        _clientsByProvider = new Dictionary<TranscriptionProvider, IRealtimeTranscriber>
+        {
+            [TranscriptionProvider.OpenAI] = openAiClient,
+            [TranscriptionProvider.Gemini] = geminiClient,
+            [TranscriptionProvider.Soniox] = sonioxClient,
+            [TranscriptionProvider.Speechmatics] = speechmaticsClient,
+            [TranscriptionProvider.Azure] = azureClient,
+        };
+        // 購読/解除用の重複排除済み配列。 テストで同一モックを全 provider に渡された場合や、
+        // 同一インスタンスが複数 provider を兼ねる場合に二重購読 (delta/done 二重発火) を防ぐ。
+        _distinctClients = _clientsByProvider.Values.Distinct().ToArray();
         _settingsMonitor = settingsMonitor;
         _settingsService = settingsService;
         _vad = vad;
@@ -309,29 +333,48 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
 
         // hot-swap: Provider に応じて active client を選ぶ。 走行中は切り替わらない
         // (設定変更は次の Start で反映)。 送信レート分岐は _activeClient.InputSampleRate で行う。
-        _activeClient = provider == TranscriptionProvider.Gemini ? _geminiClient : _openAiClient;
+        _activeClient = _clientsByProvider.TryGetValue(provider, out var picked) ? picked : _openAiClient;
 
         var freshSettings = appSettings.OpenAIRealtime;
-        // active provider の設定 (D-7 分割閾値 / 無音 padding / cost モデル) を Start 時にスナップショット。
-        // 走行中の設定変更や provider 切替で現セッションが引きずられないようにする (CodeRabbit 指摘)。
-        var activeIsGemini = provider == TranscriptionProvider.Gemini;
-        _activeMaxPartialChars = activeIsGemini ? appSettings.Gemini.MaxPartialChars : freshSettings.MaxPartialChars;
-        _activeSilencePaddingMs = activeIsGemini ? appSettings.Gemini.SilencePaddingMs : freshSettings.SilencePaddingMs;
-        _activeModelForCost = activeIsGemini ? appSettings.Gemini.Model : freshSettings.Model;
+        // active provider の設定 (APIキー / 出力言語 / D-7 分割閾値 / 無音 padding / cost モデル名) を
+        // Start 時にスナップショット。 走行中の設定変更や provider 切替で現セッションが引きずられないように
+        // する (CodeRabbit 指摘)。 cost モデル名は CostEstimator のキーワード判定に合わせた文字列
+        // (Speechmatics / Azure は専用 Model フィールドを持たないため合成キーを渡す)。
+        var (apiKey, outputLanguage, modelForCost, maxPartialChars, silencePaddingMs, providerLabel) = provider switch
+        {
+            TranscriptionProvider.Gemini => (appSettings.Gemini.ApiKey, appSettings.Gemini.OutputLanguage,
+                appSettings.Gemini.Model, appSettings.Gemini.MaxPartialChars, appSettings.Gemini.SilencePaddingMs, "Gemini"),
+            TranscriptionProvider.Soniox => (appSettings.Soniox.ApiKey, appSettings.Soniox.OutputLanguage,
+                appSettings.Soniox.Model, appSettings.Soniox.MaxPartialChars, appSettings.Soniox.SilencePaddingMs, "Soniox"),
+            TranscriptionProvider.Speechmatics => (appSettings.Speechmatics.ApiKey, appSettings.Speechmatics.OutputLanguage,
+                "speechmatics-rt", appSettings.Speechmatics.MaxPartialChars, appSettings.Speechmatics.SilencePaddingMs, "Speechmatics"),
+            TranscriptionProvider.Azure => (appSettings.Azure.ApiKey, appSettings.Azure.OutputLanguage,
+                "azure-translation", appSettings.Azure.MaxPartialChars, appSettings.Azure.SilencePaddingMs, "Azure"),
+            _ => (freshSettings.ApiKey, freshSettings.OutputLanguage,
+                freshSettings.Model, freshSettings.MaxPartialChars, freshSettings.SilencePaddingMs, "OpenAI"),
+        };
+        _activeMaxPartialChars = maxPartialChars;
+        _activeSilencePaddingMs = silencePaddingMs;
+        _activeModelForCost = modelForCost;
 
         // API キー検証 (provider 別)。
-        var apiKey = provider == TranscriptionProvider.Gemini ? appSettings.Gemini.ApiKey : freshSettings.ApiKey;
         if (string.IsNullOrWhiteSpace(apiKey))
         {
-            var providerName = provider == TranscriptionProvider.Gemini ? "Gemini" : "OpenAI";
-            var ex = new InvalidOperationException($"{providerName} APIキーが設定されていません。設定画面でキーを入力してください。");
+            var ex = new InvalidOperationException($"{providerLabel} APIキーが設定されていません。設定画面でキーを入力してください。");
             ErrorOccurred?.Invoke(this, ex);
             throw ex;
         }
 
-        var langLog = provider == TranscriptionProvider.Gemini ? appSettings.Gemini.OutputLanguage : freshSettings.OutputLanguage;
-        var modelLog = provider == TranscriptionProvider.Gemini ? appSettings.Gemini.Model : freshSettings.Model;
-        Logger.Info($"翻訳パイプライン開始 (Provider={provider}, OutputLanguage='{langLog}', Model='{modelLog}')");
+        // Azure は ApiKey に加え Region 必須。 AzureSpeechTranslationClient.ConnectAsync も検証するが、
+        // そこは try/catch で包まれず ErrorOccurred に乗らないため、 他 provider と通知経路を揃えてここで弾く。
+        if (provider == TranscriptionProvider.Azure && string.IsNullOrWhiteSpace(appSettings.Azure.Region))
+        {
+            var ex = new InvalidOperationException("Azure の Region が設定されていません。設定画面で Region を入力してください。");
+            ErrorOccurred?.Invoke(this, ex);
+            throw ex;
+        }
+
+        Logger.Info($"翻訳パイプライン開始 (Provider={provider}, OutputLanguage='{outputLanguage}', Model='{modelForCost}')");
 
         // 前セッションの累積 transcript / SegmentId をリセットしないと、 再 Start 時に
         // 「前回 done で確定したテキストを prefix として保持」した状態から始まり、
@@ -346,15 +389,28 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
             _hasPendingDelta = false;
         }
 
-        // 接続 (provider 別)。 Gemini は具象 GeminiLiveClient の固有メソッドで GeminiLiveSettings を
-        // 直接渡す (OpenAIRealtimeSettings 経由のマッピングだと Endpoint/Model/EchoTargetLanguage が
-        // 落ちるため)。 テスト時 _geminiClient はモック (GeminiLiveClient ではない) なので else に落ち、
-        // active モックへ OpenAIRealtimeSettings で接続する (テストは Provider=OpenAI 既定)。
-        // rere B1-011: Core layer 統一で ConfigureAwait(false) 付与。
-        if (provider == TranscriptionProvider.Gemini && _geminiClient is GeminiLiveClient geminiLive)
-            await geminiLive.ConnectAsync(appSettings.Gemini, token).ConfigureAwait(false);
-        else
-            await _activeClient.ConnectAsync(freshSettings, token).ConfigureAwait(false);
+        // 接続 (provider 別)。 各 provider は具象 client の固有メソッドで専用 Settings を直接渡す
+        // (OpenAIRealtimeSettings 経由のマッピングだと Endpoint/Model/源言語等が落ちるため)。 テスト時は
+        // モック (具象型ではない) なので default 経路に落ち、 active モックへ OpenAIRealtimeSettings で接続する
+        // (テストは Provider=OpenAI 既定)。 rere B1-011: Core layer 統一で ConfigureAwait(false) 付与。
+        switch (provider)
+        {
+            case TranscriptionProvider.Gemini when _geminiClient is GeminiLiveClient gemini:
+                await gemini.ConnectAsync(appSettings.Gemini, token).ConfigureAwait(false);
+                break;
+            case TranscriptionProvider.Soniox when _sonioxClient is SonioxRealtimeClient soniox:
+                await soniox.ConnectAsync(appSettings.Soniox, token).ConfigureAwait(false);
+                break;
+            case TranscriptionProvider.Speechmatics when _speechmaticsClient is SpeechmaticsRealtimeClient speechmatics:
+                await speechmatics.ConnectAsync(appSettings.Speechmatics, token).ConfigureAwait(false);
+                break;
+            case TranscriptionProvider.Azure when _azureClient is AzureSpeechTranslationClient azure:
+                await azure.ConnectAsync(appSettings.Azure, token).ConfigureAwait(false);
+                break;
+            default:
+                await _activeClient.ConnectAsync(freshSettings, token).ConfigureAwait(false);
+                break;
+        }
 
         // WASAPI コールバックスレッドで重い変換を行うと audio glitch の原因になるため、
         // Channel に raw float[] を投入だけして変換は専用タスクで行う。
@@ -936,8 +992,13 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
             // API から transcript が空で done が来た場合 (response.done fallback 経路など) は
             // 直前まで delta で蓄積してきた _accumulatedText を確定字幕として使う。
             // transcript が空でなければ「セッション累積の全文」が来ている前提で扱う。
+            // transcript が空 = プロバイダが「この発話/応答は確定」と通知する hard finalize 境界
+            // (Soniox <end> / Speechmatics AddTranslation / Azure Recognized / OpenAI response.done fallback)。
+            // 句読点なしの trailing も確定させる必要があるかの判定に使う (下記 trailing 処理参照)。
+            bool hardFinalize = string.IsNullOrEmpty(transcript);
+
             string effective;
-            if (string.IsNullOrEmpty(transcript))
+            if (hardFinalize)
             {
                 // fallback 経路 (response.done で transcript が空): 既存の確定累積 + 直前の delta 蓄積。
                 // この経路は稀なので ToString() の O(N) コストは許容。
@@ -1016,13 +1077,36 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                     start = i + 1;
                 }
             }
-            // 残りの未完結部分 (trailing) は _currentSegmentId で emit。
+            // 残りの未完結部分 (trailing) の扱い。
             if (start < newPortion.Length)
             {
                 var trailing = newPortion[start..];
                 if (!string.IsNullOrWhiteSpace(trailing))
                 {
-                    emissions.Add((_currentSegmentId, trailing, false));
+                    if (hardFinalize)
+                    {
+                        // hard finalize (空 done) の trailing は句読点が無くても「確定済みセグメント」。
+                        // 確定文として emit し SegmentId を回転 + finalized 累積へ追加する。 これをしないと、
+                        // 連続する短い確定セグメント ("Yes"→"No" 等) が同一 SegmentId を再利用し、
+                        // OverlayViewModel.AddOrUpdateSubtitle が前の字幕を上書きしてしまう (Codex 指摘)。
+                        if (!IsSimilarToRecentEmission(trailing))
+                        {
+                            emissions.Add((_currentSegmentId, trailing, true));
+                            RecordEmission(trailing);
+                        }
+                        else
+                        {
+                            Logger.Info($"OnTranscriptCompleted: trailing 類似重複抑制 内容='{TruncateForLog(trailing)}'");
+                        }
+                        _currentSegmentId = Guid.NewGuid().ToString();
+                        _lastFinalizedTranscript.Append(trailing);
+                    }
+                    else
+                    {
+                        // 累積 done (OpenAI 等、 transcript 非空) の trailing は本当に未完結なので partial のまま。
+                        // 次回の累積 done で続きが届くため SegmentId は据え置き。
+                        emissions.Add((_currentSegmentId, trailing, false));
+                    }
                 }
             }
 

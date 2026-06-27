@@ -200,6 +200,40 @@ public class SettingsService : ISettingsService
             SilencePaddingMs = source.Gemini.SilencePaddingMs,
             MaxPartialChars = source.Gemini.MaxPartialChars,
         },
+        // ⚠️ 追加 provider も必ずコピー (漏らすと autosave のたびに default にリセットされる — 上の C2-001 と同じ罠)。
+        Soniox = new SonioxSettings
+        {
+            ApiKey = DpapiHelper.Encrypt(source.Soniox.ApiKey),
+            OutputLanguage = source.Soniox.OutputLanguage,
+            Model = source.Soniox.Model,
+            Endpoint = source.Soniox.Endpoint,
+            ReconnectDelayMs = source.Soniox.ReconnectDelayMs,
+            MaxReconnectAttempts = source.Soniox.MaxReconnectAttempts,
+            SilencePaddingMs = source.Soniox.SilencePaddingMs,
+            MaxPartialChars = source.Soniox.MaxPartialChars,
+        },
+        Speechmatics = new SpeechmaticsSettings
+        {
+            ApiKey = DpapiHelper.Encrypt(source.Speechmatics.ApiKey),
+            OutputLanguage = source.Speechmatics.OutputLanguage,
+            SourceLanguage = source.Speechmatics.SourceLanguage,
+            Endpoint = source.Speechmatics.Endpoint,
+            ReconnectDelayMs = source.Speechmatics.ReconnectDelayMs,
+            MaxReconnectAttempts = source.Speechmatics.MaxReconnectAttempts,
+            SilencePaddingMs = source.Speechmatics.SilencePaddingMs,
+            MaxPartialChars = source.Speechmatics.MaxPartialChars,
+        },
+        Azure = new AzureSpeechSettings
+        {
+            ApiKey = DpapiHelper.Encrypt(source.Azure.ApiKey),
+            Region = source.Azure.Region,
+            OutputLanguage = source.Azure.OutputLanguage,
+            SourceLanguage = source.Azure.SourceLanguage,
+            ReconnectDelayMs = source.Azure.ReconnectDelayMs,
+            MaxReconnectAttempts = source.Azure.MaxReconnectAttempts,
+            SilencePaddingMs = source.Azure.SilencePaddingMs,
+            MaxPartialChars = source.Azure.MaxPartialChars,
+        },
         LastSelectedProcessName = source.LastSelectedProcessName,
         LastSelectedProcessId = source.LastSelectedProcessId,
         Update = source.Update,

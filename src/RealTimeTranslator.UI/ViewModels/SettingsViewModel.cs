@@ -169,6 +169,9 @@ public partial class SettingsViewModel : ObservableObject
         {
             new(TranscriptionProvider.OpenAI, "OpenAI リアルタイム翻訳"),
             new(TranscriptionProvider.Gemini, "Gemini ライブ翻訳"),
+            new(TranscriptionProvider.Soniox, "Soniox リアルタイム翻訳 (最安)"),
+            new(TranscriptionProvider.Speechmatics, "Speechmatics リアルタイム翻訳"),
+            new(TranscriptionProvider.Azure, "Azure AI Speech 翻訳"),
         });
 
         // 旧 settings.json から新フォント一覧 / 色一覧に存在しない値を持ち越したケース、
@@ -371,6 +374,30 @@ public partial class SettingsViewModel : ObservableObject
             changed = true;
         }
 
+        // 追加 provider (Soniox / Speechmatics / Azure) の出力言語も一覧外なら 'ja' に矯正。
+        // (OpenAI/Gemini と同様、 矯正内容をログに残してトラブルシュート時に追えるようにする。)
+        if (string.IsNullOrWhiteSpace(_settings.Soniox.OutputLanguage) ||
+            !OutputLanguageOptions.Any(o => o.Code == _settings.Soniox.OutputLanguage))
+        {
+            LoggerService.LogInfo($"SettingsViewModel.Sanitize: Soniox.OutputLanguage='{_settings.Soniox.OutputLanguage}' が一覧外 → 'ja' に矯正");
+            _settings.Soniox.OutputLanguage = "ja";
+            changed = true;
+        }
+        if (string.IsNullOrWhiteSpace(_settings.Speechmatics.OutputLanguage) ||
+            !OutputLanguageOptions.Any(o => o.Code == _settings.Speechmatics.OutputLanguage))
+        {
+            LoggerService.LogInfo($"SettingsViewModel.Sanitize: Speechmatics.OutputLanguage='{_settings.Speechmatics.OutputLanguage}' が一覧外 → 'ja' に矯正");
+            _settings.Speechmatics.OutputLanguage = "ja";
+            changed = true;
+        }
+        if (string.IsNullOrWhiteSpace(_settings.Azure.OutputLanguage) ||
+            !OutputLanguageOptions.Any(o => o.Code == _settings.Azure.OutputLanguage))
+        {
+            LoggerService.LogInfo($"SettingsViewModel.Sanitize: Azure.OutputLanguage='{_settings.Azure.OutputLanguage}' が一覧外 → 'ja' に矯正");
+            _settings.Azure.OutputLanguage = "ja";
+            changed = true;
+        }
+
         // /rere F-003 対応: SilencePaddingMs の旧 default (v1.0.33-35: 8000ms) を新 default (v1.0.36: 5000ms) に
         // 1 度限り migration する。 8000ms ぴったりは旧 default の名残と判定し、 他の値 (7000 / 10000 等) は
         // ユーザーが明示的に設定した可能性があるためそのまま維持する。
@@ -433,12 +460,18 @@ public partial class SettingsViewModel : ObservableObject
         set
         {
             if (value != null && (_settings.OpenAIRealtime.OutputLanguage != value.Code
-                                  || _settings.Gemini.OutputLanguage != value.Code))
+                                  || _settings.Gemini.OutputLanguage != value.Code
+                                  || _settings.Soniox.OutputLanguage != value.Code
+                                  || _settings.Speechmatics.OutputLanguage != value.Code
+                                  || _settings.Azure.OutputLanguage != value.Code))
             {
-                // 出力言語は provider 共通概念。 OpenAI / Gemini 両方の OutputLanguage を同期する
-                // (ユーザーは「翻訳先言語」を 1 回選べば、 どちらの provider でも同じ言語になる)。
+                // 出力言語は provider 共通概念。 全 provider の OutputLanguage を同期する
+                // (ユーザーは「翻訳先言語」を 1 回選べば、 どの provider でも同じ言語になる)。
                 _settings.OpenAIRealtime.OutputLanguage = value.Code;
                 _settings.Gemini.OutputLanguage = value.Code;
+                _settings.Soniox.OutputLanguage = value.Code;
+                _settings.Speechmatics.OutputLanguage = value.Code;
+                _settings.Azure.OutputLanguage = value.Code;
                 OnPropertyChanged();
                 ScheduleAutoSave();
             }
@@ -459,12 +492,19 @@ public partial class SettingsViewModel : ObservableObject
             {
                 _settings.Provider = value.Value;
                 // 出力言語は provider 共通概念。 切替時に表示中の言語 (ComboBox = OpenAIRealtime.OutputLanguage) を
-                // Gemini にも同期する。 既存ユーザーが OpenAI=英語のまま Gemini に切替→言語を触らず Start しても、
-                // Gemini が既定 ja ではなく表示どおりの言語で開始する (Codex 指摘 P2)。
-                _settings.Gemini.OutputLanguage = _settings.OpenAIRealtime.OutputLanguage;
+                // 全 provider に同期する。 既存ユーザーが OpenAI=英語のまま別 provider に切替→言語を触らず Start
+                // しても、 既定 ja ではなく表示どおりの言語で開始する (Codex 指摘 P2)。
+                var lang = _settings.OpenAIRealtime.OutputLanguage;
+                _settings.Gemini.OutputLanguage = lang;
+                _settings.Soniox.OutputLanguage = lang;
+                _settings.Speechmatics.OutputLanguage = lang;
+                _settings.Azure.OutputLanguage = lang;
                 OnPropertyChanged();
                 OnPropertyChanged(nameof(IsGeminiSelected));
                 OnPropertyChanged(nameof(IsOpenAISelected));
+                OnPropertyChanged(nameof(IsSonioxSelected));
+                OnPropertyChanged(nameof(IsSpeechmaticsSelected));
+                OnPropertyChanged(nameof(IsAzureSelected));
                 ScheduleAutoSave();
             }
         }
@@ -474,6 +514,12 @@ public partial class SettingsViewModel : ObservableObject
     public bool IsGeminiSelected => _settings.Provider == TranscriptionProvider.Gemini;
     /// <summary>OpenAI が選択中か。</summary>
     public bool IsOpenAISelected => _settings.Provider == TranscriptionProvider.OpenAI;
+    /// <summary>Soniox が選択中か。</summary>
+    public bool IsSonioxSelected => _settings.Provider == TranscriptionProvider.Soniox;
+    /// <summary>Speechmatics が選択中か。</summary>
+    public bool IsSpeechmaticsSelected => _settings.Provider == TranscriptionProvider.Speechmatics;
+    /// <summary>Azure が選択中か。</summary>
+    public bool IsAzureSelected => _settings.Provider == TranscriptionProvider.Azure;
 
     public string GeminiApiKey
     {
@@ -483,6 +529,93 @@ public partial class SettingsViewModel : ObservableObject
             if (_settings.Gemini.ApiKey != value)
             {
                 _settings.Gemini.ApiKey = value;
+                OnPropertyChanged();
+                ScheduleAutoSave();
+            }
+        }
+    }
+
+    public string SonioxApiKey
+    {
+        get => _settings.Soniox.ApiKey;
+        set
+        {
+            if (_settings.Soniox.ApiKey != value)
+            {
+                _settings.Soniox.ApiKey = value;
+                OnPropertyChanged();
+                ScheduleAutoSave();
+            }
+        }
+    }
+
+    public string SpeechmaticsApiKey
+    {
+        get => _settings.Speechmatics.ApiKey;
+        set
+        {
+            if (_settings.Speechmatics.ApiKey != value)
+            {
+                _settings.Speechmatics.ApiKey = value;
+                OnPropertyChanged();
+                ScheduleAutoSave();
+            }
+        }
+    }
+
+    /// <summary>Speechmatics の認識源言語 (ISO コード、 例 "en")。 翻訳の起点。</summary>
+    public string SpeechmaticsSourceLanguage
+    {
+        get => _settings.Speechmatics.SourceLanguage;
+        set
+        {
+            if (_settings.Speechmatics.SourceLanguage != value)
+            {
+                _settings.Speechmatics.SourceLanguage = value;
+                OnPropertyChanged();
+                ScheduleAutoSave();
+            }
+        }
+    }
+
+    public string AzureApiKey
+    {
+        get => _settings.Azure.ApiKey;
+        set
+        {
+            if (_settings.Azure.ApiKey != value)
+            {
+                _settings.Azure.ApiKey = value;
+                OnPropertyChanged();
+                ScheduleAutoSave();
+            }
+        }
+    }
+
+    /// <summary>Azure リージョン (例 "japaneast", "eastus")。</summary>
+    public string AzureRegion
+    {
+        get => _settings.Azure.Region;
+        set
+        {
+            if (_settings.Azure.Region != value)
+            {
+                _settings.Azure.Region = value;
+                OnPropertyChanged();
+                ScheduleAutoSave();
+            }
+        }
+    }
+
+    /// <summary>Azure の認識源言語ロケール (例 "en-US")。 翻訳の起点。</summary>
+    public string AzureSourceLanguage
+    {
+        get => _settings.Azure.SourceLanguage;
+        set
+        {
+            if (_settings.Azure.SourceLanguage != value)
+            {
+                _settings.Azure.SourceLanguage = value;
                 OnPropertyChanged();
                 ScheduleAutoSave();
             }
@@ -1026,11 +1159,18 @@ public partial class SettingsViewModel : ObservableObject
     [RelayCommand]
     private async Task TestApiConnectionAsync()
     {
-        var isGemini = _settings.Provider == TranscriptionProvider.Gemini;
-        var apiKey = isGemini ? _settings.Gemini.ApiKey : _settings.OpenAIRealtime.ApiKey;
+        var provider = _settings.Provider;
+        var apiKey = provider switch
+        {
+            TranscriptionProvider.Gemini => _settings.Gemini.ApiKey,
+            TranscriptionProvider.Soniox => _settings.Soniox.ApiKey,
+            TranscriptionProvider.Speechmatics => _settings.Speechmatics.ApiKey,
+            TranscriptionProvider.Azure => _settings.Azure.ApiKey,
+            _ => _settings.OpenAIRealtime.ApiKey,
+        };
         if (string.IsNullOrWhiteSpace(apiKey))
         {
-            ApiTestResult = isGemini ? "Gemini APIキーを入力してください" : "APIキーを入力してください";
+            ApiTestResult = "APIキーを入力してください";
             return;
         }
 
@@ -1039,9 +1179,14 @@ public partial class SettingsViewModel : ObservableObject
 
         try
         {
-            var (success, message) = isGemini
-                ? await GeminiLiveClient.TestConnectionAsync(_settings.Gemini)
-                : await OpenAIRealtimeClient.TestConnectionAsync(_settings.OpenAIRealtime);
+            var (success, message) = provider switch
+            {
+                TranscriptionProvider.Gemini => await GeminiLiveClient.TestConnectionAsync(_settings.Gemini),
+                TranscriptionProvider.Soniox => await SonioxRealtimeClient.TestConnectionAsync(_settings.Soniox),
+                TranscriptionProvider.Speechmatics => await SpeechmaticsRealtimeClient.TestConnectionAsync(_settings.Speechmatics),
+                TranscriptionProvider.Azure => await AzureSpeechTranslationClient.TestConnectionAsync(_settings.Azure),
+                _ => await OpenAIRealtimeClient.TestConnectionAsync(_settings.OpenAIRealtime),
+            };
             ApiTestResult = message;
         }
         catch (Exception ex)

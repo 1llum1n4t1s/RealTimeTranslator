@@ -29,6 +29,15 @@ public static class CostEstimator
     // $0.023 / 6000 tokens × 1M ≈ $3.83/1M に換算する (あくまで目安、 正確には分課金)。
     private const decimal GeminiLiveTranslateRatePerMillion = 3.83m;
 
+    // ───── 追加プロバイダ (per-hour / per-minute 課金を token 換算した目安) ─────
+    // いずれも 100 tokens/sec × 3600 = 360,000 tokens/時間 を基準に「USD/時間 ÷ 360000 × 1M」で換算。
+    // Soniox: realtime ~$0.12/時間 → 0.12 / 360000 × 1M ≈ $0.33/1M (現状の対応プロバイダ中で最安)。
+    private const decimal SonioxRatePerMillion = 0.33m;
+    // Speechmatics: realtime $0.0067/分 = $0.402/時間 → ≈ $1.12/1M。
+    private const decimal SpeechmaticsRatePerMillion = 1.12m;
+    // Azure AI Speech 翻訳: $2.50/時間 (2 言語まで) → ≈ $6.94/1M。
+    private const decimal AzureSpeechRatePerMillion = 6.94m;
+
     // ───── 旧料金 (deprecated、 互換維持) ─────
     // 旧 settings.json が "gpt-4o-realtime-preview" を指している既存ユーザー向け。
     // OpenAI 側がモデルを完全廃止すれば実害なくなるが、 それまでは旧料金で見積もる方が当時の課金実感に近い。
@@ -94,6 +103,10 @@ public static class CostEstimator
         //    含むため、 順序を誤ると mini レートに誤判定される)。 "live-translate" も "translate" を
         //    含むので同様に先回りで判定する。
         if (lower.Contains("gemini") || lower.Contains("live-translate")) return GeminiLiveTranslateRatePerMillion;
+        // 3b. 追加プロバイダ — いずれも "realtime"/"translate" を含み得るので汎用判定より前に置く。
+        if (lower.Contains("soniox") || lower.Contains("stt-rt")) return SonioxRatePerMillion;
+        if (lower.Contains("speechmatics")) return SpeechmaticsRatePerMillion;
+        if (lower.Contains("azure")) return AzureSpeechRatePerMillion;
         // 4. 現行 mini 系全般 (gpt-realtime-mini / gpt-realtime-mini-* 日付付きバリアント等)
         if (lower.Contains("mini")) return GptRealtimeMiniRatePerMillion;
         // 4. 現行フル系全般 (gpt-realtime-2 / gpt-realtime-1.5 / gpt-realtime-translate / gpt-realtime 等)
