@@ -17,7 +17,6 @@ using RealTimeTranslator.Core.Services;
 using RealTimeTranslator.UI.Services;
 using RealTimeTranslator.UI.ViewModels;
 using RealTimeTranslator.UI.Views;
-using Velopack;
 
 namespace RealTimeTranslator.UI;
 
@@ -55,8 +54,6 @@ public partial class App : Application
 
         // メインウィンドウを閉じたらアプリ終了（OverlayWindowが残っていても）
         desktop.ShutdownMode = ShutdownMode.OnMainWindowClose;
-
-        VelopackApp.Build().Run();
 
         // クラッシュ・未捕捉例外を %APPDATA%/Roaming のログに残す。
         // Task.Run(...) 経由の例外や Dispatcher の予期しない例外を取りこぼさないための最後の砦。

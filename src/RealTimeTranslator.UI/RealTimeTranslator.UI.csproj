@@ -17,19 +17,19 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Avalonia" Version="12.0.5" />
-    <PackageReference Include="Avalonia.Desktop" Version="12.0.5" />
-    <PackageReference Include="Avalonia.Themes.Fluent" Version="12.0.5" />
+    <PackageReference Include="Avalonia" Version="12.1.0" />
+    <PackageReference Include="Avalonia.Desktop" Version="12.1.0" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="12.1.0" />
     <!-- Avalonia.Fonts.Inter は App.axaml の FontFamily チェーンに含まれず実利用ゼロ確認済 (rere B-1) -->
     <!-- 同梱日本語フォント 5 種で字幕装飾、 システム既定 (Yu Gothic UI / Segoe UI / Microsoft YaHei) でLatin 文字も解決可能 -->
     <!-- <PackageReference Include="Avalonia.Fonts.Inter" Version="12.0.3" /> -->
     <!-- ↑ 削除済み。 絵文字 / Latin fallback で問題があれば復活してください -->
 
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
-    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.9" />
-    <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="10.0.9" />
-    <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="10.0.9" />
-    <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.9" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.10" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="10.0.10" />
+    <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="10.0.10" />
+    <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.10" />
     <!-- ⚠️ Velopack は **直接参照しない** (v1.0.37 設計、 ゆろさん指摘):
          VelopackUpdateDialog.Avalonia 1.0.5 の .nuspec で <dependency id="Velopack" version="1.0.1" />
          が宣言されているため、 transitive 依存だけ残せば NuGet が自動で 1.0.1 を resolve する。
@@ -40,7 +40,7 @@
          v1.0.33〜v1.0.36 で踏んだ「直接参照を独自バージョンに上げてライブラリの期待値とズレた」
          dispatch 不整合 (MissingMethodException) を構造的に予防する。
          将来 Velopack を上げたい場合は VelopackUpdateDialog.Avalonia 側を新 version で再ビルド → publish。 -->
-    <PackageReference Include="VelopackUpdateDialog.Avalonia" Version="1.0.10" />
+    <PackageReference Include="VelopackUpdateDialog.Avalonia" Version="1.0.11" />
   </ItemGroup>
 
   <ItemGroup>

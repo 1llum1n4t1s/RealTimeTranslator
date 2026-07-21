@@ -3,6 +3,8 @@ using System;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Threading;
+using RealTimeTranslator.UI.Services;
+using Velopack;
 
 namespace RealTimeTranslator.UI;
 
@@ -14,6 +16,7 @@ internal static class Program
     // 単一インスタンス Mutex はユーザーセッション単位で十分（BringExistingWindowToFront も現セッション内のプロセスしか列挙しないため）。
     // Global\ は別ユーザーからの DoS スプーフィングを許してしまうので Local\ を使う。
     private const string SingleInstanceMutexName = "Local\\RealTimeTranslator_SingleInstance_7B3F9E2A";
+    private const string AppUserModelId = "velopack.RealTimeTranslator";
 
     [DllImport("user32.dll")]
     private static extern bool SetForegroundWindow(IntPtr hWnd);
@@ -24,11 +27,34 @@ internal static class Program
     [DllImport("user32.dll")]
     private static extern bool IsIconic(IntPtr hWnd);
 
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+    private static extern int SetCurrentProcessExplicitAppUserModelID(string appId);
+
     private const int SW_RESTORE = 9;
 
     [STAThread]
     public static void Main(string[] args)
     {
+        try { _ = SetCurrentProcessExplicitAppUserModelID(AppUserModelId); }
+        catch { /* シェル連携の失敗だけで起動を止めない */ }
+
+        // Velopack のインストール・更新フックは、Avalonia と多重起動ガードより先に処理する。
+        var velopackApp = VelopackApp.Build();
+        if (OperatingSystem.IsWindows())
+        {
+            velopackApp
+                .OnAfterInstallFastCallback(_ => WindowsLegacyStartMenuShortcutMigrator.MigrateForCurrentUser())
+                .OnAfterUpdateFastCallback(_ => WindowsLegacyStartMenuShortcutMigrator.MigrateForCurrentUser());
+        }
+
+        velopackApp.Run();
+
+        // 高速フックが一時的なファイルロック等で失敗した場合も、通常起動時に再試行する。
+        if (OperatingSystem.IsWindows())
+        {
+            WindowsLegacyStartMenuShortcutMigrator.MigrateForCurrentUser();
+        }
+
         var pid = Environment.ProcessId;
         var mutex = new Mutex(true, SingleInstanceMutexName, out var createdNew);
         try
