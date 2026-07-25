@@ -6,7 +6,7 @@ rere レビュー P1 #3 (F-1) で「Velopack ロールバック手段の欠如�
 
 ## 0. 前提
 
-- 配信元は **Cloudflare R2** (`realtimetranslator-updates` バケット、公開 URL `https://rtt.nephilim.jp`)。
+- 配信元は **Cloudflare R2** (`realtimetranslator-updates` バケット、公開 URL `https://rtt.kagayoi.com`)。
 - Velopack の `SimpleWebSource` は **`releases.win-x64.json` マニフェストを見て、そこに載っている最新バージョン**へ向かう。
   つまり「クライアントがどのバージョンを取得するか」は **R2 上の `releases.win-x64.json` の内容で決まる**。
 - `UpdateService.cs` の `SimpleWebSource(baseUrl)` でユーザー側のバージョン指定はできない (`UpdateBaseUrl` は [JsonIgnore] ハードコード固定)。
@@ -33,7 +33,7 @@ wrangler r2 object put "realtimetranslator-updates/releases.win-x64.json" \
 wrangler r2 object delete "realtimetranslator-updates/RealTimeTranslator-1.0.X-win-x64-full.nupkg" --remote
 
 # 3. 配信確認: マニフェストの最新バージョンが v1.0.(X-1) に戻ったか
-curl -sS https://rtt.nephilim.jp/releases.win-x64.json | head -20
+curl -sS https://rtt.kagayoi.com/releases.win-x64.json | head -20
 ```
 
 > ⚠️ 「マニフェストを v1.0.(X-1) に戻す」のは、 **これから起動するユーザーが正常に動く v1.0.(X-1) を
@@ -48,7 +48,7 @@ curl -sS https://rtt.nephilim.jp/releases.win-x64.json | head -20
 RealTimeTranslator v1.0.X に重大な不具合が見つかりました。
 お手数ですが、 以下の手順で v1.0.(X-1) に戻してください:
 
-1. https://rtt.nephilim.jp/RealTimeTranslator-win-x64-Setup.exe から
+1. https://rtt.kagayoi.com/RealTimeTranslator-win-x64-Setup.exe から
    Setup.exe をダウンロード (R2 のマニフェストを §1-A で v1.0.(X-1) に戻してあれば、これは正常版を指す)
 2. 実行 → 既存 v1.0.X に上書きインストール
 3. 起動を確認

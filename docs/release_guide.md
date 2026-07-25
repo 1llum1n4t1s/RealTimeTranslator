@@ -1,6 +1,6 @@
 # 公開手順（Velopack + Cloudflare R2）
 
-このプロジェクトの公開は **`release/**` ブランチへの push** をトリガーにして、GitHub Actions が Velopack パッケージを作成し、**Cloudflare R2 (`realtimetranslator-updates` バケット)** へアップロードします。自動更新クライアント (`UpdateService` の `SimpleWebSource`) は `https://rtt.nephilim.jp/releases.win-x64.json` を参照して更新を取得します。
+このプロジェクトの公開は **`release/**` ブランチへの push** をトリガーにして、GitHub Actions が Velopack パッケージを作成し、**Cloudflare R2 (`realtimetranslator-updates` バケット)** へアップロードします。自動更新クライアント (`UpdateService` の `SimpleWebSource`) は `https://rtt.kagayoi.com/releases.win-x64.json` を参照して更新を取得します。
 
 ## 前提
 

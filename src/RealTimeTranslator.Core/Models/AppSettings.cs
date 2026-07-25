@@ -57,12 +57,12 @@ public class UpdateSettings
     /// Velopack の <see cref="Velopack.Sources.SimpleWebSource"/> がこの base URL + <c>/releases.{channel}.json</c>
     /// を取得しに行く。末尾の "/" は付けない（Velopack 内部で正規化される）。
     /// 旧 GitHub Releases (github.com/1llum1n4t1s/RealTimeTranslator) からは Cloudflare R2 へ移行。
-    /// 配信元は中立ドメイン rtt.nephilim.jp を使う (1llum1n4t1.com 系はクラウド/企業 egress の
-    /// SNI フィルタで false positive を起こすため中立ドメインに統一。Lhamiel の lhamiel.nephilim.jp と同方針)。
+    /// 配信元は中立ドメイン rtt.kagayoi.com を使う (1llum1n4t1.com 系はクラウド/企業 egress の
+    /// SNI フィルタで false positive を起こすため中立ドメインに統一。Lhamiel の lhamiel.kagayoi.com と同方針)。
     /// 超旧 GithubSource クライアント救済のため、GitHub Releases に R2 対応版を「踏み台」として 1 つ publish する
     /// （GithubSource は最新版を選ぶので、それ経由で更新 → 再起動後に R2 を見るようになる）。
     /// </summary>
-    internal const string CanonicalUpdateBaseUrl = "https://rtt.nephilim.jp";
+    internal const string CanonicalUpdateBaseUrl = "https://rtt.kagayoi.com";
 
     // 自動更新は常時有効 (2026-05-25 で Enabled 切替廃止)。
     // 過去 settings.json に残った "Enabled": false は System.Text.Json の unknown property として無視されるため、

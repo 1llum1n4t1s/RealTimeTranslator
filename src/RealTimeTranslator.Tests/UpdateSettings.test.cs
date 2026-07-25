@@ -10,7 +10,7 @@ namespace RealTimeTranslator.Tests;
 [TestClass]
 public class UpdateSettingsTests
 {
-    private const string ExpectedBaseUrl = "https://rtt.nephilim.jp";
+    private const string ExpectedBaseUrl = "https://rtt.kagayoi.com";
 
     [TestMethod]
     public void UpdateBaseUrl_IsHardcodedR2Url()

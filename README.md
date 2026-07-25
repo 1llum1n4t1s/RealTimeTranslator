@@ -8,7 +8,7 @@ Windows 向けのリアルタイム字幕翻訳デスクトップアプリです
 >
 > 本アプリは Velopack による自動更新に対応していますが、ネットワーク環境やセキュリティソフトの影響で自動更新に失敗することがあります。その場合は、最新の Setup.exe を手動でダウンロードして上書きインストールしてください（設定・API キーはそのまま引き継がれます）。
 >
-> 👉 <https://rtt.nephilim.jp/RealTimeTranslator-win-x64-Setup.exe>
+> 👉 <https://rtt.kagayoi.com/RealTimeTranslator-win-x64-Setup.exe>
 
 ## 機能
 
@@ -33,7 +33,7 @@ Windows 向けのリアルタイム字幕翻訳デスクトップアプリです
 ## インストール
 
 1. **Setup.exe をダウンロード**
-   - <https://rtt.nephilim.jp/RealTimeTranslator-win-x64-Setup.exe>
+   - <https://rtt.kagayoi.com/RealTimeTranslator-win-x64-Setup.exe>
 
 2. **インストーラを実行**
    - ダウンロードした `RealTimeTranslator-win-x64-Setup.exe` をダブルクリック
@@ -100,7 +100,7 @@ Silero VAD はボーカル入り音楽を speech 扱いする仕様で、 **歌�
 ### 自動更新が動かない時
 
 1. **バージョンタブの「更新の確認」ボタン** を押して手動チェック
-2. それでも動かない場合は <https://rtt.nephilim.jp/RealTimeTranslator-win-x64-Setup.exe> から最新インストーラを手動でダウンロードしてインストール
+2. それでも動かない場合は <https://rtt.kagayoi.com/RealTimeTranslator-win-x64-Setup.exe> から最新インストーラを手動でダウンロードしてインストール
 
 ### ログ・設定ファイルの場所
 
