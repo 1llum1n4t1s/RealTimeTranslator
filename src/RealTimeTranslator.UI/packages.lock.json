@@ -88,20 +88,20 @@
       },
       "VelopackUpdateDialog.Avalonia": {
         "type": "Direct",
-        "requested": "[1.0.11, )",
-        "resolved": "1.0.11",
-        "contentHash": "8Ydc87CMFmw0W5pYpG3MAPqsFH6exghsnw4MNDbe6MA0u3Vh/F3F7dt7VkfDIkyAgL2FJq9bSoLprrgC1Ba2Pg==",
+        "requested": "[1.0.12, )",
+        "resolved": "1.0.12",
+        "contentHash": "WnrVPIIl9gWtIn30032Er0oyHI35tU7v5OPpQk7X8HcMdBDrpQnfTRk8yw1qBluwlpvbmR6W2bmj9fOjjGQAdA==",
         "dependencies": {
           "Avalonia": "12.1.0",
           "CommunityToolkit.Mvvm": "8.4.2",
-          "SuperLightLogger": "1.0.9",
+          "SuperLightLogger": "1.0.10",
           "Velopack": "1.2.0"
         }
       },
       "1llum1n4t1s.NAudio": {
         "type": "Transitive",
-        "resolved": "1.0.47",
-        "contentHash": "2gCZ4VslcUE4mFAUYwzgFIHkSD9mGxdcrgeh76w2E3Xf1SDlHvqeeMuXiHPf+g9WE9/o6uL8nAcD51DilO4xUQ=="
+        "resolved": "1.0.49",
+        "contentHash": "okY27WnAtKmAcrlGPgafIgaplr20STsLBVFM78CvdE2NljaX9QR7TD7P8KFXcWFxCCPjSO0YzPz5vRguTKTTEQ=="
       },
       "Avalonia.Angle.Windows.Natives": {
         "type": "Transitive",
@@ -233,8 +233,8 @@
       },
       "Microsoft.CognitiveServices.Speech": {
         "type": "Transitive",
-        "resolved": "1.50.0",
-        "contentHash": "GyvnjWea5HsDxbZZ7OdxHtIKhuZaLNW+VAVJMFBpjAjE3hlP1YzCzpGScwXevJeuYUP6aoADqOElZGPcfzQLiA==",
+        "resolved": "1.51.1",
+        "contentHash": "DYUYtmRuy/3Vc3WeOtAPd+wIleB/Jna7cLpiftQqA4krPMLsACb6GSA1xCNMGyjypqtbawjzy2vqukUeq6ZC2Q==",
         "dependencies": {
           "Azure.Core": "1.44.1"
         }
@@ -307,20 +307,20 @@
       },
       "Microsoft.Extensions.Logging": {
         "type": "Transitive",
-        "resolved": "10.0.9",
-        "contentHash": "N7Gm9SjugYjmmnhwbBKC9DFqGqjfJvh6YfOJgtwh0AW0Xpok3dIVors1ik050XmUxKAgAc7nNngDIJyFb06K2g==",
+        "resolved": "10.0.10",
+        "contentHash": "Tf6z5HsL0VDYRTfvsoNrTGHGheCwkTsZBA2FFh5ATJUbkAwug+FFNISJK2gjpUNemlAOoWllAK52HOWCjto3EQ==",
         "dependencies": {
-          "Microsoft.Extensions.DependencyInjection": "10.0.9",
-          "Microsoft.Extensions.Logging.Abstractions": "10.0.9",
-          "Microsoft.Extensions.Options": "10.0.9"
+          "Microsoft.Extensions.DependencyInjection": "10.0.10",
+          "Microsoft.Extensions.Logging.Abstractions": "10.0.10",
+          "Microsoft.Extensions.Options": "10.0.10"
         }
       },
       "Microsoft.Extensions.Logging.Abstractions": {
         "type": "Transitive",
-        "resolved": "10.0.9",
-        "contentHash": "9S/DFt4cohlMPpzIxjG6kk0L8MuN2vDm9pbMCulxtJzzk82oJHVLBd8vuQxaPskaYQwKqmFmbannf5eoChgjYg==",
+        "resolved": "10.0.10",
+        "contentHash": "zkFxGYUvdxAvIKTyXHrmW+Sux53D4SezD9dMyZ6hrwwzPQJNuwCRy1f5W7AvYTqacEGhWF2XderRQG1OvbV8og==",
         "dependencies": {
-          "Microsoft.Extensions.DependencyInjection.Abstractions": "10.0.9"
+          "Microsoft.Extensions.DependencyInjection.Abstractions": "10.0.10"
         }
       },
       "Microsoft.Extensions.Primitives": {
@@ -330,16 +330,16 @@
       },
       "Microsoft.ML.OnnxRuntime": {
         "type": "Transitive",
-        "resolved": "1.27.1",
-        "contentHash": "lVD57zo77erw9oLC2obkKkMOM+CqbtwZuztfXQxEy3oJBOWmDKweto+c+N/Mh/FUoVRRFfsR9KaMX+aM+XLh+Q==",
+        "resolved": "1.28.0",
+        "contentHash": "xpguSCrXBe5E1l1088S7UqnI36EHaTL6CJMHEhwfGBoSwyPH5Q/IkbkBBk/GwXWzsVyEXpQm42ZimSAQs0/zKA==",
         "dependencies": {
-          "Microsoft.ML.OnnxRuntime.Managed": "1.27.1"
+          "Microsoft.ML.OnnxRuntime.Managed": "1.28.0"
         }
       },
       "Microsoft.ML.OnnxRuntime.Managed": {
         "type": "Transitive",
-        "resolved": "1.27.1",
-        "contentHash": "7vZTjZzuSP6XC47lbRN0xI9+6YDOChxKjmUmb80q7YC8Nb7zQUVrETFGLXlFfYWjvlb8/4J+w+L33gBTCpLMKA==",
+        "resolved": "1.28.0",
+        "contentHash": "4ecKjwASHhAZXczK/xm5KU6MdvoIGfMd23UAwDbM9vfcfgqZgNqvFWPZPT0Elc1wu5vXWs2Kij1ZBmHCcv1UlA==",
         "dependencies": {
           "System.Numerics.Tensors": "9.0.0"
         }
@@ -369,12 +369,12 @@
       },
       "SuperLightLogger": {
         "type": "Transitive",
-        "resolved": "1.0.9",
-        "contentHash": "xek3cZykWpY+h7ZhahQQACbSVpU84SPOqK6XEYJyVP15ndvc3unwN8leN3GHWIG8dnzj+E9w1p+xuWqAkF3bag==",
+        "resolved": "1.0.10",
+        "contentHash": "wyB/XFO6+WpEc98mgYRdEg8N3grZLj47xaag5LYIWgtMjVwytRxilmzpJGIFBzEQcI/k3fRepdlJN9akZQZegQ==",
         "dependencies": {
-          "Microsoft.Extensions.DependencyInjection.Abstractions": "10.0.9",
-          "Microsoft.Extensions.Logging": "10.0.9",
-          "Microsoft.Extensions.Logging.Abstractions": "10.0.9"
+          "Microsoft.Extensions.DependencyInjection.Abstractions": "10.0.10",
+          "Microsoft.Extensions.Logging": "10.0.10",
+          "Microsoft.Extensions.Logging.Abstractions": "10.0.10"
         }
       },
       "System.ClientModel": {
@@ -413,10 +413,10 @@
       "realtimetranslator.core": {
         "type": "Project",
         "dependencies": {
-          "1llum1n4t1s.NAudio": "[1.0.47, )",
-          "Microsoft.CognitiveServices.Speech": "[1.50.0, )",
-          "Microsoft.ML.OnnxRuntime": "[1.27.1, )",
-          "SuperLightLogger": "[1.0.9, )",
+          "1llum1n4t1s.NAudio": "[1.0.49, )",
+          "Microsoft.CognitiveServices.Speech": "[1.51.1, )",
+          "Microsoft.ML.OnnxRuntime": "[1.28.0, )",
+          "SuperLightLogger": "[1.0.10, )",
           "System.Security.Cryptography.ProtectedData": "[10.0.10, )"
         }
       }
@@ -447,18 +447,18 @@
       },
       "Microsoft.CognitiveServices.Speech": {
         "type": "Transitive",
-        "resolved": "1.50.0",
-        "contentHash": "GyvnjWea5HsDxbZZ7OdxHtIKhuZaLNW+VAVJMFBpjAjE3hlP1YzCzpGScwXevJeuYUP6aoADqOElZGPcfzQLiA==",
+        "resolved": "1.51.1",
+        "contentHash": "DYUYtmRuy/3Vc3WeOtAPd+wIleB/Jna7cLpiftQqA4krPMLsACb6GSA1xCNMGyjypqtbawjzy2vqukUeq6ZC2Q==",
         "dependencies": {
           "Azure.Core": "1.44.1"
         }
       },
       "Microsoft.ML.OnnxRuntime": {
         "type": "Transitive",
-        "resolved": "1.27.1",
-        "contentHash": "lVD57zo77erw9oLC2obkKkMOM+CqbtwZuztfXQxEy3oJBOWmDKweto+c+N/Mh/FUoVRRFfsR9KaMX+aM+XLh+Q==",
+        "resolved": "1.28.0",
+        "contentHash": "xpguSCrXBe5E1l1088S7UqnI36EHaTL6CJMHEhwfGBoSwyPH5Q/IkbkBBk/GwXWzsVyEXpQm42ZimSAQs0/zKA==",
         "dependencies": {
-          "Microsoft.ML.OnnxRuntime.Managed": "1.27.1"
+          "Microsoft.ML.OnnxRuntime.Managed": "1.28.0"
         }
       },
       "SkiaSharp.NativeAssets.Linux": {
