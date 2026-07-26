@@ -244,3 +244,12 @@ OpenAI Realtime API は **送信した音声を全部 audio input token とし�
 | `deploy-landing.yml` | main push (`web/**`) / 手動 | ランディングページの Cloudflare Worker デプロイ (リリースフローとは独立) |
 
 旧 `release.yml` / `velopack.yml` (CI リリース) は削除済み — リリースは `scripts/release-local.ps1` のローカル実行 (上記 §バージョン管理 / リリース 参照)。 全 actions は SHA 固定 (`@<sha> # vX.Y` 形式)、 サプライチェーン対策。 Dependabot が自動 PR を上げる構成。
+
+## ドメイン移行（2026-07 開始・期限 2027/05/31）
+
+屋号を **Kagayoi** に統一したため、配信ドメインを `nephilim.jp` から `kagayoi.com` へ移行中。方針の全体像はユーザーグローバルの `CLAUDE.md` §屋号とドメイン を参照する。
+
+- **旧ドメイン `nephilim.jp` はレジストラで廃止申請済みで 2027/05/31 に失効する**（延長しない）。それまでに出荷済みバイナリを新ドメインへ移行しきる。
+- 旧ホストの Worker route / custom domain は**期限まで消さない**。消すと出荷済みアプリの自動更新が止まる。
+- `nephilim.jp` の Redirect Rules は `/` だけを 301 する。`releases.*.json` / `*.nupkg` / `*-Setup.exe` は転送せず R2 が配信を続ける。
+- 配信は `rtt.kagayoi.com`（R2 `realtimetranslator-updates`）。旧 `rtt.nephilim.jp` は route に併記して残してある。
