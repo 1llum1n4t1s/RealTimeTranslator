@@ -115,19 +115,35 @@ public partial class SettingsViewModel : ObservableObject
             //              response.done / transcript.done が 11 分間ゼロ (= server が turn end を一度も引けていない)。
             //   v1.0.49: threshold を +0.1 戻し (Balanced 0.4) + Hangover を +200ms 戻し (Balanced 600)。
             //            PreRoll は v1.0.42 の +200ms を維持する (頭の取りこぼし防止用で、 発話境界には無関係)。
+            //            → 連結は解消したが、 **ゲーム内ボイスチャットの声を拾えなくなった** (2026-07-30 ゆろさん報告)。
+            //              ゲーム収録ボイスは拾えてボイチャだけ落ちる差から、 ボイチャの speech probability は
+            //              **0.3 と 0.4 の間** と挟み撃ちで特定できた (v1.0.47 の threshold 0.3 では拾えていた)。
+            //              ボイチャ音声はマイク → ノイズ抑制 → 低ビットレート圧縮を経て帯域が削られ、
+            //              Silero VAD の「声らしさ」スコアがスタジオ品質の収録ボイスより低く出るため。
+            //   v1.0.50: Balanced を **0.3 / 1000 / 800** に変更 (threshold -0.1、 Hangover +200ms)。
+            //            ⚠️ 「また 0.3 に下げた」ように見えるが、 過去 2 回壊れた構成とは別物なので注意:
+            //              - 壊れた構成は **0.3 かつ Hangover 400** (v1.0.30 / v1.0.42 とも)。 今回は Hangover 800 で倍。
+            //              - v1.0.49 で **DeltaIdleFinalizeMs (6 秒アイドル確定)** を追加済み。 過去 2 回の当時は
+            //                存在しなかった保険で、 万一 server が句点を返さなくても発話ごとに確定 emit される。
+            //            threshold を下げる以上 BGM 誤検出は増えるが、 ボイチャを拾うには 0.3 が必須で、
+            //            「ボイチャは拾うが BGM は拾わない」を threshold 一本で分離するのは原理的に不可能。
+            //            境界は Hangover と アイドル確定の二段で担保する方針に切り替えた。
             //
             // Hangover を削ってはいけない理由: OpenAI Realtime は発音の後ろに無音を付けないと
             // 後続音声に押し出されるまで出力が止まる (ロケット鉛筆方式)。 Hangover は発話末尾に
             // 「間」を送り届けて server に turn end を引かせる役割を持つ。 token 節約のために薄くすると
             // 境界が引けなくなる。 遠距離小音量の声拾いは入力プリプロセス DSP に委ねる方針。
 
-            // Balanced (デフォルト): threshold=0.4 で BGM 誤検出を適度に抑えつつ短い発話も拾う。
-            // preroll=1000 で発話冒頭の子音を厚めに拾い、 hangover=600 で末尾の「間」を server に届ける。
-            new("Balanced",          "ふつう (推奨)",                    0.4f, 1000, 600),
-            // PrioritizeEdges: threshold=0.3 で更に小さい発話 (「はい」「うん」等) も拾い、
+            // Balanced (デフォルト): threshold=0.3 でゲーム内ボイスチャット (帯域が削られて声らしさスコアが低い) も拾う。
+            // preroll=1000 で発話冒頭の子音を厚めに拾い、 hangover=800 で末尾の「間」を厚く送って server に句点を引かせる。
+            new("Balanced",          "ふつう (推奨)",                    0.3f, 1000, 800),
+            // PrioritizeEdges: threshold=0.2 で Balanced (0.3) でも拾えない小声 (「はい」「うん」等) を拾う最終手段。
             // preroll=1200 / hangover=800 で文の頭・尻尾の音素切れを更に強く抑える。 通話・会議・コマンド発話向け。
-            // BGM 混入で課金増のリスクあり (ゆろさんの体感確認後に調整可)。
-            new("PrioritizeEdges",   "頭と尻尾を取りこぼさない",         0.3f, 1200, 800),
+            // v1.0.50 で Balanced が 0.4 → 0.3 に下がったのに合わせて 0.3 → 0.2 へ連動シフトした。
+            // Balanced と同値のままだと preroll 200ms しか差が無く、 プリセットを分ける意味が消えるため
+            // (相対関係「頭尻尾重視 > ふつう > 節約」を維持する設計)。
+            // 3 プリセット中 BGM 誤検出と課金増が最も大きいので、 Balanced で拾えない時だけ選ぶ位置づけ。
+            new("PrioritizeEdges",   "頭と尻尾を取りこぼさない",         0.2f, 1200, 800),
             // AggressiveSavings: threshold=0.5 (公式推奨値) で誤検出 (BGM のドラム/拍手等) を抑え、
             // preroll=700 / hangover=350 で送信秒数を最小化。 長時間視聴で課金を切り詰めたい時向け。
             new("AggressiveSavings", "ガッツリ節約",                      0.5f, 700, 350),
@@ -961,9 +977,39 @@ public partial class SettingsViewModel : ObservableObject
     private string _inputLevelText = "-∞ dB";
     public string InputLevelText { get => _inputLevelText; set => SetProperty(ref _inputLevelText, value); }
 
+    // ───── クリップ (0 dBFS 到達) インジケータ ─────
+    // 入力ゲインを上げすぎると AudioFormatConverter.Float32ToPcm16 の Math.Clamp(-1, 1) で
+    // 波形が潰れ (歪み)、 OpenAI へ送る音声の品質が落ちて翻訳精度が下がる。 ところがメーターは
+    // norm=1.0 で頭打ちになるため「どれだけ歪んでいるか」が画面から分からない。 到達を明示する。
+    // ⚠️ AntiClipLimiter は v1.0.36 で削除済みで、 クリップを防ぐ自動保護はもう無い
+    //    (OBS 方式 = ユーザーがメーターを見て手動で管理する設計)。 この表示がその唯一の手掛かり。
+
+    /// <summary>
+    /// クリップ判定のしきい値 (dBFS)。 PCM16 変換のクランプは振幅 1.0 (= 0 dBFS) で発生するため、
+    /// float の丸め誤差で 0.0 ちょうどを取り逃がさないよう僅かに手前で判定する。
+    /// </summary>
+    internal const double ClipThresholdDb = -0.1;
+
+    /// <summary>
+    /// クリップ点灯の保持時間。 レベル更新は約 50ms 間隔なので、 保持しないと瞬間的なクリップが
+    /// 1 フレームだけ点灯して人間には視認できない。 OBS 等のメーターと同じくホールドさせる。
+    /// </summary>
+    internal static readonly TimeSpan ClipHoldDuration = TimeSpan.FromSeconds(1.5);
+
+    private DateTime _clipHoldUntilUtc = DateTime.MinValue;
+
+    private bool _isInputClipping;
+    /// <summary>直近にクリップ (0 dBFS 到達) したか。 メーター右端の赤インジケータ点灯に使う。</summary>
+    public bool IsInputClipping { get => _isInputClipping; set => SetProperty(ref _isInputClipping, value); }
+
     // Called from MainViewModel when a post-gain peak level (dBFS) arrives from the pipeline.
     // Maps -60..0 dBFS to 0..1 for the OBS-like meter and updates the numeric label.
-    public void UpdateInputLevel(double peakDb)
+    public void UpdateInputLevel(double peakDb) => UpdateInputLevel(peakDb, DateTime.UtcNow);
+
+    /// <summary>
+    /// <see cref="UpdateInputLevel(double)"/> の時刻注入版 (クリップホールドの経過をテストから制御するため internal)。
+    /// </summary>
+    internal void UpdateInputLevel(double peakDb, DateTime nowUtc)
     {
         const double floorDb = -60.0;
         double norm = (peakDb - floorDb) / (0.0 - floorDb);
@@ -971,6 +1017,12 @@ public partial class SettingsViewModel : ObservableObject
         InputLevelNorm = norm;
         InputLevelPeakDb = peakDb;
         InputLevelText = peakDb <= floorDb ? "-∞ dB" : $"{peakDb:0.0} dB";
+
+        // クリップ到達で点灯期限を更新し、 期限内かどうかで点灯状態を決める。
+        // 専用タイマーを持たないのは、 このメソッド自体が約 50ms 間隔で呼ばれ続けるため
+        // (無音時も EmitSilence 経由で来る) 消灯もここで確実に処理できるから。
+        if (peakDb >= ClipThresholdDb) _clipHoldUntilUtc = nowUtc + ClipHoldDuration;
+        IsInputClipping = nowUtc < _clipHoldUntilUtc;
     }
 
     // Reset the meter to silence (called when translation stops).
@@ -979,6 +1031,9 @@ public partial class SettingsViewModel : ObservableObject
         InputLevelNorm = 0d;
         InputLevelPeakDb = -120d;
         InputLevelText = "-∞ dB";
+        // 停止後はレベル更新が止まるため、 ホールド中のクリップ点灯が残らないよう明示的に消す。
+        _clipHoldUntilUtc = DateTime.MinValue;
+        IsInputClipping = false;
     }
     /// <summary>
     /// ユーザー手動の入力ゲイン (dB)。 範囲 -24〜+24、 default 0。

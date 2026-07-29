@@ -166,29 +166,49 @@
 
                         <HeaderedContentControl Header="入力ゲイン (Input Gain)">
                             <StackPanel>
-                                <!-- OBS 風レベルメーター (ゲイン適用後のピーク)。 緑→黄→赤の固定ゾーン背景を、 現在レベルより右側を半透明マスクで覆って表現する。 -->
-                                <Border Height="14" CornerRadius="3" ClipToBounds="True" Margin="0,0,0,2">
-                                    <Border.Background>
-                                        <LinearGradientBrush StartPoint="0%,0%" EndPoint="100%,0%">
-                                            <GradientStop Offset="0.0"  Color="#2ECC40"/>
-                                            <GradientStop Offset="0.65" Color="#2ECC40"/>
-                                            <GradientStop Offset="0.80" Color="#FFDC00"/>
-                                            <GradientStop Offset="0.90" Color="#FF851B"/>
-                                            <GradientStop Offset="1.0"  Color="#FF4136"/>
-                                        </LinearGradientBrush>
-                                    </Border.Background>
-                                    <Border HorizontalAlignment="Right" Background="#D00F1419">
-                                        <Border.Width>
-                                            <MultiBinding Converter="{StaticResource LevelMeterMaskWidthConverter}">
-                                                <Binding Path="InputLevelNorm"/>
-                                                <Binding Path="Bounds.Width" RelativeSource="{RelativeSource AncestorType=Border}"/>
-                                            </MultiBinding>
-                                        </Border.Width>
+                                <!-- OBS 風レベルメーター (ゲイン適用後のピーク)。 緑→黄→赤の固定ゾーン背景を、 現在レベルより右側を半透明マスクで覆って表現する。
+                                     右端のクリップインジケータは 0 dBFS 到達 (= PCM16 変換で波形が潰れる) を点灯で知らせる。
+                                     AntiClipLimiter は v1.0.36 で削除済みなので、 歪みに気づく手掛かりはこの表示だけ。 -->
+                                <Grid ColumnDefinitions="*,Auto" Margin="0,0,0,2">
+                                    <Border Grid.Column="0" Height="14" CornerRadius="3" ClipToBounds="True">
+                                        <Border.Background>
+                                            <LinearGradientBrush StartPoint="0%,0%" EndPoint="100%,0%">
+                                                <GradientStop Offset="0.0"  Color="#2ECC40"/>
+                                                <GradientStop Offset="0.65" Color="#2ECC40"/>
+                                                <GradientStop Offset="0.80" Color="#FFDC00"/>
+                                                <GradientStop Offset="0.90" Color="#FF851B"/>
+                                                <GradientStop Offset="1.0"  Color="#FF4136"/>
+                                            </LinearGradientBrush>
+                                        </Border.Background>
+                                        <Border HorizontalAlignment="Right" Background="#D00F1419">
+                                            <Border.Width>
+                                                <MultiBinding Converter="{StaticResource LevelMeterMaskWidthConverter}">
+                                                    <Binding Path="InputLevelNorm"/>
+                                                    <Binding Path="Bounds.Width" RelativeSource="{RelativeSource AncestorType=Border}"/>
+                                                </MultiBinding>
+                                            </Border.Width>
+                                        </Border>
                                     </Border>
-                                </Border>
-                                <Grid ColumnDefinitions="*,Auto" Margin="0,0,0,8">
+                                    <!-- クリップランプ: 消灯時も枠だけ見えるよう暗い赤を敷き、 到達時に不透明の赤を重ねる (1.5 秒ホールド)。 -->
+                                    <Border Grid.Column="1" Width="10" Height="14" CornerRadius="2" Margin="4,0,0,0"
+                                            Background="#33FF4136"
+                                            ToolTip.Tip="クリップ (0 dBFS 到達) インジケータ。 点灯したらゲインを下げてください。 音が潰れて翻訳精度が落ちます。">
+                                        <Border CornerRadius="2" Background="#FF4136" IsVisible="{Binding IsInputClipping}"/>
+                                    </Border>
+                                </Grid>
+                                <!-- dB 目盛り: メーターは -60〜0 dBFS を線形に割り当てているので、 -40 は 33%、 -20 は 67% の位置になる。
+                                     「ゲインを上げてもバーがあまり動かない」のが仕様 (60 dB でフルスケール) だと一目で分かるようにする。 -->
+                                <Grid ColumnDefinitions="*,*,*" Margin="0,0,14,0">
+                                    <TextBlock Grid.Column="0" Text="-60" FontSize="9" Foreground="{DynamicResource Brush.FG2}" HorizontalAlignment="Left"/>
+                                    <TextBlock Grid.Column="1" Text="-40" FontSize="9" Foreground="{DynamicResource Brush.FG2}" HorizontalAlignment="Left"/>
+                                    <TextBlock Grid.Column="2" Text="-20" FontSize="9" Foreground="{DynamicResource Brush.FG2}" HorizontalAlignment="Left"/>
+                                    <TextBlock Grid.Column="2" Text="0" FontSize="9" Foreground="{DynamicResource Brush.FG2}" HorizontalAlignment="Right"/>
+                                </Grid>
+                                <Grid ColumnDefinitions="*,Auto,Auto" Margin="0,2,0,8">
                                     <TextBlock Grid.Column="0" Text="レベル (ゲイン適用後)" FontSize="10" Foreground="{DynamicResource Brush.FG2}"/>
-                                    <TextBlock Grid.Column="1" Text="{Binding InputLevelText}" FontSize="10" Foreground="{DynamicResource Brush.FG2}"/>
+                                    <TextBlock Grid.Column="1" Text="クリップ" FontSize="10" FontWeight="Bold" Foreground="#FF4136"
+                                               Margin="0,0,8,0" IsVisible="{Binding IsInputClipping}"/>
+                                    <TextBlock Grid.Column="2" Text="{Binding InputLevelText}" FontSize="10" Foreground="{DynamicResource Brush.FG2}"/>
                                 </Grid>
 
                                 <!-- ゲインフェーダー: 左=小さく / 右=大きく の絶対フェーダー (中央が 0 dB)。 OBS 風。 -->
@@ -212,9 +232,12 @@
                                                Foreground="{DynamicResource Brush.FG}"/>
                                     <TextBlock Grid.Column="2" Text="大きく" FontSize="10" Foreground="{DynamicResource Brush.FG2}" VerticalAlignment="Center"/>
                                 </Grid>
-                                <TextBlock Text="左へ動かすほど小さく、 右へ動かすほど大きくなります (中央＝0 dB / 等倍、 範囲 -24〜+24 dB)。 上のメーターを見ながら、 ピークが右端の赤 (0 dBFS = クリップ) に張り付かないよう調整してください。"
+                                <TextBlock Text="左へ動かすほど小さく、 右へ動かすほど大きくなります (中央＝0 dB / 等倍、 範囲 -24〜+24 dB)。 右端の「クリップ」ランプが点いたらゲインを下げてください (音が潰れて翻訳精度が落ちます)。"
                                            FontSize="11" Foreground="{DynamicResource Brush.FG2}"
                                            TextWrapping="Wrap" Margin="0,6,0,0"/>
+                                <TextBlock Text="※ メーターは -60〜0 dB の 60 dB 幅を表示するため、 ゲインを +6 dB 上げてもバーは 1 割ほどしか伸びません (仕様)。 また表示されるのは「その瞬間いちばん大きい音」なので、 BGM や効果音が鳴っていると小さな声はバーに現れません。"
+                                           FontSize="11" Foreground="{DynamicResource Brush.FG2}"
+                                           TextWrapping="Wrap" Margin="0,4,0,0"/>
                             </StackPanel>
                         </HeaderedContentControl>
                         </StackPanel>

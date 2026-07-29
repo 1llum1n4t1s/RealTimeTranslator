@@ -149,18 +149,26 @@ public class AudioCaptureSettings
     public string VadPreset { get; set; } = "Balanced";
 
     /// <summary>
-    /// speech probability のしきい値 (0.0-1.0, default: 0.4)。
+    /// speech probability のしきい値 (0.0-1.0, default: 0.3)。
     /// <para>
     /// ⚠️ <b>下げ過ぎると「字幕が句点なしで連結する」回帰になる。</b> BGM/SE が speech と誤検出されて
     /// 継続送信になり、 OpenAI server VAD から見て発話の切れ目が消えるため。 同じ回帰を 2 回踏んでいる:
     /// v1.0.30 で 0.5 → 0.3 にして回帰 → v1.0.31 で 0.4 に戻して解消 → v1.0.42 で警告ごと消して再び 0.3 に
     /// して<b>再発</b> (2026-07-29 実機ログで 4 発話が 112 秒連結、 完結文 emit=0、 done が 11 分間ゼロ)
-    /// → v1.0.49 で 0.4 に再度復帰。 全プリセットも +0.1 連動シフト
-    /// (Balanced 0.4 / PrioritizeEdges 0.3 / AggressiveSavings 0.5)。
+    /// → v1.0.49 で 0.4 に復帰。
+    /// </para>
+    /// <para>
+    /// v1.0.50 で <b>0.3 に再変更</b>。 0.4 ではゲーム内ボイスチャットの声を拾えず (帯域が削られて
+    /// Silero VAD のスコアが収録ボイスより低く出るため、 ボイチャの probability は 0.3〜0.4 の間と特定)、
+    /// ボイチャ翻訳には 0.3 が必須と判明したため。 <b>過去 2 回壊れた構成とは別物</b>で、
+    /// 壊れたのは「0.3 かつ <see cref="VadHangoverMs"/> 400」。 今回は Hangover 800 (倍) に加え、
+    /// v1.0.49 で追加した <c>DeltaIdleFinalizeMs</c> (6 秒アイドル確定) が保険として効く。
+    /// 全プリセットの threshold は Balanced 0.3 / PrioritizeEdges 0.2 / AggressiveSavings 0.5
+    /// (PrioritizeEdges も Balanced と同値では差が preroll だけになるため 0.2 へ連動シフト)。
     /// </para>
     /// 遠距離小音量の声拾いは入力プリプロセス DSP (<see cref="AudioPreprocessingSettings"/>) に任せる方針。
     /// </summary>
-    public float VadThreshold { get; set; } = 0.4f;
+    public float VadThreshold { get; set; } = 0.3f;
 
     /// <summary>
     /// 発話冒頭の取りこぼし防止用にリングバッファに保持する直近音声の長さ (ms)。
@@ -172,15 +180,21 @@ public class AudioCaptureSettings
 
     /// <summary>
     /// 発話末尾の切れ防止用に speech 終了判定後も送信を継続する長さ (ms)。
-    /// Balanced プリセットの推奨値は **600ms** (v1.0.31 で 400→600、 v1.0.42 で 600→400 に短縮 → v1.0.49 で 600 に復帰)。
+    /// Balanced プリセットの推奨値は **800ms** (v1.0.31 で 400→600、 v1.0.42 で 600→400 → v1.0.49 で 600 に復帰
+    /// → v1.0.50 で <b>800 に増量</b>)。
     /// <para>
     /// ⚠️ <b>token 節約のために削ってはいけない。</b> OpenAI Realtime は発音の後ろに無音を付けないと
     /// 後続音声に押し出されるまで出力が止まる (ロケット鉛筆方式)。 Hangover は発話末尾の「間」を
     /// server に送り届けて turn end (= 句点) を引かせる役割を持つため、 薄くすると
     /// <see cref="VadThreshold"/> の下げ過ぎと同じく字幕連結の原因になる。
     /// </para>
+    /// <para>
+    /// v1.0.50 で 800 に増やしたのは、 ボイスチャットを拾うため <see cref="VadThreshold"/> を 0.3 へ
+    /// 下げる代償として、 発話境界の形成を Hangover 側で肩代わりさせるため。 過去 2 回の連結回帰
+    /// (v1.0.30 / v1.0.42) はいずれも「threshold 0.3 かつ Hangover 400」の組み合わせだった。
+    /// </para>
     /// </summary>
-    public int VadHangoverMs { get; set; } = 600;
+    public int VadHangoverMs { get; set; } = 800;
 
     // ────────── 自動 Pause 保険 ──────────
 
