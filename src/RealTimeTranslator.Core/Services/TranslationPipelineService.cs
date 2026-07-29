@@ -39,6 +39,8 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     // cost 計算用モデル名) をここに確定させる。 active セッションは _activeClient と常に整合する。
     private int _activeMaxPartialChars;
     private int _activeSilencePaddingMs;
+    // delta 途絶で未確定 partial を確定するまでの待ち時間 (ms)。 0 以下で無効。
+    private int _activeDeltaIdleFinalizeMs;
     private string _activeModelForCost = "gpt-realtime-translate";
     private Channel<float[]>? _audioInputChannel;
     private Task? _audioProcessingTask;
@@ -50,6 +52,12 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     private DateTime _lastEmitTime = DateTime.MinValue;
     private bool _hasPendingDelta;
     private readonly Timer _throttleTimer;
+    // ⭐ delta アイドル確定タイマー (v1.0.49、 2026-07-29 実機ログ起点)。
+    // 「句点が来ない + MaxPartialChars 未満 + transcript.done も来ない」の三重取りこぼしで
+    // 別々の発話 (実測で 9〜48 秒の間隔) が 1 セグメントに連結する現象への対策。
+    // delta のたびにワンショットで貼り直すため、 server が生成中は決して発火しない
+    // (= v1.0.24 の「セグメント最大寿命タイマー」による長文分断とは別物)。
+    private readonly Timer _idleFinalizeTimer;
     private readonly Stopwatch _latencyStopwatch = new();
     private volatile bool _isRunning;
     // rere B1-006: Dispose / DisposeAsync の二重実行を防ぐ Interlocked 占有マーク。
@@ -288,8 +296,10 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         var initialOpenAi = settingsMonitor.CurrentValue.OpenAIRealtime;
         _activeMaxPartialChars = initialOpenAi.MaxPartialChars;
         _activeSilencePaddingMs = initialOpenAi.SilencePaddingMs;
+        _activeDeltaIdleFinalizeMs = ResolveIdleFinalizeMs(initialOpenAi.DeltaIdleFinalizeMs, initialOpenAi.SilencePaddingMs);
         _activeModelForCost = initialOpenAi.Model;
         _throttleTimer = new Timer(OnThrottleTimerElapsed, null, Timeout.Infinite, Timeout.Infinite);
+        _idleFinalizeTimer = new Timer(OnIdleFinalizeTimerElapsed, null, Timeout.Infinite, Timeout.Infinite);
 
         // 両 client のイベントを購読する。 非 active client は Connect しないのでイベントを発火しない
         // (provider 切替は Start を跨ぐため active/非active のイベント混線は起きない)。
@@ -340,21 +350,28 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         // Start 時にスナップショット。 走行中の設定変更や provider 切替で現セッションが引きずられないように
         // する (CodeRabbit 指摘)。 cost モデル名は CostEstimator のキーワード判定に合わせた文字列
         // (Speechmatics / Azure は専用 Model フィールドを持たないため合成キーを渡す)。
-        var (apiKey, outputLanguage, modelForCost, maxPartialChars, silencePaddingMs, providerLabel) = provider switch
+        var (apiKey, outputLanguage, modelForCost, maxPartialChars, silencePaddingMs, deltaIdleFinalizeMs, providerLabel) = provider switch
         {
             TranscriptionProvider.Gemini => (appSettings.Gemini.ApiKey, appSettings.Gemini.OutputLanguage,
-                appSettings.Gemini.Model, appSettings.Gemini.MaxPartialChars, appSettings.Gemini.SilencePaddingMs, "Gemini"),
+                appSettings.Gemini.Model, appSettings.Gemini.MaxPartialChars, appSettings.Gemini.SilencePaddingMs,
+                appSettings.Gemini.DeltaIdleFinalizeMs, "Gemini"),
             TranscriptionProvider.Soniox => (appSettings.Soniox.ApiKey, appSettings.Soniox.OutputLanguage,
-                appSettings.Soniox.Model, appSettings.Soniox.MaxPartialChars, appSettings.Soniox.SilencePaddingMs, "Soniox"),
+                appSettings.Soniox.Model, appSettings.Soniox.MaxPartialChars, appSettings.Soniox.SilencePaddingMs,
+                appSettings.Soniox.DeltaIdleFinalizeMs, "Soniox"),
             TranscriptionProvider.Speechmatics => (appSettings.Speechmatics.ApiKey, appSettings.Speechmatics.OutputLanguage,
-                "speechmatics-rt", appSettings.Speechmatics.MaxPartialChars, appSettings.Speechmatics.SilencePaddingMs, "Speechmatics"),
+                "speechmatics-rt", appSettings.Speechmatics.MaxPartialChars, appSettings.Speechmatics.SilencePaddingMs,
+                appSettings.Speechmatics.DeltaIdleFinalizeMs, "Speechmatics"),
             TranscriptionProvider.Azure => (appSettings.Azure.ApiKey, appSettings.Azure.OutputLanguage,
-                "azure-translation", appSettings.Azure.MaxPartialChars, appSettings.Azure.SilencePaddingMs, "Azure"),
+                "azure-translation", appSettings.Azure.MaxPartialChars, appSettings.Azure.SilencePaddingMs,
+                appSettings.Azure.DeltaIdleFinalizeMs, "Azure"),
             _ => (freshSettings.ApiKey, freshSettings.OutputLanguage,
-                freshSettings.Model, freshSettings.MaxPartialChars, freshSettings.SilencePaddingMs, "OpenAI"),
+                freshSettings.Model, freshSettings.MaxPartialChars, freshSettings.SilencePaddingMs,
+                freshSettings.DeltaIdleFinalizeMs, "OpenAI"),
         };
         _activeMaxPartialChars = maxPartialChars;
         _activeSilencePaddingMs = silencePaddingMs;
+        // 無音 padding の外側にクランプ (ロケット鉛筆方式の押し出し待ちを潰さない)。
+        _activeDeltaIdleFinalizeMs = ResolveIdleFinalizeMs(deltaIdleFinalizeMs, silencePaddingMs);
         _activeModelForCost = modelForCost;
 
         // API キー検証 (provider 別)。
@@ -387,6 +404,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
             _currentSegmentId = Guid.NewGuid().ToString();
             _lastEmitTime = DateTime.MinValue;
             _hasPendingDelta = false;
+            ScheduleIdleFinalize();
         }
 
         // 接続 (provider 別)。 各 provider は具象 client の固有メソッドで専用 Settings を直接渡す
@@ -505,6 +523,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         _isRunning = false;
         _latencyStopwatch.Stop();
         _throttleTimer.Change(Timeout.Infinite, Timeout.Infinite);
+        _idleFinalizeTimer.Change(Timeout.Infinite, Timeout.Infinite);
 
         // ⭐ WASAPI ネイティブ解放を UI スレッドから外す。
         // AudioCaptureService.StopCapture() は内部で NAudio の WasapiCapture.StopRecording +
@@ -849,6 +868,10 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                 _throttleTimer.Change(Timeout.Infinite, Timeout.Infinite);
                 emitPartial = _accumulatedText.Length > 0;
             }
+
+            // 未確定文字が残っていれば「この delta を最後の音沙汰」としてアイドル確定を再武装する。
+            // 続きの delta が来れば再び貼り直されるので、 生成が続く限り発火しない。
+            ScheduleIdleFinalize();
         }
 
         // ロック外で完結文を emit。
@@ -886,6 +909,63 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
             if (_hasPendingDelta)
                 EmitPartialSubtitle();
         }
+    }
+
+    /// <summary>
+    /// アイドル確定閾値が <see cref="AudioCaptureSettings"/> の無音 padding より必ず長くなるよう積む余裕 (ms)。
+    /// </summary>
+    internal const int IdleFinalizeSafetyMarginMs = 1000;
+
+    /// <summary>
+    /// アイドル確定の実効閾値を解決する。 設定値が無音 padding より短くても、
+    /// <c>SilencePaddingMs + <see cref="IdleFinalizeSafetyMarginMs"/></c> まで引き上げる。
+    /// </summary>
+    /// <remarks>
+    /// ⭐ 不変条件「アイドル確定は無音 padding の外側で起きる」を守るためのクランプ。
+    /// OpenAI Realtime は発音後に無音を付けないと後続音声に押し出されるまで出力が止まる
+    /// (ロケット鉛筆方式)。 <c>SilencePaddingMs</c> はその押し出しを client から起こす無音 PCM の
+    /// 送信時間なので、 padding 中は「これから出てくる残りがある時間帯」。 そこで確定すると残りが
+    /// 別 SegmentId に飛び、 v1.0.26 で観測された「戦略 A: 分断」を再発させる。
+    /// padding を使い切ってなお delta が来ないときだけ「本当の発話境界」と見なす。
+    /// </remarks>
+    /// <param name="configured">設定値 (0 以下は「明示的に無効」としてそのまま尊重する)。</param>
+    /// <param name="silencePaddingMs">同セッションの無音 padding 送信時間 (0 以下ならクランプ不要)。</param>
+    internal static int ResolveIdleFinalizeMs(int configured, int silencePaddingMs)
+    {
+        // 0 以下 = ユーザーが明示的に無効化した意思表示。 クランプで復活させない。
+        if (configured <= 0) return 0;
+        if (silencePaddingMs <= 0) return configured;
+        return Math.Max(configured, silencePaddingMs + IdleFinalizeSafetyMarginMs);
+    }
+
+    /// <summary>
+    /// delta アイドル確定タイマーを現在の <see cref="_accumulatedText"/> の状態に合わせて貼り直す。
+    /// 未確定文字が残っていればワンショットで再武装、 空 (= 確定済み) なら解除する。
+    /// <para>⚠️ <see cref="_textLock"/> を保持した状態で呼ぶこと。</para>
+    /// </summary>
+    private void ScheduleIdleFinalize()
+    {
+        int idleMs = _activeDeltaIdleFinalizeMs;
+        if (idleMs > 0 && _accumulatedText.Length > 0)
+            _idleFinalizeTimer.Change(idleMs, Timeout.Infinite);
+        else
+            _idleFinalizeTimer.Change(Timeout.Infinite, Timeout.Infinite);
+    }
+
+    /// <summary>
+    /// delta が途絶えたまま閾値時間を超えたときの確定処理。 発話と発話の切れ目で SegmentId を進め、
+    /// 「句点なし・文字数閾値未満・done なし」で複数発話が 1 字幕に連結するのを防ぐ。
+    /// </summary>
+    private void OnIdleFinalizeTimerElapsed(object? state)
+    {
+        // Dispose 後の遅延発火だけを弾く (Dispose 済みタイマーへの Change を避ける)。
+        // _isRunning では見ない: 停止直後に in-flight で発火した場合も未確定文は確定させたいし、
+        // StopCoreAsync の FinalizePendingPartial("停止") と競合しても後発は空振り early return になる。
+        if (Volatile.Read(ref _disposed) != 0) return;
+
+        // FinalizePendingPartial は内部で _textLock を取り、 emit は lock 外で行う。
+        // 未確定文字が無ければ早期 return するので空振り発火も安全。
+        FinalizePendingPartial($"delta 途絶 {_activeDeltaIdleFinalizeMs}ms");
     }
 
     private void EmitPartialSubtitle()
@@ -957,6 +1037,8 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
             _currentSegmentId = Guid.NewGuid().ToString();
             _hasPendingDelta = false;
             _throttleTimer.Change(Timeout.Infinite, Timeout.Infinite);
+            // 確定済み (= _accumulatedText 空) なのでアイドル確定タイマーを解除する。
+            ScheduleIdleFinalize();
         }
 
         if (!shouldEmit)
@@ -1115,6 +1197,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
             _lastEmitTime = DateTime.MinValue;
             _hasPendingDelta = false;
             _throttleTimer.Change(Timeout.Infinite, Timeout.Infinite);
+            ScheduleIdleFinalize();
             _latencyStopwatch.Reset();
         }
 
@@ -1308,6 +1391,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                 _lastEmitTime = DateTime.MinValue;
                 _hasPendingDelta = false;
                 _throttleTimer.Change(Timeout.Infinite, Timeout.Infinite);
+                ScheduleIdleFinalize();
             }
         }
 
@@ -1341,6 +1425,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         }
 
         _throttleTimer.Dispose();
+        _idleFinalizeTimer.Dispose();
         foreach (var client in _distinctClients)
         {
             client.TranscriptDeltaReceived -= OnTranscriptDelta;
@@ -1366,6 +1451,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         catch { /* DisposeAsync を推奨 */ }
 
         _throttleTimer.Dispose();
+        _idleFinalizeTimer.Dispose();
         foreach (var client in _distinctClients)
         {
             client.TranscriptDeltaReceived -= OnTranscriptDelta;

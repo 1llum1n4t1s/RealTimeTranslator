@@ -458,4 +458,194 @@ public sealed class TranslationPipelineServiceSentenceSplitTests
         var finals = emitted.Where(x => x.IsFinal).ToList();
         Assert.AreEqual(0, finals.Count, "閾値未満では強制分割しない");
     }
+
+    // ═══════════════════════════════════════════════════════════════
+    // delta アイドル確定 (DeltaIdleFinalizeMs) の統合テスト
+    // ═══════════════════════════════════════════════════════════════
+    //
+    // 経緯 (2026-07-29 ゆろさん実機ログ):
+    // ARC Raiders で 4 人の別発話が 1 SegmentId に 112 秒間連結した
+    // 「この格好ねオーケー、ありがとうこんにちは、ハロー目的地へ進んでください収縮した店...」を観測。
+    // server が句点を返さず (読点のみ)、 累積 46 文字で MaxPartialChars=50 に未到達、
+    // transcript.done も来ないという三重の取りこぼしで確定 emit が 0 件だった。
+    // 発話間には 24.7 / 9.2 / 48.4 / 25.7 秒の無音があったので、 delta 途絶を境界として使う。
+
+    /// <summary>
+    /// アイドル確定のテスト用パイプライン。 タイマー発火を待つのでテスト時間を詰めるため
+    /// 閾値を ms 単位まで下げ、 D-7 fallback (MaxPartialChars) は十分大きくして
+    /// 「アイドル確定だけが効いている」ことを保証する。
+    /// <para>
+    /// <c>SilencePaddingMs = 0</c> にしているのは <see cref="TranslationPipelineService.ResolveIdleFinalizeMs"/>
+    /// のクランプ (padding + 1000ms への引き上げ) を外して、 短い閾値をそのまま効かせるため。
+    /// クランプ自体は <c>ResolveIdleFinalizeMs_*</c> の単体テストで別途検証する。
+    /// </para>
+    /// </summary>
+    private static (TranslationPipelineService pipeline, TestRealtimeTranscriber transcriber, Func<List<SubtitleItem>> snapshot)
+        CreateIdlePipeline(int idleMs)
+    {
+        var transcriber = new TestRealtimeTranscriber();
+        var audio = new TestAudioCaptureService();
+        var settings = new AppSettings
+        {
+            OpenAIRealtime = new OpenAIRealtimeSettings
+            {
+                ApiKey = "test-key",
+                Endpoint = "wss://api.openai.com/v1/realtime/translations",
+                Model = "gpt-realtime-translate",
+                OutputLanguage = "ja",
+                // D-7 fallback を実質無効化して、 確定要因をアイドルだけに限定する。
+                MaxPartialChars = 10000,
+                SilencePaddingMs = 0,
+                DeltaIdleFinalizeMs = idleMs,
+            }
+        };
+        var monitor = new StubOptionsMonitor(settings);
+        var settingsService = new TestSettingsService();
+        var vad = new TestVoiceActivityDetector();
+        var pipeline = new TranslationPipelineService(audio, transcriber, monitor, settingsService, vad);
+
+        // emit はタイマーのスレッドプールスレッドからも来るので lock で保護する。
+        var gate = new object();
+        var emitted = new List<SubtitleItem>();
+        pipeline.SubtitleGenerated += (_, item) =>
+        {
+            lock (gate) emitted.Add(item);
+        };
+        List<SubtitleItem> Snapshot()
+        {
+            lock (gate) return [.. emitted];
+        }
+        return (pipeline, transcriber, Snapshot);
+    }
+
+    /// <summary>確定字幕が expected 件に達するまで待つ (タイムアウトしたら現状のまま返す)。</summary>
+    private static async Task<List<SubtitleItem>> WaitForFinalsAsync(
+        Func<List<SubtitleItem>> snapshot, int expected, int timeoutMs = 3000)
+    {
+        var deadline = Environment.TickCount64 + timeoutMs;
+        List<SubtitleItem> finals;
+        do
+        {
+            finals = snapshot().Where(x => x.IsFinal).ToList();
+            if (finals.Count >= expected) return finals;
+            await Task.Delay(20);
+        } while (Environment.TickCount64 < deadline);
+        return finals;
+    }
+
+    [TestMethod]
+    [TestCategory("SentenceSplit")]
+    public async Task OnTranscriptDelta_IdleBetweenUtterances_SplitsIntoSeparateSegments()
+    {
+        // 実機ログ再現: 句点なし・50 文字未満の 4 発話が無音を挟んで届く。
+        // 旧実装では 1 セグメントに連結していた。
+        const int idleMs = 120;
+        var (pipeline, transcriber, snapshot) = CreateIdlePipeline(idleMs);
+
+        var utterances = new[] { "この格好ねオーケー、", "ありがとう", "こんにちは、ハロー", "目的地へ進んでください" };
+        foreach (var u in utterances)
+        {
+            transcriber.RaiseDelta(u);
+            // 発話間の無音 (実機では 9〜48 秒) を閾値超えの待機で模擬する。
+            await Task.Delay(idleMs * 4);
+        }
+
+        var finals = await WaitForFinalsAsync(snapshot, utterances.Length);
+        Assert.AreEqual(utterances.Length, finals.Count,
+            "発話ごとに delta が途絶えるので、 発話数と同じ件数の確定字幕になるはず");
+        CollectionAssert.AreEqual(utterances, finals.Select(x => x.TranslatedText).ToArray(),
+            "各確定字幕は発話単位のテキストになるはず (連結しない)");
+        Assert.AreEqual(utterances.Length, finals.Select(x => x.SegmentId).Distinct().Count(),
+            "確定のたびに新しい SegmentId が発行されるはず");
+    }
+
+    [TestMethod]
+    [TestCategory("SentenceSplit")]
+    public async Task OnTranscriptDelta_ContinuousDeltas_DoesNotSplitMidUtterance()
+    {
+        // 生成が続いている間 (delta 間隔 < 閾値) は貼り直され続けるので、 文の途中で切れないこと。
+        // v1.0.24 の「セグメント最大寿命タイマー」が起こした分断の再発防止。
+        const int idleMs = 300;
+        var (pipeline, transcriber, snapshot) = CreateIdlePipeline(idleMs);
+
+        foreach (var chunk in new[] { "目的", "地へ", "進んで", "ください" })
+        {
+            transcriber.RaiseDelta(chunk);
+            await Task.Delay(idleMs / 5);
+        }
+
+        // まだ閾値に達していないので確定は 0 件のはず。
+        Assert.AreEqual(0, snapshot().Count(x => x.IsFinal),
+            "delta が続いている間はアイドル確定が発火しないはず");
+
+        // 途絶えたら 1 件だけ、 連結された 1 発話として確定する。
+        var finals = await WaitForFinalsAsync(snapshot, 1);
+        Assert.AreEqual(1, finals.Count, "途絶後に 1 件だけ確定するはず");
+        Assert.AreEqual("目的地へ進んでください", finals[0].TranslatedText,
+            "連続 delta は 1 発話としてまとまるはず");
+    }
+
+    [TestMethod]
+    [TestCategory("SentenceSplit")]
+    public async Task DeltaIdleFinalizeMs_Zero_DisablesIdleFinalize()
+    {
+        // 0 以下で無効 (v1.0.48 以前の挙動)。 緊急時の逃げ道として維持する。
+        var (pipeline, transcriber, snapshot) = CreateIdlePipeline(idleMs: 0);
+        transcriber.RaiseDelta("句点のない未確定テキスト");
+
+        await Task.Delay(300);
+
+        Assert.AreEqual(0, snapshot().Count(x => x.IsFinal),
+            "DeltaIdleFinalizeMs=0 ではアイドル確定しないはず");
+    }
+
+    // ───────── ResolveIdleFinalizeMs のクランプ (ロケット鉛筆方式との整合) ─────────
+    //
+    // 不変条件: アイドル確定は **無音 padding の外側**で起きる。
+    // OpenAI Realtime は発音後に無音を付けないと後続音声に押し出されるまで出力が止まる
+    // (ロケット鉛筆方式)。 padding 中に確定すると、 押し出しで後から出てくる残りが別 SegmentId に
+    // 飛んで v1.0.26 の「戦略 A: 分断」を再発させる。
+
+    [TestMethod]
+    [TestCategory("SentenceSplit")]
+    public void ResolveIdleFinalizeMs_ShorterThanPadding_ClampedOutsidePadding()
+    {
+        // padding 内側の値 (1500ms < 5000ms) は padding + margin まで引き上げる
+        Assert.AreEqual(6000, TranslationPipelineService.ResolveIdleFinalizeMs(1500, silencePaddingMs: 5000));
+    }
+
+    [TestMethod]
+    [TestCategory("SentenceSplit")]
+    public void ResolveIdleFinalizeMs_DefaultWithDefaultPadding_StaysOutsidePadding()
+    {
+        // 既定同士 (6000 / 5000) では既定値がそのまま通り、 かつ padding より必ず長い
+        var resolved = TranslationPipelineService.ResolveIdleFinalizeMs(6000, silencePaddingMs: 5000);
+        Assert.AreEqual(6000, resolved);
+        Assert.IsTrue(resolved > 5000, "実効閾値は無音 padding より長いはず");
+    }
+
+    [TestMethod]
+    [TestCategory("SentenceSplit")]
+    public void ResolveIdleFinalizeMs_LongerPadding_FollowsPadding()
+    {
+        // padding を 8000ms に戻した場合 (v1.0.33-35 の旧 default) も自動追従する
+        Assert.AreEqual(9000, TranslationPipelineService.ResolveIdleFinalizeMs(6000, silencePaddingMs: 8000));
+    }
+
+    [TestMethod]
+    [TestCategory("SentenceSplit")]
+    public void ResolveIdleFinalizeMs_Disabled_StaysDisabled()
+    {
+        // 0 以下 = 明示的な無効化。 クランプで復活させない
+        Assert.AreEqual(0, TranslationPipelineService.ResolveIdleFinalizeMs(0, silencePaddingMs: 5000));
+        Assert.AreEqual(0, TranslationPipelineService.ResolveIdleFinalizeMs(-1, silencePaddingMs: 5000));
+    }
+
+    [TestMethod]
+    [TestCategory("SentenceSplit")]
+    public void ResolveIdleFinalizeMs_PaddingDisabled_UsesConfiguredValue()
+    {
+        // padding 無効時はクランプ不要 (押し出し待ち時間が存在しない)
+        Assert.AreEqual(1500, TranslationPipelineService.ResolveIdleFinalizeMs(1500, silencePaddingMs: 0));
+    }
 }

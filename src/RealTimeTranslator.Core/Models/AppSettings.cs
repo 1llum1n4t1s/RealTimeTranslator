@@ -149,26 +149,38 @@ public class AudioCaptureSettings
     public string VadPreset { get; set; } = "Balanced";
 
     /// <summary>
-    /// speech probability のしきい値 (0.0-1.0, default: 0.3)。
-    /// v1.0.30 で 0.5 → 0.3 にシフト → v1.0.31 で 0.4 に戻り気味調整 → v1.0.42 で再び **0.3** に。
-    /// 全プリセットも -0.1 連動シフト (Balanced 0.3 / PrioritizeEdges 0.2 / AggressiveSavings 0.4)。
+    /// speech probability のしきい値 (0.0-1.0, default: 0.4)。
+    /// <para>
+    /// ⚠️ <b>下げ過ぎると「字幕が句点なしで連結する」回帰になる。</b> BGM/SE が speech と誤検出されて
+    /// 継続送信になり、 OpenAI server VAD から見て発話の切れ目が消えるため。 同じ回帰を 2 回踏んでいる:
+    /// v1.0.30 で 0.5 → 0.3 にして回帰 → v1.0.31 で 0.4 に戻して解消 → v1.0.42 で警告ごと消して再び 0.3 に
+    /// して<b>再発</b> (2026-07-29 実機ログで 4 発話が 112 秒連結、 完結文 emit=0、 done が 11 分間ゼロ)
+    /// → v1.0.49 で 0.4 に再度復帰。 全プリセットも +0.1 連動シフト
+    /// (Balanced 0.4 / PrioritizeEdges 0.3 / AggressiveSavings 0.5)。
+    /// </para>
     /// 遠距離小音量の声拾いは入力プリプロセス DSP (<see cref="AudioPreprocessingSettings"/>) に任せる方針。
     /// </summary>
-    public float VadThreshold { get; set; } = 0.3f;
+    public float VadThreshold { get; set; } = 0.4f;
 
     /// <summary>
     /// 発話冒頭の取りこぼし防止用にリングバッファに保持する直近音声の長さ (ms)。
-    /// Balanced プリセットの推奨値は **1000ms** (v1.0.31 で 600→800、 その後 800→1000 に拡張)。
+    /// Balanced プリセットの推奨値は **1000ms** (v1.0.31 で 600→800、 v1.0.42 で 800→1000 に拡張)。
     /// 頭の子音 + 立ち上がりを確実に拾うため、 既定を厚めに取る方針。
+    /// 発話境界 (句点) には影響しないので、 v1.0.49 の回帰修正でも 1000ms を維持している。
     /// </summary>
     public int VadPreRollMs { get; set; } = 1000;
 
     /// <summary>
     /// 発話末尾の切れ防止用に speech 終了判定後も送信を継続する長さ (ms)。
-    /// Balanced プリセットの推奨値は **400ms** (v1.0.31 で 400→600、 その後 600→400 に短縮)。
-    /// 末尾の無音送信を削って token を節約する方向に薄めに取る方針 (頭の取りこぼし防止は PreRoll 側で担保)。
+    /// Balanced プリセットの推奨値は **600ms** (v1.0.31 で 400→600、 v1.0.42 で 600→400 に短縮 → v1.0.49 で 600 に復帰)。
+    /// <para>
+    /// ⚠️ <b>token 節約のために削ってはいけない。</b> OpenAI Realtime は発音の後ろに無音を付けないと
+    /// 後続音声に押し出されるまで出力が止まる (ロケット鉛筆方式)。 Hangover は発話末尾の「間」を
+    /// server に送り届けて turn end (= 句点) を引かせる役割を持つため、 薄くすると
+    /// <see cref="VadThreshold"/> の下げ過ぎと同じく字幕連結の原因になる。
+    /// </para>
     /// </summary>
-    public int VadHangoverMs { get; set; } = 400;
+    public int VadHangoverMs { get; set; } = 600;
 
     // ────────── 自動 Pause 保険 ──────────
 
@@ -285,6 +297,41 @@ public class OpenAIRealtimeSettings
     // 「複数文が句点なしで繋がる」現象 (実機 23:40 セッションで 5 文連結を確認) が顕在化した対策。
     // 50 文字なら字幕として 2 行に収まる読みやすい長さで、 連結バグの可視被害も最小化する。
     public int MaxPartialChars { get; set; } = 50;
+
+    // ⭐ delta アイドル確定: 最後の transcript delta から この時間 (ミリ秒) 続きが来なければ、
+    //   未確定の partial を確定字幕として emit して新 SegmentId を発行する (v1.0.49 追加)。
+    //
+    // 背景 (2026-07-29 実機ログから事実確証):
+    //   ARC Raiders で **4 人の別々の発話** が 1 つの SegmentId に 112 秒間連結した状態を観測。
+    //   「この格好ねオーケー、ありがとうこんにちは、ハロー目的地へ進んでください収縮した店...」
+    //   各発話の間には 24.7 秒 / 9.2 秒 / 48.4 秒 / 25.7 秒の無音があったにもかかわらず、
+    //     - server が句点 (`。！？.!?`) を一切返さない (読点「、」のみ) → 文境界 emit が発火しない
+    //     - 累積 46 文字で MaxPartialChars=50 に未到達 → D-7 fallback も発火しない
+    //     - transcript.done が 1 度も来ない → done 経路の確定も発火しない
+    //   の三重の取りこぼしで確定 emit が 0 件になり、 partial が延々と伸び続けた。
+    //
+    //   同ログで `response.done` / `transcript.done` は **11 分間 1 度も来ていない** (初見イベントは
+    //   session.created / session.updated / session.output_audio.delta / session.output_transcript.delta の 4 種のみ)。
+    //   つまり server は turn end を一度も判定しておらず、 done 待ちの確定経路は最初から機能しない。
+    //
+    // 動作:
+    //   delta 受信のたびにワンショットタイマーを貼り直し、 発火したら FinalizePendingPartial で確定する。
+    //   server が生成を続けている間はタイマーが貼り直され続けるため、 文の途中では決して発火しない。
+    //
+    // ⚠️ v1.0.24 の「セグメント最大寿命タイマー」(v1.0.27 で削除) とは別物。 あちらはセグメントの
+    //   **絶対年齢**で切るため長文の途中を分断する副作用があった。 こちらは **無通信アイドル**が条件。
+    //
+    // ⭐ 既定 6000ms の根拠 —— 必ず SilencePaddingMs (既定 5000ms) の **外側**に置くこと:
+    //   OpenAI Realtime は「発音後に無音を付けてやらないと、 後から来た音声に押し出されるまで出力が
+    //   途中で止まる」**ロケット鉛筆方式** (ゆろさん観察)。 SilencePaddingMs はまさにその押し出しを
+    //   client 側から起こすための無音 PCM 送信時間なので、 **padding 中は「これから出てくる残りがある
+    //   時間帯」**。 ここで確定すると後続の残りが別 SegmentId に飛び、 v1.0.26 の「戦略 A: 分断」を
+    //   再発させる。 padding を使い切ってなお delta が来ないときだけ「本当の発話境界」と見なす。
+    //   この不変条件は ResolveIdleFinalizeMs が Max(設定値, SilencePaddingMs + 1000) でクランプして守る。
+    //   実測の発話間ギャップは最小 9.2 秒なので、 6 秒でも全境界を捕捉できる。
+    //
+    // 値が 0 以下なら機能を無効化する (= v1.0.48 以前と同じ、 句点 / 文字数 / done 待ちのみ)。
+    public int DeltaIdleFinalizeMs { get; set; } = 6000;
 }
 
 /// <summary>翻訳に使う Realtime プロバイダの種別。</summary>
@@ -333,6 +380,12 @@ public class GeminiLiveSettings
 
     /// <summary>句点なし partial の最大累積文字数 (D-7 fallback)。 OpenAI 側と同義。</summary>
     public int MaxPartialChars { get; set; } = 50;
+
+    /// <summary>
+    /// delta 途絶からこの時間 (ms) で未確定 partial を確定する。 OpenAI 側と同義 (発話ごとの分割)。
+    /// 実効値は SilencePaddingMs の外側にクランプされる (ロケット鉛筆方式の押し出し待ちを潰さないため)。
+    /// </summary>
+    public int DeltaIdleFinalizeMs { get; set; } = 6000;
 }
 
 /// <summary>
@@ -361,6 +414,12 @@ public class SonioxSettings
 
     /// <summary>句点なし partial の最大累積文字数 (D-7 fallback)。 OpenAI 側と同義。</summary>
     public int MaxPartialChars { get; set; } = 50;
+
+    /// <summary>
+    /// delta 途絶からこの時間 (ms) で未確定 partial を確定する。 OpenAI 側と同義 (発話ごとの分割)。
+    /// 実効値は SilencePaddingMs の外側にクランプされる (ロケット鉛筆方式の押し出し待ちを潰さないため)。
+    /// </summary>
+    public int DeltaIdleFinalizeMs { get; set; } = 6000;
 }
 
 /// <summary>
@@ -388,6 +447,12 @@ public class SpeechmaticsSettings
 
     /// <summary>句点なし partial の最大累積文字数 (D-7 fallback)。 OpenAI 側と同義。</summary>
     public int MaxPartialChars { get; set; } = 50;
+
+    /// <summary>
+    /// delta 途絶からこの時間 (ms) で未確定 partial を確定する。 OpenAI 側と同義 (発話ごとの分割)。
+    /// 実効値は SilencePaddingMs の外側にクランプされる (ロケット鉛筆方式の押し出し待ちを潰さないため)。
+    /// </summary>
+    public int DeltaIdleFinalizeMs { get; set; } = 6000;
 }
 
 /// <summary>
@@ -417,6 +482,12 @@ public class AzureSpeechSettings
 
     /// <summary>句点なし partial の最大累積文字数 (D-7 fallback)。 OpenAI 側と同義。</summary>
     public int MaxPartialChars { get; set; } = 50;
+
+    /// <summary>
+    /// delta 途絶からこの時間 (ms) で未確定 partial を確定する。 OpenAI 側と同義 (発話ごとの分割)。
+    /// 実効値は SilencePaddingMs の外側にクランプされる (ロケット鉛筆方式の押し出し待ちを潰さないため)。
+    /// </summary>
+    public int DeltaIdleFinalizeMs { get; set; } = 6000;
 }
 
 // GameProfile / GameProfiles は旧 Whisper+LLM ローカル翻訳時代の設定。
