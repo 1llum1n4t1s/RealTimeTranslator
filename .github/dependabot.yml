@@ -9,25 +9,35 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
-    labels:
-      - "dependencies"
-      - "github-actions"
+      day: "monday"
+      time: "09:00"
+      timezone: "Asia/Tokyo"
     commit-message:
       prefix: "ci"
+    # patch/minor はまとめて1 PR、majorは個別PRのまま互換確認できるようにする
+    groups:
+      actions:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
 
   # NuGet 依存の自動更新（RealTimeTranslator.slnx 配下の全 csproj が対象）
   - package-ecosystem: "nuget"
     directory: "/"
     schedule:
       interval: "weekly"
-    labels:
-      - "dependencies"
-      - "nuget"
+      day: "monday"
+      time: "09:00"
+      timezone: "Asia/Tokyo"
     commit-message:
       prefix: "deps"
     # プレビュー / ベータも更新対象に含める（必要に応じて手動マージで取捨選択）
     allow:
       - dependency-type: "all"
+    # patch/minor はまとめて1 PR、majorはそもそも下記 ignore で対象外
+    groups:
+      nuget-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
     # major 更新は破壊的変更を伴うため Dependabot からは除外（手動アップグレード対象）
     ignore:
       - dependency-name: "*"
