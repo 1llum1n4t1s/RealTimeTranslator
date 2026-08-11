@@ -37,5 +37,13 @@
     <BaseIntermediateOutputPath>$(MSBuildProjectDirectory)\obj\</BaseIntermediateOutputPath>
     <IntermediateOutputPath>$(BaseIntermediateOutputPath)$(Configuration)\</IntermediateOutputPath>
     <MSBuildProjectExtensionsPath>$(IntermediateOutputPath)</MSBuildProjectExtensionsPath>
+    <!-- 製作者情報。Company は exe のプロパティに載るので屋号で統一する。 -->
+    <Authors>Kagayoi</Authors>
+    <Company>Kagayoi</Company>
+    <Copyright>Copyright © 2026 Kagayoi</Copyright>
+    <!-- 警告をエラー扱いにして品質ゲートを他リポジトリと揃える。 -->
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <!-- IDE コードスタイル分析をビルド時にも強制する。IDE0005 はドキュメント生成が必須なため対象外。 -->
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
   </PropertyGroup>
 </Project>

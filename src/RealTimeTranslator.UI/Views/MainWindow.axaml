@@ -34,9 +34,7 @@
             <ExperimentalAcrylicBorder.Material>
                 <ExperimentalAcrylicMaterial
                     BackgroundSource="Digger"
-                    MaterialOpacity="0.85"
-                    TintColor="{DynamicResource Color.Window}"
-                    TintOpacity="0.9" />
+                    TintColor="{DynamicResource Color.Window}" />
             </ExperimentalAcrylicBorder.Material>
         </ExperimentalAcrylicBorder>
 

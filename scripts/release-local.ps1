@@ -125,7 +125,7 @@ foreach ($runtime in $Runtimes) {
             --packId RealTimeTranslator `
             --packVersion $version `
             --packTitle 'RealTimeTranslator' `
-            --packAuthors '1llum1n4t1s' `
+            --packAuthors 'Kagayoi' `
             --mainExe RealTimeTranslator.UI.exe `
             --icon (Join-Path 'icon' 'app.ico') `
             --packDir $publishDir `
