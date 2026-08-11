@@ -39,9 +39,9 @@
       },
       "SuperLightLogger": {
         "type": "Direct",
-        "requested": "[1.0.10, )",
-        "resolved": "1.0.10",
-        "contentHash": "wyB/XFO6+WpEc98mgYRdEg8N3grZLj47xaag5LYIWgtMjVwytRxilmzpJGIFBzEQcI/k3fRepdlJN9akZQZegQ==",
+        "requested": "[1.0.12, )",
+        "resolved": "1.0.12",
+        "contentHash": "f7h7z7tVUipTKYPQoZL5aMNXEqfEvqKd1mzv67cIvFj2lzsoMvIohHVSe67xQrFmPd6F+mNTPDdsW6bX+lUtqg==",
         "dependencies": {
           "Microsoft.Extensions.DependencyInjection.Abstractions": "10.0.10",
           "Microsoft.Extensions.Logging": "10.0.10",
