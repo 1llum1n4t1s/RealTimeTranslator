@@ -1284,7 +1284,11 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                 try
                 {
                     // StartSession は silent-fail 設計だが、 将来別実装が例外を投げても翻訳本体を止めないようガード。
-                    _debugAudioRecorder.StartSession(Guid.NewGuid().ToString("N")[..8]);
+                    // WAV ヘッダのレートは実際に送信するレート (OpenAI=24000 / その他=16000) を渡す。
+                    // 固定 24000 だと 16k プロバイダの録音が約 1.5 倍速再生になり音質確認に使えない。
+                    _debugAudioRecorder.StartSession(
+                        Guid.NewGuid().ToString("N")[..8],
+                        _activeClient.InputSampleRate);
                     _debugRecordingActive = true;
                 }
                 catch (Exception ex)

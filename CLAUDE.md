@@ -118,7 +118,7 @@ Audio Capture (WASAPI native 48kHz/2ch)
 | `SileroVadDetector` | Silero VAD (ONNX) で「人の声らしさ」を判定する VAD ゲート。 16kHz / 512 サンプル / 32ms フレーム固定 |
 | `CostEstimator` | OpenAI Realtime API の audio input tokens 数 / 推定コスト (USD) を計算 |
 | `Audio/InputGainStage` / `Audio/DspMath` | 入力プリプロセス DSP (`IAudioPreprocessor` 実装)。 信号フローは `StereoToMono → InputGain (-24〜+24dB 手動底上げ、 UI は OBS 風フェーダー)`。 `TranslationPipelineService` がシングルインスタンス保持し、 `Process(Span<float>)` で in-place 処理、 `Reset()` で内部状態をクリア。 `IsEnabled=false` (0dB) 時は呼び出し直後に return して完全 bypass。 ⚠️ 旧 `AntiClipLimiter` (クリップ防止リミッタ) は削除済み — ゲイン後ピークのレベルメーターを見てユーザーが手動でレベル管理する OBS 方式に変更 (`DspMath.AmplitudeToDb` はメーターの dBFS 変換で利用) |
-| `DebugAudioRecorder` (`IDebugAudioRecorder`) | OpenAI に送る PCM16 (24kHz/Mono) を `IRealtimeTranscriber.SendAudio` 入口でフックして WAV 録音するデバッグ機能。 出力先 `%APPDATA%/RealTimeTranslator/debug/SentAudio_*.wav`。 録音中でなければ no-op、 ファイル open / 書き込み失敗は例外を伝播せず silent-fail (`IsRecording=false` に倒れる + `WriteFailed` イベント発火)。 「実際に送った音声」の音質確認に使う |
+| `DebugAudioRecorder` (`IDebugAudioRecorder`) | 翻訳プロバイダに送る PCM16 (Mono) を `IRealtimeTranscriber.SendAudio` 入口でフックして WAV 録音するデバッグ機能。 **WAV ヘッダのレートは `StartSession(sessionId, sampleRate)` で受けた実送信レートを書く** (OpenAI=24000 / Gemini・Soniox・Speechmatics=16000。 `TranslationPipelineService` が `_activeClient.InputSampleRate` を渡す)。 24kHz 固定にすると 16k プロバイダの録音が約 1.5 倍速再生になり音質確認に使えない。 出力先 `%APPDATA%/RealTimeTranslator/debug/SentAudio_*.wav`。 録音中でなければ no-op、 ファイル open / 書き込み失敗は例外を伝播せず silent-fail (`IsRecording=false` に倒れる + `WriteFailed` イベント発火)。 「実際に送った音声」の音質確認に使う |
 
 ### Pipeline Flow (TranslationPipelineService in Core/Services/)
 

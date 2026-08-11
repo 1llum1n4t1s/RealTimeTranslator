@@ -140,7 +140,7 @@ public class DebugAudioRecorderTests
         // ファイル名衝突を避けるため非 ASCII を含まないユニーク ID を使う
         var testId = $"test{Guid.NewGuid():N}"[..12];
 
-        recorder.StartSession(testId);
+        recorder.StartSession(testId, 24000);
         Assert.IsTrue(recorder.IsRecording);
 
         // 100 サンプル分の PCM16 (= 200 byte) を書く
@@ -172,6 +172,61 @@ public class DebugAudioRecorderTests
         }
     }
 
+    /// <summary>
+    /// 16kHz プロバイダ (Gemini / Soniox / Speechmatics) のセッションでは WAV ヘッダの SampleRate / ByteRate も
+    /// 16k で書かれる。 旧実装は 24000 固定だったため 16k の録音が約 1.5 倍速再生になり、
+    /// 「実際に送った音」の音質確認という本機能の目的が壊れていた (Grok audit 指摘)。
+    /// </summary>
+    [TestMethod]
+    public void StartSession_With16kHz_WritesMatchingWavHeader()
+    {
+        using var recorder = new DebugAudioRecorder();
+        var testId = $"test{Guid.NewGuid():N}"[..12];
+
+        recorder.StartSession(testId, 16000);
+        recorder.WritePcm16(new byte[] { 0x01, 0x02, 0x03, 0x04 });
+        recorder.StopSession();
+
+        var files = Directory.GetFiles(DebugAudioRecorder.DebugDirectory, $"SentAudio_*_{testId}.wav");
+        Assert.AreEqual(1, files.Length);
+        try
+        {
+            var bytes = File.ReadAllBytes(files[0]);
+            Assert.AreEqual(16000u, BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(24, 4)),
+                "SampleRate は送信レート (16000) と一致するはず");
+            Assert.AreEqual(32000u, BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(28, 4)),
+                "ByteRate = 16000 * 1ch * 2byte = 32000");
+        }
+        finally
+        {
+            try { File.Delete(files[0]); } catch { }
+        }
+    }
+
+    /// <summary>0 以下の不正レートは既定 24kHz に矯正する (ByteRate=0 で再生不能になるのを防ぐ)。</summary>
+    [TestMethod]
+    public void StartSession_WithInvalidSampleRate_FallsBackTo24kHz()
+    {
+        using var recorder = new DebugAudioRecorder();
+        var testId = $"test{Guid.NewGuid():N}"[..12];
+
+        recorder.StartSession(testId, 0);
+        recorder.WritePcm16(new byte[] { 0x01, 0x02 });
+        recorder.StopSession();
+
+        var files = Directory.GetFiles(DebugAudioRecorder.DebugDirectory, $"SentAudio_*_{testId}.wav");
+        Assert.AreEqual(1, files.Length);
+        try
+        {
+            var bytes = File.ReadAllBytes(files[0]);
+            Assert.AreEqual(24000u, BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(24, 4)));
+        }
+        finally
+        {
+            try { File.Delete(files[0]); } catch { }
+        }
+    }
+
     [TestMethod]
     public void StartSession_CalledTwice_FirstSessionIsClosed()
     {
@@ -180,9 +235,9 @@ public class DebugAudioRecorderTests
         var id1 = $"firstpass{Guid.NewGuid():N}"[..14];
         var id2 = $"secondpas{Guid.NewGuid():N}"[..14];
 
-        recorder.StartSession(id1);
+        recorder.StartSession(id1, 24000);
         recorder.WritePcm16(new byte[] { 0x11, 0x22 });
-        recorder.StartSession(id2);  // ← 既存セッションを自動で閉じてから 2 つ目を始める
+        recorder.StartSession(id2, 24000);  // ← 既存セッションを自動で閉じてから 2 つ目を始める
         recorder.WritePcm16(new byte[] { 0xAA, 0xBB, 0xCC, 0xDD });
         recorder.StopSession();
 
@@ -215,7 +270,7 @@ public class DebugAudioRecorderTests
         // WritePcm16 と StopSession を多数 Task で並列実行しても、 例外を投げない / IsRecording 状態が一貫する。
         using var recorder = new DebugAudioRecorder();
         var testId = $"raceparall{Guid.NewGuid():N}"[..16];
-        recorder.StartSession(testId);
+        recorder.StartSession(testId, 24000);
 
         var pcm = new byte[200];
         for (int i = 0; i < pcm.Length; i++) pcm[i] = (byte)(i & 0xFF);
@@ -232,7 +287,7 @@ public class DebugAudioRecorderTests
         var stopTasks = new List<Task>();
         for (int i = 0; i < 5; i++)
         {
-            stopTasks.Add(Task.Run(() => { recorder.StopSession(); recorder.StartSession(testId); }));
+            stopTasks.Add(Task.Run(() => { recorder.StopSession(); recorder.StartSession(testId, 24000); }));
         }
 
         try
@@ -255,7 +310,7 @@ public class DebugAudioRecorderTests
         // ファイル確定書き込みを行い、 以降の WritePcm16 / StopSession / StartSession は no-op or 無害。
         var recorder = new DebugAudioRecorder();
         var testId = $"dispose{Guid.NewGuid():N}"[..14];
-        recorder.StartSession(testId);
+        recorder.StartSession(testId, 24000);
         recorder.WritePcm16(new byte[] { 0xAA, 0xBB, 0xCC, 0xDD });
         Assert.IsTrue(recorder.IsRecording);
 

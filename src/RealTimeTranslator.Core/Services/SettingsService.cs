@@ -164,8 +164,12 @@ public class SettingsService : ISettingsService
     /// <summary>
     /// 機微フィールド（OpenAIRealtime.ApiKey）を DPAPI 暗号化したシャロークローンを返す。
     /// 呼び出し側の元オブジェクトは平文のまま保持される。
+    ///
+    /// ⚠️ ここはフィールド追加時のコピー漏れが「autosave のたびに設定が default へ静かに戻る」バグになる
+    /// 定番の罠 (C2-001 / DeltaIdleFinalizeMs)。 コピー漏れ検出のため internal 公開してテストから直接検証する
+    /// (InternalsVisibleTo=RealTimeTranslator.Tests)。
     /// </summary>
-    private static AppSettings CloneWithEncryptedSecrets(AppSettings source) => new()
+    internal static AppSettings CloneWithEncryptedSecrets(AppSettings source) => new()
     {
         Overlay = source.Overlay,
         AudioCapture = source.AudioCapture,
@@ -184,6 +188,9 @@ public class SettingsService : ISettingsService
             // UI 設定変更時の autosave で消える経路。 ここに追加して保全する。
             SilencePaddingMs = source.OpenAIRealtime.SilencePaddingMs,
             MaxPartialChars = source.OpenAIRealtime.MaxPartialChars,
+            // v1.0.49 で追加した delta アイドル確定閾値。 上の C2-001 と同じ罠で漏れていた
+            // (autosave のたびに default 6000 へ戻り、 settings.json で 0=無効化 / 8000 等にした値が消えていた)。
+            DeltaIdleFinalizeMs = source.OpenAIRealtime.DeltaIdleFinalizeMs,
         },
         // ⚠️ Provider / Gemini を必ずコピーする (上の C2-001 と同じ罠: 漏らすと autosave のたびに
         // Provider が OpenAI に、 Gemini 設定が default に静かにリセットされる)。
@@ -199,6 +206,7 @@ public class SettingsService : ISettingsService
             MaxReconnectAttempts = source.Gemini.MaxReconnectAttempts,
             SilencePaddingMs = source.Gemini.SilencePaddingMs,
             MaxPartialChars = source.Gemini.MaxPartialChars,
+            DeltaIdleFinalizeMs = source.Gemini.DeltaIdleFinalizeMs,
         },
         // ⚠️ 追加 provider も必ずコピー (漏らすと autosave のたびに default にリセットされる — 上の C2-001 と同じ罠)。
         Soniox = new SonioxSettings
@@ -211,6 +219,7 @@ public class SettingsService : ISettingsService
             MaxReconnectAttempts = source.Soniox.MaxReconnectAttempts,
             SilencePaddingMs = source.Soniox.SilencePaddingMs,
             MaxPartialChars = source.Soniox.MaxPartialChars,
+            DeltaIdleFinalizeMs = source.Soniox.DeltaIdleFinalizeMs,
         },
         Speechmatics = new SpeechmaticsSettings
         {
@@ -222,6 +231,7 @@ public class SettingsService : ISettingsService
             MaxReconnectAttempts = source.Speechmatics.MaxReconnectAttempts,
             SilencePaddingMs = source.Speechmatics.SilencePaddingMs,
             MaxPartialChars = source.Speechmatics.MaxPartialChars,
+            DeltaIdleFinalizeMs = source.Speechmatics.DeltaIdleFinalizeMs,
         },
         Azure = new AzureSpeechSettings
         {
@@ -233,6 +243,7 @@ public class SettingsService : ISettingsService
             MaxReconnectAttempts = source.Azure.MaxReconnectAttempts,
             SilencePaddingMs = source.Azure.SilencePaddingMs,
             MaxPartialChars = source.Azure.MaxPartialChars,
+            DeltaIdleFinalizeMs = source.Azure.DeltaIdleFinalizeMs,
         },
         LastSelectedProcessName = source.LastSelectedProcessName,
         LastSelectedProcessId = source.LastSelectedProcessId,

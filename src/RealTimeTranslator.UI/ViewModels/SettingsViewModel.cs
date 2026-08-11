@@ -17,6 +17,7 @@ public partial class SettingsViewModel : ObservableObject
     private static readonly TimeSpan AutoSaveDelay = TimeSpan.FromMilliseconds(500);
 
     private readonly AppSettings _settings;
+    private readonly IOptionsMonitor<AppSettings> _options;
     private readonly ISettingsService _settingsService;
     private readonly OverlayViewModel _overlayViewModel;
     private CancellationTokenSource? _autoSaveCts;
@@ -29,6 +30,7 @@ public partial class SettingsViewModel : ObservableObject
     public SettingsViewModel(IOptionsMonitor<AppSettings> options, ISettingsService settingsService, OverlayViewModel overlayViewModel)
     {
         _settings = options.CurrentValue;
+        _options = options;
         _settingsService = settingsService;
         _overlayViewModel = overlayViewModel;
         // 字幕位置の編集確定/リセット時に OverlayViewModel から呼ばれて settings.json へ永続化する
@@ -1169,11 +1171,39 @@ public partial class SettingsViewModel : ObservableObject
         await SaveInternalAsync().ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// この ViewModel が編集しない「外部所有フィールド」を、 保存直前に最新の <see cref="IOptionsMonitor{TOptions}.CurrentValue"/>
+    /// から取り込む。
+    ///
+    /// <para>
+    /// 背景: <see cref="_settings"/> は起動時の CurrentValue を固定保持する (UI バインドの参照元なので差し替えない —
+    /// 差し替えると autosave debounce 中の未保存値が飛ぶ。 §メインウィンドウサイズの保存 のコメント参照)。
+    /// 一方 settings.json は reloadOnChange のたびに CurrentValue が新インスタンスへ差し替わるため、
+    /// 別経路 (UpdateService の「このバージョンを無視」→ <c>CurrentValue.Update.IgnoredTagName</c> に書いて SaveAsync)
+    /// が保存した値は、 この ViewModel が抱える古いインスタンスには載らない。 その状態でフォント変更等の autosave が
+    /// 走ると、 直前に保存された無視タグが空で上書きされて起動時の更新ダイアログ抑制が効かなくなる。
+    /// </para>
+    ///
+    /// <para>
+    /// UI バインド値には触れず、 外部所有フィールドだけを取り込むことでこの巻き戻しを潰す。
+    /// </para>
+    /// </summary>
+    private void SyncExternallyOwnedSettings()
+    {
+        var current = _options.CurrentValue;
+        if (!ReferenceEquals(current, _settings))
+        {
+            // 「このバージョンを無視」は UpdateService が CurrentValue 側に書く (この ViewModel に UI を持たない)。
+            _settings.Update.IgnoredTagName = current.Update.IgnoredTagName;
+        }
+    }
+
     private async Task SaveInternalAsync()
     {
         try
         {
             _autoSavePending = false; // 書き込みに入った時点で保留を解消 (flush と debounce の二重実行を吸収)
+            SyncExternallyOwnedSettings();
             await _settingsService.SaveAsync(_settings);
             // UIスレッドで通知（OverlayViewModel.ReloadSettings や MainViewModel.OnSettingsSaved が UI バインドプロパティを操作するため）
             Avalonia.Threading.Dispatcher.UIThread.Post(() =>

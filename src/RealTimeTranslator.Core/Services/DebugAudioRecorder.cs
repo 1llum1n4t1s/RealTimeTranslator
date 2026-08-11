@@ -5,7 +5,8 @@ using SuperLightLogger;
 namespace RealTimeTranslator.Core.Services;
 
 /// <summary>
-/// OpenAI に送信される PCM16 (24kHz / Mono) を %APPDATA%/RealTimeTranslator/debug/ 配下に
+/// 翻訳プロバイダに送信される PCM16 (Mono、 レートは <see cref="StartSession"/> 引数で受ける:
+/// OpenAI=24kHz / Gemini・Soniox・Speechmatics=16kHz) を %APPDATA%/RealTimeTranslator/debug/ 配下に
 /// WAV ファイルとして書き出すデバッグ録音実装。
 /// </summary>
 /// <remarks>
@@ -30,7 +31,8 @@ public sealed class DebugAudioRecorder : IDebugAudioRecorder, IDisposable
 {
     private static readonly ILog Logger = LogManager.GetLogger<DebugAudioRecorder>();
 
-    private const int SampleRate = 24000;
+    /// <summary>送信レートが取れなかった場合の既定値 (OpenAI Realtime の 24kHz)。</summary>
+    private const int DefaultSampleRate = 24000;
     private const int Channels = 1;
     private const int BitsPerSample = 16;
     private const int WavHeaderSize = 44;
@@ -43,6 +45,10 @@ public sealed class DebugAudioRecorder : IDebugAudioRecorder, IDisposable
     private FileStream? _innerFile;
     private BufferedStream? _file;
     private long _dataBytesWritten;
+    // セッションごとの送信レート (OpenAI=24000 / Gemini・Soniox・Speechmatics=16000)。
+    // WAV ヘッダに実レートを書かないと、 16k で送っているプロバイダの録音が約 1.5 倍速再生になり
+    // 「実際に送った音」の確認という本機能の目的が成立しない。
+    private int _sampleRate = DefaultSampleRate;
     private string? _currentFilePath;
     private int _nextSizeWarningIndex;
     private int _disposed;
@@ -65,7 +71,7 @@ public sealed class DebugAudioRecorder : IDebugAudioRecorder, IDisposable
         _checkpointTimer = new Timer(OnCheckpointTimerElapsed, null, Timeout.Infinite, Timeout.Infinite);
     }
 
-    public void StartSession(string sessionId)
+    public void StartSession(string sessionId, int sampleRate)
     {
         lock (_lock)
         {
@@ -73,6 +79,8 @@ public sealed class DebugAudioRecorder : IDebugAudioRecorder, IDisposable
 
             try
             {
+                // 不正値 (0 / 負値) は既定 24kHz に倒す (WAV ヘッダの ByteRate=0 で再生不能になるのを防ぐ)。
+                _sampleRate = sampleRate > 0 ? sampleRate : DefaultSampleRate;
                 Directory.CreateDirectory(DebugDirectory);
                 // sessionId の path traversal / 無効文字を防御的にサニタイズ (CodeRabbit 指摘対応)。
                 // 現在の呼び出し元 (TranslationPipelineService) は Guid.ToString("N")[..8] で英数字限定だが、
@@ -82,11 +90,11 @@ public sealed class DebugAudioRecorder : IDebugAudioRecorder, IDisposable
                 _currentFilePath = Path.Combine(DebugDirectory, fileName);
                 _innerFile = new FileStream(_currentFilePath, FileMode.Create, FileAccess.Write, FileShare.Read);
                 _file = new BufferedStream(_innerFile, BufferSize);
-                WriteWavHeaderPlaceholder(_file);
+                WriteWavHeaderPlaceholder(_file, _sampleRate);
                 _dataBytesWritten = 0;
                 _nextSizeWarningIndex = 0;
                 _checkpointTimer.Change(CheckpointInterval, CheckpointInterval);
-                Logger.Info($"DebugAudioRecorder 開始: {_currentFilePath}");
+                Logger.Info($"DebugAudioRecorder 開始: {_currentFilePath} ({_sampleRate}Hz/Mono/PCM16)");
             }
             catch (Exception ex)
             {
@@ -211,7 +219,7 @@ public sealed class DebugAudioRecorder : IDebugAudioRecorder, IDisposable
         _checkpointTimer.Dispose();
     }
 
-    internal static void WriteWavHeaderPlaceholder(Stream stream)
+    internal static void WriteWavHeaderPlaceholder(Stream stream, int sampleRate = DefaultSampleRate)
     {
         Span<byte> header = stackalloc byte[WavHeaderSize];
         // "RIFF"
@@ -229,9 +237,9 @@ public sealed class DebugAudioRecorder : IDebugAudioRecorder, IDisposable
         // NumChannels
         BinaryPrimitives.WriteUInt16LittleEndian(header.Slice(22, 2), (ushort)Channels);
         // SampleRate
-        BinaryPrimitives.WriteUInt32LittleEndian(header.Slice(24, 4), SampleRate);
+        BinaryPrimitives.WriteUInt32LittleEndian(header.Slice(24, 4), (uint)sampleRate);
         // ByteRate = SampleRate * Channels * BitsPerSample/8
-        BinaryPrimitives.WriteUInt32LittleEndian(header.Slice(28, 4), (uint)(SampleRate * Channels * BitsPerSample / 8));
+        BinaryPrimitives.WriteUInt32LittleEndian(header.Slice(28, 4), (uint)(sampleRate * Channels * BitsPerSample / 8));
         // BlockAlign = Channels * BitsPerSample/8
         BinaryPrimitives.WriteUInt16LittleEndian(header.Slice(32, 2), (ushort)(Channels * BitsPerSample / 8));
         // BitsPerSample

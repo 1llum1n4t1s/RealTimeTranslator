@@ -24,7 +24,8 @@ public sealed class TranslationPipelineServiceDebugRecordingTests
 #pragma warning disable CS0067 // WriteFailed は本テストでは発火しないが、 インターフェース実装上必要
         public event System.Action<System.Exception>? WriteFailed;
 #pragma warning restore CS0067
-        public void StartSession(string sessionId) { StartCount++; IsRecording = true; }
+        public int LastSampleRate { get; private set; }
+        public void StartSession(string sessionId, int sampleRate) { StartCount++; LastSampleRate = sampleRate; IsRecording = true; }
         public void WritePcm16(System.ReadOnlySpan<byte> pcm16) { }
         public void StopSession() { if (IsRecording) StopCount++; IsRecording = false; }
     }

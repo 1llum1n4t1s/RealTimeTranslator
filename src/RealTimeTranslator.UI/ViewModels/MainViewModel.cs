@@ -244,6 +244,19 @@ public partial class MainViewModel : ObservableObject, IDisposable
         return hasKey;
     }
 
+    // 選択中 provider の出力言語を返す (翻訳ログの Language 列 / ログ文言で共通に使う)。
+    // UI (SettingsViewModel.SelectedOutputLanguage) は全 provider の OutputLanguage を同期するため通常は同値だが、
+    // settings.json を手編集して provider ごとに別値にした場合、 OpenAI 固定参照では実際の翻訳先と食い違う。
+    private static string GetActiveOutputLanguage(AppSettings settings) =>
+        settings.Provider switch
+        {
+            TranscriptionProvider.Gemini => settings.Gemini.OutputLanguage,
+            TranscriptionProvider.Soniox => settings.Soniox.OutputLanguage,
+            TranscriptionProvider.Speechmatics => settings.Speechmatics.OutputLanguage,
+            TranscriptionProvider.Azure => settings.Azure.OutputLanguage,
+            _ => settings.OpenAIRealtime.OutputLanguage,
+        } ?? string.Empty;
+
     // 走行中セッションの再起動要否判定に使う「実効設定シグネチャ」。 provider 切替・キー・出力言語に加え、
     // Speechmatics/Azure の源言語、 Azure の Region も含める (これらは各 client の ConnectAsync 時に
     // スナップショットされ走行中は反映されないため、 変われば再起動が必要。 Codex 指摘)。
@@ -385,14 +398,15 @@ public partial class MainViewModel : ObservableObject, IDisposable
         RunOnUiThread(() =>
         {
             var text = item.TranslatedText;
-            var logMessage = $"[確定] →{_settings.OpenAIRealtime.OutputLanguage} {text}";
+            var outputLanguage = GetActiveOutputLanguage(_settings);
+            var logMessage = $"[確定] →{outputLanguage} {text}";
             // ⭐ rere P1 #2 / A3-001 / F-3 修正: PII 漏洩経路を抑制。
             // 翻訳テキスト全文をログファイル化すると、 Issue 添付時に視聴コンテンツのセリフ
             // や会議の機微発話が公開リポに残る経路がある。 Core 側 (TranslationPipelineService /
             // OpenAIRealtimeClient) と同じ 40 文字 truncate をここでも適用する。
             // UI Log() (Logs タブ) はフル文字列のまま (画面表示のみで永続化されない)。
             var truncated = text.Length <= 40 ? text : text[..40] + "...";
-            LoggerService.LogInfo($"[確定] →{_settings.OpenAIRealtime.OutputLanguage} {truncated}");
+            LoggerService.LogInfo($"[確定] →{outputLanguage} {truncated}");
             Log(logMessage);
 
             // 翻訳ログタブ用にフル文字列を永続化 (TSV にファイル追記 + ObservableCollection に追加)。
@@ -401,7 +415,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
                             : SelectedProcess?.Name ?? string.Empty;
             var entry = new TranslationLogEntry(
                 Timestamp: DateTime.Now,
-                Language: _settings.OpenAIRealtime.OutputLanguage ?? string.Empty,
+                Language: outputLanguage,
                 SessionId: _currentSessionId,
                 ProcessName: processName,
                 Text: text);
@@ -614,7 +628,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
             // 選択中 provider の実効設定 (キー / 出力言語 / 源言語 / Region) のシグネチャで比較する。
             // OpenAI 固定キー比較だと他 provider のキーや源言語 / Region 変更を取りこぼし、 旧設定のまま継続する。
             var newSignature = GetActiveProviderSignature(e.Settings);
-            var newOutputLang = e.Settings.OpenAIRealtime.OutputLanguage;
+            var newOutputLang = GetActiveOutputLanguage(e.Settings);
             var apiSettingsChanged = _lastActiveConfigSignature != newSignature;
 
             // rere レビュー B1-007: ApplySettingsAsync は dead code として削除済み。
@@ -954,7 +968,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
             // GameProfile（ホットワード / 辞書 / InitialPrompt）は OpenAI Realtime API 移行で削除済み。
             // 必要なら API の `instructions` フィールドにマップして復活させる。
 
-            Log($"翻訳開始（翻訳先: {_settings.OpenAIRealtime.OutputLanguage}）");
+            Log($"翻訳開始（翻訳先: {GetActiveOutputLanguage(_settings)}）");
 
             await _pipelineService.StartAsync(_processingCancellation.Token);
 
