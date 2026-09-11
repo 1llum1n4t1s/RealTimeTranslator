@@ -9,14 +9,14 @@
   <ItemGroup>
     <PackageReference Include="1llum1n4t1s.NAudio" Version="4.0.4" />
     <!-- Silero VAD 推論用 (CPU 版、ネイティブ DLL は win-x64 のみ実質使用) -->
-    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.29.0" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.30.0" />
     <!-- Azure AI Speech 翻訳プロバイダ用 (TranslationRecognizer + PushAudioInputStream)。
          ネイティブ runtime は win-x64 のみ実質使用。 ⚠️ このパッケージ追加で packages.lock.json の
          再生成が必要 (restore を -r win-x64 + force-evaluate オプション付きで再実行する)。 -->
     <PackageReference Include="Microsoft.CognitiveServices.Speech" Version="1.51.2" />
     <PackageReference Include="SuperLightLogger" Version="1.0.16" />
     <!-- DPAPI で settings.json 内 API キーを暗号化（CurrentUser スコープ）。Windows 専用、AOT 互換。 -->
-    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.11" />
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.12" />
   </ItemGroup>
 
   <ItemGroup>
