@@ -46,7 +46,9 @@ RealTimeTranslator は、Windows 上で指定したプロセスの再生音声�
        └─ MainViewModel → 状態・統計表示
 ```
 
-WASAPI の callback thread は音声をコピーして bounded channel へ投入するだけにします。DSP、VAD、ネットワーク送信は専用 processing task で行い、callback の停滞による音切れを避けます。処理が追いつかない場合は古いチャンクを捨て、無制限な遅延とメモリ増加を防ぎます。drop 数は診断メトリクスとして保持します。
+`AudioCaptureService` の WASAPI callback は native buffer を `ArrayPool` へコピーし、source format から float / mono へ変換して診断と100 ms chunk 化を行い、イベントで通知します。`TranslationPipelineService` のイベントハンドラは受け取ったチャンクを bounded raw-audio channel へ enqueue するだけにし、DSP、VAD、ネットワーク送信は専用 processing task で行います。
+
+処理が追いつかない場合は raw-audio channel と各 provider の送信 channel が古いチャンクを捨て、無制限な遅延とメモリ増加を防ぎます。`DroppedAudioChunkCount` が数えるのは provider 送信 channel 側の drop であり、raw-audio channel 側の drop は個別計測していません。
 
 ## 翻訳プロバイダ
 
@@ -59,6 +61,10 @@ WASAPI の callback thread は音声をコピーして bounded channel へ投入
 | Azure | `AzureSpeechTranslationClient` | 16 kHz / mono / PCM16 | Speech SDK の push stream。源言語ロケールと region が必要 |
 
 全 client は `IRealtimeTranscriber` の状態、字幕イベント、送信サンプル数、drop 数を公開します。provider 固有設定は各 client の具体的な `ConnectAsync` に渡し、pipeline は開始時に active client と設定をスナップショットします。設定画面で provider を変更しても実行中接続は差し替えず、次の開始から反映します。これにより、音声レートや字幕分割条件がセッション途中で混在するのを防ぎます。
+
+OpenAI / Gemini / Soniox / Speechmatics は、API key を送る前に endpoint の `wss` scheme、userinfo が空であること、provider ごとの許可 host を検証します。Azure は任意 endpoint を受け取らず、公式 Speech SDK を subscription key と region で構成します。
+
+OpenAI の `/v1/realtime/translations` は標準 Realtime endpoint と wire contract が異なります。session update では server 既定の VAD を使い、音声は `session.input_audio_buffer.append` として送ります。複数世代の transcript event を受理しつつ、同一 response の text / audio-transcript 二重通知は client で抑制します。
 
 ## 音声処理と VAD
 
@@ -96,6 +102,7 @@ idle finalize は無音 padding の処理中に発火させません。実効値
 - raw audio と provider 送信は bounded channel を使い、遅延上限を優先して `DropOldest` とする。
 - pipeline からのイベントは UI thread とは限らない。ViewModel が Avalonia dispatcher を使って表示状態へ反映する。
 - preview capture は翻訳開始時に停止し、停止後に再開する。1つの対象プロセスへ preview と本番を重ねない。
+- `Program` のユーザーセッション単位 mutex により単一インスタンスだけを動かし、二重起動時は既存ウィンドウを復元して前面化してから新しいプロセスを終了する。
 - shutdown は capture 停止と DI singleton の非同期破棄を先に試み、native handle が残る場合にもプロセス終了を保証する。
 
 ## 設定、データ、セキュリティ
@@ -112,11 +119,13 @@ idle finalize は無音 padding の処理中に発火させません。実効値
 
 設定保存では API キーを暗号化した clone を作り、DI と実行中 client が参照する元 object を変更しません。永続化フィールドを追加するときは clone へのコピーも必須です。配布物は `settings.default.json` のみを含み、利用者の `settings.json` を含めません。
 
+overlay 背景色は `BackgroundColorBase` (`#RRGGBB`) と `BackgroundOpacityPercent` を編集用の正本とし、表示で使う `BackgroundColor` (`#AARRGGBB`) を派生させます。旧設定の `BackgroundColor` だけがある場合は sanitize 時に分解し、以後は setter と保存前 sanitize で3フィールドを同期します。
+
 翻訳ログの append、保持期限 cleanup、全削除は単一の channel worker で直列化します。これにより、確定字幕の順序と clear 後に到着した append の意味を維持します。
 
 ## 更新設計
 
-更新 feed は `https://rtt.kagayoi.com` の `win-x64` channel に固定し、設定ファイルから変更できません。HTTPS、絶対 URI、userinfo なしを検証したうえで Velopack に渡します。check / download / apply は同じ lock で直列化し、起動時・周期・手動確認の競合を防ぎます。
+更新 feed は `https://rtt.kagayoi.com` の `win-x64` channel に固定し、設定ファイルから変更できません。HTTPS、絶対 URI、userinfo なしを検証したうえで Velopack に渡します。自動確認は起動時の1回だけで、周期確認は行いません。check / download / apply は同じ lock で直列化し、起動時確認と手動確認の競合を防ぎます。
 
 ## 採用した判断とトレードオフ
 
@@ -126,7 +135,7 @@ idle finalize は無音 padding の処理中に発火させません。実効値
 | Core と UI を分離 | 音声・接続・永続化を Avalonia なしで検証できる | composition root で具体 client をまとめて構築する必要がある |
 | provider client を常駐登録し開始時に選択 | 再起動なしで provider を切り替え、セッション内の一貫性も保てる | 未選択 client も DI singleton として存在する |
 | OpenAI用のVADと送信を48 kHzから並列リサンプル | VAD の16 kHz制約を守りつつOpenAI向け高域を維持する | OpenAIセッションではリサンプラを2つ進めるCPUコストがある |
-| bounded channel + `DropOldest` | メモリと遅延を有限に保つ | 過負荷時は古い音声が欠落するため drop 計測が必要 |
+| bounded channel + `DropOldest` | メモリと遅延を有限に保つ | 過負荷時は古い音声が欠落する。provider送信側は計測するが、raw-audio側は個別計測しない |
 | VAD失敗時は全送信へフォールバック | VAD asset / native runtime 障害で起動不能にしない | 無音抑制が失われ、送信量が増える |
 | subtitle finalization を多段化 | provider ごとの句読点・完了通知の差に耐える | 分割条件が相互依存するため回帰テストが必要 |
 | API key を DPAPI CurrentUser で保存 | 平文保存を避け、追加サービスを不要にする | 別ユーザー・別PCへ暗号文を移しても復号できない |

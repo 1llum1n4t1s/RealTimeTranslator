@@ -69,15 +69,24 @@ rg -n --fixed-strings '"net10.0-windows10.0.20348/win-x64"' src -g packages.lock
 ### VAD と字幕確定
 
 - Silero VAD v5 の入力は 16 kHz、1フレーム512 samples 固定。`StartAsync` ごとに detector と両リサンプラの状態をリセットする。
+- `VadPreset` が `Custom` 以外なら、`SettingsViewModel` の preset 定義を正本として threshold / pre-roll / hangover を sanitize 時にも強制同期する。preset 値を変えるときは3値の組み合わせと既存設定の移行挙動をまとめて検証する。
 - VAD の pre-roll は発話冒頭、hangover は発話末尾、silence padding はプロバイダに保留出力を押し出させる役割を持つ。値を単独で削る前に `VadGate.test.cs` と文分割テストで相互作用を確認する。
 - delta の確定順は句読点、`MaxPartialChars`、provider の完了通知、idle finalize。`ResolveIdleFinalizeMs` の不変条件 `idle <= 0` または `idle >= SilencePaddingMs + 1000` を維持する。
 - 字幕更新は `SegmentId` ごとに partial を置換し、final で確定する。イベントハンドラをロック保持中に呼ばない。
+
+### OpenAI Translation endpoint
+
+- `wss://api.openai.com/v1/realtime/translations` は標準 Realtime endpoint と契約が異なる。`session.update` に `turn_detection` を追加せず、音声 append の type は `session.input_audio_buffer.append` を維持する。
+- transcript の event 名には現行・translation 専用・legacy の互換経路があり、同じ response 内の text / audio-transcript 二重通知を client で抑制する。event 対応を変えるときは `OpenAIRealtimeClient.adversarial.test.cs` を更新する。
+- completed transcript は累積全文になり得る一方、delta だけで completed が来ないセッションもある。pipeline の既確定 prefix 差分化、長さ分割、idle finalize を外さない。
 
 ### 設定・シークレット・永続化
 
 - 設定の正本は `%APPDATA%/RealTimeTranslator/settings.json`。API キーは保存用 clone だけを DPAPI CurrentUser で暗号化する。
 - `AppSettings` に永続化フィールドを追加したら `SettingsService.CloneWithEncryptedSecrets` にも追加し、`SettingsServiceClone.test.cs` で保存時の欠落と secret 暗号化を検証する。
+- overlay 背景の編集用正本は `BackgroundColorBase` + `BackgroundOpacityPercent`、`BackgroundColor` は表示・旧設定互換用の派生 `#AARRGGBB`。sanitize と各 setter の compose / split 同期を維持し、`BackgroundColorRoundTrip.test.cs` で検証する。
 - 配布物には `settings.default.json` だけを含める。`settings.json` を publish へ含めない。
+- OpenAI / Gemini / Soniox / Speechmatics の endpoint は、credential を送る前に `wss`、userinfo なし、provider ごとの許可 host を検証する。endpoint の既定値や接続処理を変えるときは allowlist と adversarial テストも更新する。Azure は公式 SDK と region を使う。
 - 翻訳ログの書き込み・保持期限処理は `TranslationLogService` の単一 channel worker を通す。並行 append / clear の順序を崩さない。
 - デバッグ WAV のヘッダーは active provider の `InputSampleRate` を使う。24 kHz 固定にしない。
 
@@ -85,7 +94,7 @@ rg -n --fixed-strings '"net10.0-windows10.0.20348/win-x64"' src -g packages.lock
 
 - Avalonia の compiled binding が有効。新規・変更する AXAML には正しい `x:DataType` を設定する。
 - UI collection / property の変更は Avalonia UI thread へ dispatch する。
-- WASAPI callback ではコピーと channel enqueue までに留め、DSP、VAD、送信処理を callback thread へ持ち込まない。
+- `AudioCaptureService` の WASAPI callback は native buffer のコピー、float / mono 変換、診断、100 ms chunk 化、イベント通知までを担当し、pipeline のイベントハンドラは bounded channel への enqueue だけを行う。DSP、VAD、ネットワーク送信は processing task で行う境界を維持する。
 - bounded channel の `DropOldest`、開始停止の直列化、CancellationToken、`IAsyncDisposable` の所有関係を維持する。Start / Stop / Dispose の競合を変更した場合は adversarial テストを追加する。
 - プレビュー用 `IAudioLevelMonitor` と本番キャプチャを同時に動かさない。翻訳開始前はプレビュー、開始中は本番メーターを使う。
 
