@@ -283,8 +283,7 @@ public partial class OverlayViewModel : ObservableObject, IDisposable
 
     // 同梱フォントを avares:// で参照する際のフォルダ URI。 個別 .ttf ファイルではなく Assets/Fonts
     // フォルダ全体を指す形式 (フォルダ#Family) にすることで、 同 family の Regular/Bold 両 .ttf が読み込まれ、
-    // FontWeight=Bold 選択時に擬似ボールドではなく専用 Bold 字形が使われる。 (可変フォント Noto は単一
-    // ファイルだが weight 軸を内包するため同様に Bold が出る。)
+    // FontWeight=Bold 選択時に擬似ボールドではなく専用 Bold 字形が使われる。
     private const string EmbeddedFontFolderUri = "avares://RealTimeTranslator.UI/Assets/Fonts";
 
     // settings.json には "M PLUS Rounded 1c" のような「表示名」を保存し、 ここで「実際のフォント内部 family 名」

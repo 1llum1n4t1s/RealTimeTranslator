@@ -5,7 +5,7 @@
 | ファミリ | ファイル | ウェイト | 配布元 |
 |--|--|--|--|
 | IBM Plex Sans JP | `IBMPlexSansJP-Regular.ttf` / `IBMPlexSansJP-Bold.ttf` | Regular / Bold | https://github.com/google/fonts/tree/main/ofl/ibmplexsansjp |
-| Noto Sans JP | `NotoSansJP-Variable.ttf` | Variable (wght 100-900) | https://github.com/google/fonts/tree/main/ofl/notosansjp |
+| Noto Sans JP | `NotoSansJP-Regular.ttf` / `NotoSansJP-Bold.ttf` | Regular / Bold (上流可変フォント Version 2.004-H2 から静的化) | https://github.com/google/fonts/tree/main/ofl/notosansjp |
 | LINE Seed JP | `LINESeedJP-Regular.ttf` / `LINESeedJP-Bold.ttf` | Regular / Bold | https://github.com/google/fonts/tree/main/ofl/lineseedjp |
 | Zen Maru Gothic | `ZenMaruGothic-Regular.ttf` / `ZenMaruGothic-Bold.ttf` | Regular / Bold | https://github.com/google/fonts/tree/main/ofl/zenmarugothic |
 | M PLUS Rounded 1c | `MPLUSRounded1c-Regular.ttf` / `MPLUSRounded1c-Bold.ttf` | Regular / Bold | https://github.com/google/fonts/tree/main/ofl/mplusrounded1c |

@@ -31,9 +31,8 @@
     <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="10.0.12" />
     <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.12" />
     <!-- ⚠️ Velopack は **直接参照しない** (v1.0.37 設計、 ゆろさん指摘):
-         VelopackUpdateDialog.Avalonia 1.0.5 の .nuspec で <dependency id="Velopack" version="1.0.1" />
-         が宣言されているため、 transitive 依存だけ残せば NuGet が自動で 1.0.1 を resolve する。
-         (1.0.3 までは Velopack 0.0.1298 を要求していたが、 1.0.4 以降は 1.0.1 に更新済み。)
+         VelopackUpdateDialog.Avalonia の .nuspec が互換 Velopack version を宣言するため、
+         transitive 依存だけ残せば NuGet が対応版を自動で resolve する。
          本体コード (UpdateService.cs 等) は `using Velopack;` で transitive 経由の assembly reference を
          そのまま使える (NuGet 仕様)。
          この設計により、 ライブラリ (VelopackUpdateDialog) と本体側の Velopack version が常に整合し、

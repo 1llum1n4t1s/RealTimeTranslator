@@ -9,7 +9,7 @@ namespace RealTimeTranslator.Core.Interfaces;
 /// </summary>
 public interface IVoiceActivityDetector : IDisposable
 {
-    /// <summary>1 推論あたりに必要なサンプル数。 Silero VAD v5 / 16kHz では 512 (= 32ms)。</summary>
+    /// <summary>1 推論あたりに必要なサンプル数。 Silero VAD v6.2.2 / 16kHz では 512 (= 32ms)。</summary>
     int RequiredFrameSize { get; }
 
     /// <summary>想定サンプルレート (16000)。 入力フレームはこのレートに揃える必要がある。</summary>

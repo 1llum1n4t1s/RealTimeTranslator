@@ -41,7 +41,7 @@ jobs:
           }
           Write-Host "Build OK: $exePath ($(Get-Item $exePath | Select-Object -ExpandProperty Length) bytes)"
       - name: Upload artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: realtimetranslator.win-x64
           path: publish/*

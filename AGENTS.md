@@ -68,7 +68,7 @@ rg -n --fixed-strings '"net10.0-windows10.0.20348/win-x64"' src -g packages.lock
 
 ### VAD と字幕確定
 
-- Silero VAD v5 の入力は 16 kHz、1フレーム512 samples 固定。`StartAsync` ごとに detector と両リサンプラの状態をリセットする。
+- Silero VAD v6.2.2 の入力は 16 kHz、1フレーム512 samples 固定。`StartAsync` ごとに detector と両リサンプラの状態をリセットする。
 - `VadPreset` が `Custom` 以外なら、`SettingsViewModel` の preset 定義を正本として threshold / pre-roll / hangover を sanitize 時にも強制同期する。preset 値を変えるときは3値の組み合わせと既存設定の移行挙動をまとめて検証する。
 - VAD の pre-roll は発話冒頭、hangover は発話末尾、silence padding はプロバイダに保留出力を押し出させる役割を持つ。値を単独で削る前に `VadGate.test.cs` と文分割テストで相互作用を確認する。
 - delta の確定順は句読点、`MaxPartialChars`、provider の完了通知、idle finalize。`ResolveIdleFinalizeMs` の不変条件 `idle <= 0` または `idle >= SilencePaddingMs + 1000` を維持する。

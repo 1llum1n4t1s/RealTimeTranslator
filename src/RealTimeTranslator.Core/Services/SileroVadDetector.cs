@@ -6,11 +6,11 @@ using SuperLightLogger;
 namespace RealTimeTranslator.Core.Services;
 
 /// <summary>
-/// Silero VAD v5 (ONNX) を使った <see cref="IVoiceActivityDetector"/> 実装。
+/// Silero VAD v6.2.2 (ONNX) を使った <see cref="IVoiceActivityDetector"/> 実装。
 /// 16kHz / 512 サンプル (32ms) 固定。 LSTM hidden state を内部で持ち、 連続フレームを
 /// 順番に推論する。 推論は ~1ms (Intel i5 級 CPU) なので audio loop 上で問題なく回せる。
 ///
-/// 公式モデル: snakers4/silero-vad (MIT License)。 v5 (16kHz 専用) 仕様:
+/// 公式モデル: snakers4/silero-vad (MIT License)。 v6.2.2 を16kHzで使う場合の仕様:
 /// - 入力: input[1, 512] (float32) / state[2, 1, 128] (float32) / sr[1] (int64=16000)
 /// - 出力: output[1, 1] (float32 = speech_prob) / stateN[2, 1, 128] (float32)
 /// </summary>

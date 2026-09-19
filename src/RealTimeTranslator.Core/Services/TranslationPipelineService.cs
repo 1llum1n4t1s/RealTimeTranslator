@@ -133,7 +133,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     private bool _lastEnableVad = true;
 
     // ⭐ 並列 2 系統ストリーミングリサンプラ (v1.0.36 設計):
-    //   _vadResampler  (48k→16k): VAD 判定用 (Silero v5 16kHz/512sample 固定仕様)
+    //   _vadResampler  (48k→16k): VAD 判定用 (Silero v6.2.2 16kHz/512sample 固定仕様)
     //   _sendResampler (48k→24k): OpenAI 送信用 (24kHz/mono PCM16、 Nyquist 12kHz 確保)
     //
     // 経緯:
@@ -1715,7 +1715,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         bool sendAt16k = _activeClient.InputSampleRate == 16000;
         var resampled16k = _vadResampler.Resample(audio48kHz);
 
-        int frameSize16k = _vad.RequiredFrameSize; // Silero VAD v5 仕様: 512 sample @ 16kHz (32ms)
+        int frameSize16k = _vad.RequiredFrameSize; // Silero VAD v6.2.2 仕様: 512 sample @ 16kHz (32ms)
         _frameAccumulator ??= new float[frameSize16k];
 
         if (sendAt16k)

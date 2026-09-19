@@ -20,7 +20,9 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- Silero VAD ONNX モデル (v5, MIT License) を出力ディレクトリへコピー。
+    <!-- Silero VAD ONNX モデル (v6.2.2, MIT License) を出力ディレクトリへコピー。
+         公式 tag: https://github.com/snakers4/silero-vad/tree/v6.2.2
+         SHA-256: 1A153A22F4509E292A94E67D6F9B85E8DEB25B4988682B7E174C65279D8788E3
          Content にすることで ProjectReference された UI / Tests の output にも伝播する。
          Velopack パッケージに同梱され、SileroVadDetector が実行時にロードする。 -->
     <Content Include="Assets/silero_vad.onnx" CopyToOutputDirectory="PreserveNewest" />
