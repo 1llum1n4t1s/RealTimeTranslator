@@ -4,6 +4,13 @@ Git のバージョン記録・コミット差分と既存の変更履歴をも�
 
 ## 未リリース
 
+## [1.0.55] — Git 記録日: 2026-09-20
+
+- 利用者向け機能の変更はなく、音声キャプチャ・更新 UI・ログ・テスト基盤の依存ライブラリを更新
+- 配布に使う Wrangler と依存・配布物の版情報を現行状態に同期
+
+出典: [変更差分](https://github.com/1llum1n4t1s/RealTimeTranslator/compare/release/1.0.54...release/1.0.55)。
+
 ## [1.0.54] — Git 記録日: 2026-09-12
 
 - OpenAI / Gemini / Soniox / Speechmatics / Azure の設定・導入案内を現行仕様に更新
