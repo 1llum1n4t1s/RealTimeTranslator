@@ -195,6 +195,26 @@
         "resolved": "10.0.12",
         "contentHash": "17brFrnQHV/XMMazXNqFq4GkvzWy8yzDPo5Gb8TT8zJtMFbUqDycOCyPCp9F+eMc4L75kcCKRZqaeBHMwLCL9Q=="
       }
+    },
+    "net10.0-windows10.0.20348/win-x64": {
+      "Microsoft.CognitiveServices.Speech": {
+        "type": "Direct",
+        "requested": "[1.52.0, )",
+        "resolved": "1.52.0",
+        "contentHash": "7DeNULGitPuo0Kxosj2ug9oS3MA0kM0o7Bj+rTqer2LrWdGDouvYFHyXVPIBzV5UESx+QHFlgFeHF0q7aGcbJg==",
+        "dependencies": {
+          "Azure.Core": "1.44.1"
+        }
+      },
+      "Microsoft.ML.OnnxRuntime": {
+        "type": "Direct",
+        "requested": "[1.30.0, )",
+        "resolved": "1.30.0",
+        "contentHash": "RaF3KjPXB/IbNvvrcQtrxS/NZjB9dEHnZQTsdJCLP5Fnn1Jj3LomeqR1mMAoRFKinJ0pIe85PLhLlfGBYqzgWA==",
+        "dependencies": {
+          "Microsoft.ML.OnnxRuntime.Managed": "1.30.0"
+        }
+      }
     }
   }
 }
