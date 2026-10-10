@@ -1,28 +1,26 @@
 # 公開手順（Velopack + Cloudflare R2）
 
-このプロジェクトの公開は **`release/**` ブランチへの push** をトリガーにして、GitHub Actions が Velopack パッケージを作成し、**Cloudflare R2 (`realtimetranslator-updates` バケット)** へアップロードします。自動更新クライアント (`UpdateService` の `SimpleWebSource`) は `https://rtt.kagayoi.com/releases.win-x64.json` を参照して更新を取得します。
+公開は Windows の `scripts/release-local.ps1` で行います。SimplySign の証明書でアプリとインストーラを署名し、Velopack の win-x64 パッケージを Cloudflare R2 (`realtimetranslator-updates`) へアップロードします。自動更新は `https://rtt.kagayoi.com/releases.win-x64.json` を参照します。GitHub Actions は検証を担当し、ブランチへの push だけでは配布されません。
 
 ## 前提
 
-- GitHub Actions が有効であること
-- GitHub Secrets に `CLOUDFLARE_API_TOKEN` (Workers R2 Storage / Edit) と `CLOUDFLARE_ACCOUNT_ID` が登録済みであること
-- `release/**` ブランチへの push 権限があること
-- バージョン更新・リリースは `/vava` スキル経由で行うこと（手動でのバージョン書き換えは行わない）
+- Windows x64、.NET 10 SDK と SimplySign Desktop が利用できること
+- SimplySign にログインし、コード署名証明書の秘密鍵を使用できること。証明書が表示されるだけでは署名成功を確認できません
+- `C:\Users\IMT\dev\Secret\secrets.json` の Cloudflare 設定で既存 R2 バケットへアクセスできること
+- バージョン更新・公開は `/vava` スキルで行うこと
 
 ## 公開の流れ
 
-1. `/vava` でバージョンを上げ、`release/X.Y.Z` ブランチを作成・push します（`/vava` が一括処理）。
+1. `/vava` で次のバージョンを一度決め、変更履歴と版情報を更新します。
+2. Release/x64 のビルドとテストを実行し、署名を含む配布物を `-SkipUpload` で事前確認します。
+3. 検証済みの変更を main へ commit・push し、CI 成功を確認します。同じ commit を指す `release/X.Y.Z` ブランチを作成・push します。
+4. `scripts/release-local.ps1` で署名・Velopack パッケージ作成・R2 公開を行います。
+5. 配信マニフェストの版、配布物の署名・サイズ・ハッシュと公開 URL を確認します。
 
-2. `Release` ワークフロー (`.github/workflows/release.yml`) が起動し、
-   - アプリの公開ビルド (`build.yml`、self-contained win-x64)
-   - Velopack パッケージ作成 (`velopack.yml`、`vpk pack --channel win-x64`)
-   - **Cloudflare R2 へのアップロード** (`r2-upload` job、wrangler CLI)
-   - 配信確認 (`releases.win-x64.json` の HTTP 200 検証)
-   を実行します。
+## 保存先と配信
 
-## 補足
+作業出力はリポジトリ外の作業別 Temp に置きます。スクリプトの出力先・保持オプションは `Get-Help scripts/release-local.ps1 -Detailed` または冒頭のパラメーターを確認してください。既存のビルド出力や共有ツールを削除しません。
 
-- 配信元は **Cloudflare R2 単独**。GitHub Releases への継続的なアップロードは行いません。
-- 旧 `GithubSource` クライアント救済のための「踏み台」(R2 対応版を GitHub Releases に 1 つだけ publish) は移行作業時に一度だけ実施済みで、以降の通常リリースでは不要です。
-- R2 上の同名 `releases.win-x64.json` は冪等に上書きされ、過去バージョンの nupkg は delta 更新のため残します。
-- ワークフロー定義は `.github/workflows/release.yml`（orchestrator）/ `build.yml` / `velopack.yml` にあります。
+R2 への書き込みは `wrangler r2 object put --remote` を使用し、パッケージを先に、更新マニフェストを後にアップロードします。公開 URL の内容を照合し、古い内容が返るときだけ対象 URL のキャッシュを削除します。
+
+配信元は Cloudflare R2 です。通常のリリースでは GitHub Releases へのアップロードを行いません。R2 の過去パッケージは最新2版を保持し、既存の旧ドメインによる更新経路を維持します。

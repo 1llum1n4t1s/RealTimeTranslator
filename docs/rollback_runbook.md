@@ -10,7 +10,7 @@ rere レビュー P1 #3 (F-1) で「Velopack ロールバック手段の欠如�
 - Velopack の `SimpleWebSource` は **`releases.win-x64.json` マニフェストを見て、そこに載っている最新バージョン**へ向かう。
   つまり「クライアントがどのバージョンを取得するか」は **R2 上の `releases.win-x64.json` の内容で決まる**。
 - `UpdateService.cs` の `SimpleWebSource(baseUrl)` でユーザー側のバージョン指定はできない (`UpdateBaseUrl` は [JsonIgnore] ハードコード固定)。
-- R2 は **過去バージョンの nupkg を削除せず保持** する (delta 更新のため)。よって直前の正常版 nupkg は R2 上に残っており、マニフェストを差し替えれば即座にそこへ戻せる。
+- R2 は最新2版のパッケージを保持する。復旧前に、正常版のパッケージが実際に残っていることを確認する。マニフェストの復元は新規取得先を変更するが、インストール済みの版を自動で戻すものではない。
 - Velopack 仕様上 `--allowDowngrade` なしでは downgrade は拒否される。
 
 ## 1. 「壊れた v1.0.X を出した」と気づいた直後 (5 分以内)
@@ -21,7 +21,7 @@ rere レビュー P1 #3 (F-1) で「Velopack ロールバック手段の欠如�
 
 クライアントが取得するバージョンは R2 上の `releases.win-x64.json` で決まるので、**そのマニフェストを
 v1.0.(X-1) 時点のもので上書き** すれば、これから起動するユーザーは正常な v1.0.(X-1) を取得する。
-v1.0.(X-1) の `releases.win-x64.json` は当時の CI 成果物 (artifact) または手元の `vpk pack` 出力から入手する。
+v1.0.(X-1) の `releases.win-x64.json` は保持した署名済みリリース出力から入手する。
 
 ```bash
 # wrangler 認証 (OAuth) 済み前提。未認証なら `wrangler login`。
@@ -49,7 +49,7 @@ RealTimeTranslator v1.0.X に重大な不具合が見つかりました。
 お手数ですが、 以下の手順で v1.0.(X-1) に戻してください:
 
 1. https://rtt.kagayoi.com/RealTimeTranslator-win-x64-Setup.exe から
-   Setup.exe をダウンロード (R2 のマニフェストを §1-A で v1.0.(X-1) に戻してあれば、これは正常版を指す)
+   Setup.exe をダウンロード (正常版の署名済み Setup.exe も別途復元し、配信される版を確認済みであること。マニフェストの復元だけでは Setup.exe は変わりません)
 2. 実行 → 既存 v1.0.X に上書きインストール
 3. 起動を確認
 
@@ -66,7 +66,7 @@ v1.0.(X+1) で修正版を準備中です。 完了次第改めて案内しま�
 
 ## 3. forward-fix の v1.0.(X+1) リリース
 
-- `/vava` スキルで通常通り v+1 bump → CI 経由で R2 へリリース (`r2-upload` job が `releases.win-x64.json` を v1.0.(X+1) に更新)
+- `/vava` スキルで修正版を準備し、`scripts/release-local.ps1` の署名・R2 公開経路で `releases.win-x64.json` を更新
 - v1.0.(X+1) 配信後、混乱を避けるため §1-A で R2 に残した壊れた v1.0.X の nupkg を **完全 delete** する
 
 ```bash
@@ -96,6 +96,6 @@ rere レビュー Agent F (Day-2 Ops) で提案された予防策:
 
 ## 関連
 
-- `.github/workflows/release.yml` (`r2-upload` job: Cloudflare R2 へ Velopack 成果物をアップロード)
+- `scripts/release-local.ps1` (署名済み Velopack パッケージを Cloudflare R2 へ公開)
 - `src/RealTimeTranslator.UI/Services/UpdateService.cs` (`SimpleWebSource` + UpdateBaseUrl 検証 + UpdateDialog 呼出)
 - rere レビュー P1 #3 (F-1) / 議題 3 (D-4 VelopackUpdateDialog.Avalonia 依存)
