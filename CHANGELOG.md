@@ -12,7 +12,7 @@ Git のバージョン記録・コミット差分と既存の変更履歴をも�
 - 更新確認中の通知で例外が発生した後も、更新を再確認できるよう修正
 - カスタム音声検出の説明を現行モデルへ更新し、無音送信後の VAD 節約時間の過大表示を修正
 
-出典: [変更差分](https://github.com/1llum1n4t1s/RealTimeTranslator/compare/release/1.0.55...release/1.0.56)。
+出典: [変更差分](https://github.com/1llum1n4t1s/RealTimeTranslator/compare/999b70e723a3c3b8a108c480f01dae07c35419f2...0c4b0ebdbc65b21cf7f5d649ab234d7e0c2cd7c0)。
 
 ## [1.0.55] — Git 記録日: 2026-09-20
 
