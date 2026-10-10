@@ -404,12 +404,29 @@ if (-not $toDelete) {
 
 # ---- 5. 今回の外部作業先だけをごみ箱経由で清掃 ----
 # SkipUpload と途中失敗は復元・再開用に保持する。再生成 restore は行わない。
+function Remove-ReleaseWorkDirectory {
+    param([string]$WorkDir, [string]$LedgerDir)
+    Import-Module (Join-Path $env:USERPROFILE '.codex\scripts\CodexCleanup.psm1') -ErrorAction Stop
+    # pnpm の専用 store にできた junction はリンク自身を先に清掃する。
+    # 共通ヘルパーは子孫の reparse point を含むフォルダーの再帰削除を拒否する。
+    $links = @(Get-ChildItem -LiteralPath $WorkDir -Recurse -Directory -Force |
+        Where-Object { ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 })
+    foreach ($link in $links) {
+        if ($link.LinkType -ne 'Junction' -or @($link.Target).Count -ne 1 -or
+            -not ([IO.Path]::GetFullPath([string]$link.Target)).StartsWith($WorkDir + '\', [StringComparison]::OrdinalIgnoreCase)) {
+            throw "今回の作業先内へ向く junction 以外は保持します: $($link.FullName)"
+        }
+    }
+    foreach ($link in $links) {
+        Remove-CodexItem -LiteralPath $link.FullName -AllowedRoot $WorkDir -LedgerRoot $LedgerDir -AllowLeafJunction
+    }
+    Remove-CodexItem -LiteralPath $WorkDir -AllowedRoot (Split-Path -Parent $WorkDir) -LedgerRoot $LedgerDir
+    if (Test-Path -LiteralPath $WorkDir) { throw "清掃後も作業先が残っています: $WorkDir" }
+}
 if ($SkipCleanup) {
     Write-Host "作業先を保持します: $WorkDir"
 } else {
-    Import-Module (Join-Path $env:USERPROFILE '.codex\scripts\CodexCleanup.psm1') -ErrorAction Stop
-    Remove-CodexItem -LiteralPath $WorkDir -AllowedRoot (Split-Path -Parent $WorkDir) -LedgerRoot $LedgerDir
-    if (Test-Path -LiteralPath $WorkDir) { throw "清掃後も作業先が残っています: $WorkDir" }
+    Remove-ReleaseWorkDirectory -WorkDir $WorkDir -LedgerDir $LedgerDir
 }
 
 Write-Host "`n🎉 リリース完了: v$version → $BaseUrl" -ForegroundColor Green
