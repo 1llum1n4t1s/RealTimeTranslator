@@ -543,11 +543,12 @@ public sealed class TranslationPipelineServiceSentenceSplitTests
         var (pipeline, transcriber, snapshot) = CreateIdlePipeline(idleMs);
 
         var utterances = new[] { "この格好ねオーケー、", "ありがとう", "こんにちは、ハロー", "目的地へ進んでください" };
-        foreach (var u in utterances)
+        for (int i = 0; i < utterances.Length; i++)
         {
-            transcriber.RaiseDelta(u);
-            // 発話間の無音 (実機では 9〜48 秒) を閾値超えの待機で模擬する。
-            await Task.Delay(idleMs * 4);
+            transcriber.RaiseDelta(utterances[i]);
+            // 前の発話が確定してから次を送る。タイマーの実行遅延で発話が連結するのを防ぐ。
+            var completed = await WaitForFinalsAsync(snapshot, i + 1);
+            Assert.AreEqual(i + 1, completed.Count, "次の発話を送る前に、現在の発話が確定するはず");
         }
 
         var finals = await WaitForFinalsAsync(snapshot, utterances.Length);

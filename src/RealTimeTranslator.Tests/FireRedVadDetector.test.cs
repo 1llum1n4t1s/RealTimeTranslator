@@ -3,17 +3,17 @@ using RealTimeTranslator.Core.Services;
 namespace RealTimeTranslator.Tests;
 
 /// <summary>
-/// SileroVadDetector の単体テスト。
+/// FireRedVadDetector の単体テスト。
 /// 実音声サンプルなしでも検証できる範囲 (load / inference 動作 / state / 例外パス) に絞る。
 /// 実音声ベースの BGM 弾き精度検証は手動 QA か Integration カテゴリで別途。
 /// </summary>
 [TestClass]
-public sealed class SileroVadDetectorTests
+public sealed class FireRedVadDetectorTests
 {
     [TestMethod]
     public void Constructor_LoadsModelSuccessfully()
     {
-        using var vad = new SileroVadDetector();
+        using var vad = new FireRedVadDetector();
         Assert.AreEqual(512, vad.RequiredFrameSize);
         Assert.AreEqual(16000, vad.SampleRate);
     }
@@ -22,16 +22,16 @@ public sealed class SileroVadDetectorTests
     public void Constructor_NonexistentPath_ThrowsFileNotFoundException()
     {
         Assert.ThrowsExactly<FileNotFoundException>(() =>
-            new SileroVadDetector(@"C:\definitely\does\not\exist\silero_vad.onnx"));
+            new FireRedVadDetector(@"C:\definitely\does\not\exist\fireredvad_stream_vad_with_cache.onnx"));
     }
 
     [TestMethod]
     public void DetectSpeechProb_SilenceFrame_ReturnsLowProbability()
     {
-        using var vad = new SileroVadDetector();
+        using var vad = new FireRedVadDetector();
         var silence = new float[512]; // 全ゼロ = 完全無音
 
-        // LSTM state を安定させるため数フレーム流す
+        // 推論 cache を安定させるため数フレーム流す
         float lastProb = 0f;
         for (int i = 0; i < 10; i++)
         {
@@ -47,7 +47,7 @@ public sealed class SileroVadDetectorTests
     [TestMethod]
     public void DetectSpeechProb_WrongFrameSize_ThrowsArgumentException()
     {
-        using var vad = new SileroVadDetector();
+        using var vad = new FireRedVadDetector();
         var wrongSize = new float[256];
 
         Assert.ThrowsExactly<ArgumentException>(() => vad.DetectSpeechProb(wrongSize));
@@ -56,7 +56,7 @@ public sealed class SileroVadDetectorTests
     [TestMethod]
     public void DetectSpeechProb_EmptyFrame_ThrowsArgumentException()
     {
-        using var vad = new SileroVadDetector();
+        using var vad = new FireRedVadDetector();
 
         Assert.ThrowsExactly<ArgumentException>(() => vad.DetectSpeechProb([]));
     }
@@ -64,13 +64,13 @@ public sealed class SileroVadDetectorTests
     [TestMethod]
     public void Reset_AfterInference_AllowsFurtherInferenceWithoutError()
     {
-        using var vad = new SileroVadDetector();
+        using var vad = new FireRedVadDetector();
         var silence = new float[512];
 
         for (int i = 0; i < 5; i++) vad.DetectSpeechProb(silence);
         vad.Reset();
 
-        // Reset 後に推論できることだけ確認 (LSTM state クリア確認の直接的アサートは困難)
+        // Reset 後に推論できることだけ確認 (推論 cache クリア確認の直接的アサートは困難)
         var prob = vad.DetectSpeechProb(silence);
         Assert.IsTrue(prob >= 0f && prob <= 1f);
     }
@@ -78,7 +78,7 @@ public sealed class SileroVadDetectorTests
     [TestMethod]
     public void Dispose_DoubleCall_DoesNotThrow()
     {
-        var vad = new SileroVadDetector();
+        var vad = new FireRedVadDetector();
         vad.Dispose();
         vad.Dispose(); // 2 回目もエラーにならない
     }
@@ -86,7 +86,7 @@ public sealed class SileroVadDetectorTests
     [TestMethod]
     public void DetectSpeechProb_AfterDispose_ReturnsZero()
     {
-        var vad = new SileroVadDetector();
+        var vad = new FireRedVadDetector();
         vad.Dispose();
         var silence = new float[512];
 
@@ -96,19 +96,8 @@ public sealed class SileroVadDetectorTests
     }
 
     // ═══════════════════════════════════════════════════════════════
-    // 実音声 wav による結合テスト (sr scalar 形状修正の決定的検証)
-    // ═══════════════════════════════════════════════════════════════
-    //
-    // 経緯 (2026-05-18):
-    // - ONNX Runtime 1.20.1 → 1.26.0 に上がった後、 アプリ実機で「翻訳されない」現象
-    // - ログから VAD prob=0.001 で固定 = LSTM state が更新されてない症状を特定
-    // - ONNX メタデータログで sr 入力 shape=[] (scalar) なのに [1] で渡してたことが判明
-    // - 旧 1.20.1 は緩く受け入れていたが 1.26.0 で厳格化 → state 未更新
-    // - 修正 = srTensor を ReadOnlySpan<int>.Empty で 0-rank scalar として作る
-    //
-    // 既存の無音テストでは「prob<0.3」で pass してしまい検出漏れたため、
-    // 公式 silero-vad リポジトリの test.wav (人声サンプル) で「prob>0.5 のフレームが
-    // 一定数ある」を assert することで再発防止する。
+    // 実音声 WAV による結合テスト。特徴量・cache・波形振幅の取り違えで発話確率が固定しないことを確認する。
+    // 公式 Silero test.wav (MIT) はモデルとは独立した音声 fixture として引き続き使用する。
 
     /// <summary>
     /// PCM16 16kHz mono の WAV ファイルを読み込んで float[-1.0, 1.0] サンプル列に変換する。
@@ -138,7 +127,7 @@ public sealed class SileroVadDetectorTests
         var samples = LoadWav16kPcm16(path);
         Assert.IsTrue(samples.Length > 512 * 100, "wav サンプル数が足りない (100 フレーム以上必要)");
 
-        using var vad = new SileroVadDetector();
+        using var vad = new FireRedVadDetector();
         int frameSize = vad.RequiredFrameSize; // 512
         // wav 全体 (~60秒, 1800+ フレーム) を解析
         int testFrames = samples.Length / frameSize;
@@ -167,13 +156,13 @@ public sealed class SileroVadDetectorTests
         var diag = $"frames={testFrames} maxProb={maxProb:F4} minProb={minProb:F4} avgProb={sumProb / testFrames:F4} highProbCount={highProbCount} buckets: {bucketStr}";
         Console.WriteLine($"[VAD test diag] {diag}");
 
-        // sr scalar 修正が機能していれば、 人声 wav (60秒) に対して speech と判定される
-        // フレームが一定数あるはず。 修正前 (sr=[1]) は prob=0.001 固定で 0 件になる。
+        // 人声 WAV に対して speech と判定される
+        // フレームが一定数あり、特徴量や cache の不一致による固定値にならないことを確認する。
         Assert.IsTrue(maxProb > 0.5f,
             $"人声 wav の最大 speech probability が低すぎ ({maxProb:F4})。 期待: > 0.5。 診断: {diag}");
         Assert.IsTrue(highProbCount >= 20,
             $"speech 判定フレーム数が少なすぎ ({highProbCount}/{testFrames})。 期待: >= 20。 診断: {diag}");
-        // prob が振れていることも確認 (= LSTM state が毎フレーム更新されてる証拠)
+        // prob が振れていることも確認 (= 推論 cache が毎フレーム更新されてる証拠)
         Assert.IsTrue(maxProb - minProb > 0.3f,
             $"prob の振れ幅が小さすぎ ({maxProb - minProb:F4})。 値が固定なら state が更新されていない。 診断: {diag}");
     }
@@ -200,11 +189,11 @@ public sealed class SileroVadDetectorTests
     [TestMethod]
     public void DetectSpeechProb_RealSpeechWav_AfterReset_ProducesSimilarResults()
     {
-        // Reset() 後に同じ wav を流して、 一貫した結果になるか (LSTM state が
+        // Reset() 後に同じ wav を流して、 一貫した結果になるか (推論 cache が
         // 確実に初期化されることの検証)
         var path = Path.Combine(AppContext.BaseDirectory, "Assets", "test.wav");
         var samples = LoadWav16kPcm16(path);
-        using var vad = new SileroVadDetector();
+        using var vad = new FireRedVadDetector();
         int frameSize = vad.RequiredFrameSize;
 
         float MaxProbOver50Frames()

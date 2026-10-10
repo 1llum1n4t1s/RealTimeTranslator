@@ -282,8 +282,8 @@ public partial class App : Application
         services.AddSingleton<AzureSpeechTranslationClient>();
         // 既定の IRealtimeTranscriber (具象型を直接要求しない consumer 向けに OpenAI を返す)。
         services.AddSingleton<IRealtimeTranscriber>(sp => sp.GetRequiredService<OpenAIRealtimeClient>());
-        // Silero VAD (ONNX 推論セッション)。 onnx ファイルは Assets/silero_vad.onnx に同梱。
-        // Singleton にすることで onnx ロード (~10ms) は起動時 1 回のみ。 LSTM state は
+        // FireRed VAD のストリーミング ONNX と CMVN を Assets に同梱。
+        // Singleton にすることで ONNX ロードは起動時 1 回のみ。特徴量と推論 cache は
         // TranslationPipelineService が Start のたびに Reset を呼んでクリアする。
         //
         // rere F-002 対応: factory 経由で構築失敗 (onnx 同梱漏れ / AV 隔離 / VC++ ランタイム不足等) を
@@ -294,11 +294,11 @@ public partial class App : Application
         {
             try
             {
-                return new SileroVadDetector();
+                return new FireRedVadDetector();
             }
             catch (Exception ex)
             {
-                LoggerService.LogException("SileroVadDetector 初期化失敗、 VAD ゲートを無効化して NullVoiceActivityDetector にフォールバック", ex);
+                LoggerService.LogException("FireRedVadDetector 初期化失敗、 VAD ゲートを無効化して NullVoiceActivityDetector にフォールバック", ex);
                 return new NullVoiceActivityDetector();
             }
         });

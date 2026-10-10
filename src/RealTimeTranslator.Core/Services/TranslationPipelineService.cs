@@ -133,7 +133,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     private bool _lastEnableVad = true;
 
     // ⭐ 並列 2 系統ストリーミングリサンプラ (v1.0.36 設計):
-    //   _vadResampler  (48k→16k): VAD 判定用 (Silero v6.2.2 16kHz/512sample 固定仕様)
+    //   _vadResampler  (48k→16k): VAD 判定用 (FireRed の 32ms アダプター 16kHz/512sample 固定仕様)
     //   _sendResampler (48k→24k): OpenAI 送信用 (24kHz/mono PCM16、 Nyquist 12kHz 確保)
     //
     // 経緯:
@@ -174,7 +174,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     private int _frameAccumulator24kLen;
     // 発話冒頭の取りこぼし防止用に直近フレームを保持するリングバッファ。 中身は送信用 24k フレーム
     // (旧 16k から変更)。 VAD 判定は 16k で行うが PreRoll に積むのは送信フレームなので 24k で持つ。
-    private readonly Queue<float[]> _preRollBuffer = new();
+    private readonly Queue<(float[] Frame, bool SentSilencePadding)> _preRollBuffer = new();
     private VadState _vadState = VadState.Silence;
     private int _hangoverFramesRemaining;
     // v1.0.27 改修: VAD Silence 状態に遷移した時刻。 「VAD Silence 中、 SilencePaddingMs 以内は
@@ -1715,7 +1715,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         bool sendAt16k = _activeClient.InputSampleRate == 16000;
         var resampled16k = _vadResampler.Resample(audio48kHz);
 
-        int frameSize16k = _vad.RequiredFrameSize; // Silero VAD v6.2.2 仕様: 512 sample @ 16kHz (32ms)
+        int frameSize16k = _vad.RequiredFrameSize; // FireRed アダプター仕様: 512 sample @ 16kHz (32ms)
         _frameAccumulator ??= new float[frameSize16k];
 
         if (sendAt16k)
@@ -1817,13 +1817,25 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
             case VadState.Silence:
                 if (isSpeech)
                 {
-                    // PreRoll バッファ (24k フレーム) を丸ごと送信して発話冒頭の取りこぼしを補う。
-                    while (_preRollBuffer.Count > 0)
+                    // PreRoll と現在フレームを一括送信し、provider の bounded queue を
+                    // 同期的な連続 enqueue で溢れさせて発話冒頭を捨てないようにする。
+                    if (_preRollBuffer.Count == 0)
                     {
-                        var preRollFrame = _preRollBuffer.Dequeue();
-                        SendFrameToClient(preRollFrame);
+                        SendFrameToClient(frameForSend);
                     }
-                    SendFrameToClient(frameForSend);
+                    else
+                    {
+                        var speechStart = new float[_preRollBuffer.Sum(frame => frame.Frame.Length) + frameForSend.Length];
+                        int offset = 0;
+                        while (_preRollBuffer.Count > 0)
+                        {
+                            var preRollFrame = _preRollBuffer.Dequeue().Frame;
+                            Array.Copy(preRollFrame, 0, speechStart, offset, preRollFrame.Length);
+                            offset += preRollFrame.Length;
+                        }
+                        Array.Copy(frameForSend, 0, speechStart, offset, frameForSend.Length);
+                        SendFrameToClient(speechStart);
+                    }
                     _vadState = VadState.InSpeech;
                     _lastSpeechUtc = DateTime.UtcNow;
                     // v1.0.27: Silence → InSpeech 遷移 = 発話再開。 Silence カウントをリセット。
@@ -1841,8 +1853,9 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                     //   分断 (v1.0.26 で観測) も発生しない (同 SegmentId のまま partial が伸びる)。
                     //
                     // 送信時間上限: SilencePaddingMs (default 5000ms)。 超えたら送信停止して token 節約。
-                    // Silero VAD が次の発話を検知した瞬間に Silence → InSpeech 再遷移して通常送信に戻る。
+                    // FireRed VAD が次の発話を検知した瞬間に Silence → InSpeech 再遷移して通常送信に戻る。
                     var paddingMs = _activeSilencePaddingMs;
+                    bool sentSilencePadding = false;
                     if (paddingMs > 0 && _silenceStartUtc != DateTime.MinValue)
                     {
                         var silenceMs = (DateTime.UtcNow - _silenceStartUtc).TotalMilliseconds;
@@ -1853,19 +1866,22 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                             _silencePaddingPcm16 ??= new byte[frameForSend.Length * 2];
                             _activeClient.SendAudio(_silencePaddingPcm16);
                             // 旧 _skippedSecondsByVad は加算しない (実際には送信してるため UI 表示も「送信中」のまま)
-                            break;
+                            sentSilencePadding = true;
                         }
                     }
 
-                    // 無音 PCM 送信時間を超過 (or 機能無効) → 従来通り PreRoll に積む。
+                    // padding 中も実音を PreRoll に保持し、次の発話の低確率な冒頭を補う。
+                    // 送信する padding はゼロ PCM のまま、保持した実音は発話検知時だけ送る。
                     while (_preRollBuffer.Count >= preRollCapacity)
                     {
-                        _preRollBuffer.Dequeue();
-                        _skippedSecondsByVad += frameSeconds;
+                        var discardedFrame = _preRollBuffer.Dequeue();
+                        // 破棄するフレーム自身が padding 送信済みなら節約時間に含めない。
+                        if (!discardedFrame.SentSilencePadding)
+                            _skippedSecondsByVad += frameSeconds;
                     }
                     var copy = new float[frameForSend.Length];
                     Array.Copy(frameForSend, copy, frameForSend.Length);
-                    _preRollBuffer.Enqueue(copy);
+                    _preRollBuffer.Enqueue((copy, sentSilencePadding));
                 }
                 break;
 
@@ -1900,7 +1916,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                         // v1.0.27: Hangover → Silence 遷移 = 発話終了候補。 Silence 開始時刻を記録して
                         // 「SilencePaddingMs 以内は無音 PCM 継続送信」のカウント開始。
                         _silenceStartUtc = DateTime.UtcNow;
-                        // LSTM state は連続性が高い方が誤検出が減るためここでは Reset しない
+                        // 推論 cache は連続性が高い方が誤検出が減るためここでは Reset しない
                         // (Start 時にだけ Reset を呼ぶ)。
                     }
                 }

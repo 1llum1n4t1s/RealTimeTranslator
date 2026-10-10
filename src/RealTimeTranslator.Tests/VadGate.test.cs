@@ -132,10 +132,11 @@ public sealed class VadGateTests
         }
         Assert.AreEqual(0, transcriber.SentAudioByteLengths.Count);
 
-        // Speech 検出 → PreRoll 3 件 + 当該 1 件 = 4 件送信される
+        // Speech 検出 → PreRoll 3 件 + 当該 1 件を一つのバッチで送信する
         vad.NextProb = 0.9f;
         pipeline.ProcessVadFrame(Frame(), Frame24k(), settings);
-        Assert.AreEqual(4, transcriber.SentAudioByteLengths.Count, "Speech 開始時に PreRoll + 現在フレームが送信される");
+        Assert.AreEqual(1, transcriber.SentAudioByteLengths.Count, "Speech 開始時は provider queue を溢れさせない一括送信");
+        Assert.AreEqual(4 * 768 * sizeof(short), transcriber.SentAudioByteLengths[0], "PreRoll と現在フレームの全サンプルを保持する");
     }
 
     [TestMethod]
@@ -209,10 +210,11 @@ public sealed class VadGateTests
         }
         Assert.AreEqual(0, transcriber.SentAudioByteLengths.Count, "Silence で送信なし");
 
-        // 突然 speech → PreRoll の 3 件 + 当該 1 件 = 4 件
+        // 突然 speech → キャップされた PreRoll 3 件 + 当該 1 件を一括送信
         vad.NextProb = 0.9f;
         pipeline.ProcessVadFrame(Frame(), Frame24k(), settings);
-        Assert.AreEqual(4, transcriber.SentAudioByteLengths.Count, "PreRoll は 3 件にキャップされる (古いものは押し出し)");
+        Assert.AreEqual(1, transcriber.SentAudioByteLengths.Count, "PreRoll は一つのバッチで送信される");
+        Assert.AreEqual(4 * 768 * sizeof(short), transcriber.SentAudioByteLengths[0], "PreRoll は 3 件にキャップされ、古いものは押し出される");
     }
 
     [TestMethod]

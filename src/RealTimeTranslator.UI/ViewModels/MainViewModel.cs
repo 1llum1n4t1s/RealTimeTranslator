@@ -346,14 +346,14 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
         // rere F-007 対応: SettingsViewModel の SanitizeSettings で背景色等が黙って矯正された場合、
         // ユーザーが気づけるよう起動直後にバナーで通知する (1 度のみ)。 ログだけでは UI ユーザーが見ない。
-        // /rere #D-003 対応: SileroVadDetector 構築失敗で NullVoiceActivityDetector にサイレント fallback
+        // /rere #D-003 対応: FireRedVadDetector 構築失敗で NullVoiceActivityDetector にサイレント fallback
         // していた場合も同じバナーで警告。 これがないと「VAD 有効と信じてプレイ → 1 時間後に課金事故」になる
         // (gpt-realtime-2 で約 $11.5/時間)。 ログだけでは一般ユーザーが気づけない。
         var warnings = new List<string>(_settingsViewModel.SanitizeWarnings);
         if (vad is NullVoiceActivityDetector)
         {
             const string vadFallbackMessage =
-                "⚠️ VAD が無効です (silero_vad.onnx ロード失敗の可能性)。 BGM や効果音も全て OpenAI に送信され、 課金が膨らみます。 ログで「SileroVadDetector 初期化失敗」を確認してください。";
+                "⚠️ VAD が無効です (FireRed モデルまたは CMVN のロード失敗の可能性)。 BGM や効果音も翻訳サービスに送信され、送信量が増えます。ログで「FireRedVadDetector 初期化失敗」を確認してください。";
             warnings.Add(vadFallbackMessage);
             LoggerService.LogError(vadFallbackMessage);
         }

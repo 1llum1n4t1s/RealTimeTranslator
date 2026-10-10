@@ -1,0 +1,11 @@
+FireRedVAD streaming model and CMVN
+Copyright 2026 Xiaohongshu
+Authors: Kaituo Xu, Wenpeng Li, Kai Huang, Kun Liu
+https://github.com/FireRedTeam/FireRedVAD
+Source commit: c30ec49e8cc69642b0ee65362eba11b9d11c6e54
+Licensed under the Apache License, Version 2.0.
+See LICENSE-firered_vad.txt.
+
+The ONNX model and CMVN matrix are redistributed without modification.
+The C# waveform adapter and feature extraction are implemented for RealTimeTranslator.
+Feature conventions follow FireRedVAD audio_feat.py and Kaldi native fbank.

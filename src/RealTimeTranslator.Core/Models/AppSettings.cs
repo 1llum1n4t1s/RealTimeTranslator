@@ -151,18 +151,13 @@ public class AudioCaptureSettings
     /// <summary>
     /// speech probability のしきい値 (0.0-1.0, default: 0.3)。
     /// <para>
-    /// ⚠️ <b>下げ過ぎると「字幕が句点なしで連結する」回帰になる。</b> BGM/SE が speech と誤検出されて
-    /// 継続送信になり、 OpenAI server VAD から見て発話の切れ目が消えるため。 同じ回帰を 2 回踏んでいる:
-    /// v1.0.30 で 0.5 → 0.3 にして回帰 → v1.0.31 で 0.4 に戻して解消 → v1.0.42 で警告ごと消して再び 0.3 に
-    /// して<b>再発</b> (2026-07-29 実機ログで 4 発話が 112 秒連結、 完結文 emit=0、 done が 11 分間ゼロ)
-    /// → v1.0.49 で 0.4 に復帰。
+    /// 下げると小声を拾いやすくなる一方、BGM/SE の誤検出と継続送信が増え、発話の切れ目が
+    /// 失われる場合がある。閾値はモデル固有の値なので、音源・送信量・発話境界を一緒に比較する。
     /// </para>
     /// <para>
-    /// v1.0.50 で <b>0.3 に再変更</b>。 0.4 ではゲーム内ボイスチャットの声を拾えず (帯域が削られて
-    /// Silero VAD のスコアが収録ボイスより低く出るため、 ボイチャの probability は 0.3〜0.4 の間と特定)、
-    /// ボイチャ翻訳には 0.3 が必須と判明したため。 <b>過去 2 回壊れた構成とは別物</b>で、
-    /// 壊れたのは「0.3 かつ <see cref="VadHangoverMs"/> 400」。 今回は Hangover 800 (倍) に加え、
-    /// v1.0.49 で追加した <c>DeltaIdleFinalizeMs</c> (6 秒アイドル確定) が保険として効く。
+    /// FireRed streaming への移行でも既存の Balanced (0.3 / 1000ms / 800ms) と
+    /// Edges (0.2 / 1200ms / 800ms) を維持する。<see cref="VadHangoverMs"/> と
+    /// pre-roll の保護を単独で削らず、アイドル字幕確定との組み合わせを維持する。
     /// 全プリセットの threshold は Balanced 0.3 / PrioritizeEdges 0.2 / AggressiveSavings 0.5
     /// (PrioritizeEdges も Balanced と同値では差が preroll だけになるため 0.2 へ連動シフト)。
     /// </para>
@@ -230,8 +225,9 @@ public class AudioCaptureSettings
 /// 信号フロー (有効化されたものだけ実効):
 /// <code>
 /// WASAPI 48kHz mono float32
-///   → [InputGainStage] → [AntiClipLimiter]
-///   → 既存の 48k→16k リサンプル (VAD 判定 + 24k リサンプル → OpenAI 送信)
+///   → [InputGainStage]
+///   → 48k→16k リサンプル (VAD 判定、16kHz provider への送信)
+///   → 同じ 48kHz 入力から並列に 48k→24k リサンプル (OpenAI への送信)
 /// </code>
 ///
 /// パラメータ値は WebRestrictionRemoval (Chrome 拡張音量ブースター) で動画運用実証済みのものを移植。
@@ -280,14 +276,14 @@ public class OpenAIRealtimeSettings
     // v1.0.27 戦略:
     //   - VAD Hangover → Silence 遷移後、 この時間 (ミリ秒) 内は **無音 PCM (ゼロ埋め PCM16)** を継続送信
     //   - server に「入力継続中」をアピール → 保留してた delta を吐かせる
-    //   - 時間超過したら送信停止 (token 節約、 Silero VAD が次の発話を検知するまで完全停止)
+    //   - 時間超過したら送信停止 (token 節約、 VAD が次の発話を検知するまで完全停止)
     //   - Silence → InSpeech 再遷移でカウントリセット
     // 値が 0 以下なら機能を無効化する (= VAD Silence 中は完全に送信停止、 v1.0.25 以前と同じ)。
     //
     // 変更履歴:
     //   v1.0.33: 5000 → 8000 に延長 (ゆろさん要望「翻訳が遅れているときに 5 秒だと足りない感じ」)。
     //   v1.0.36: 8000 → 5000 に戻し (ゆろさん判断、 token 消費を抑えて短い沈黙でカット)。
-    // 1 silence 区間 = N 秒以上の沈黙場面では padding 終了後に Silero VAD が次発話を検知するまで完全停止する。
+    // 1 silence 区間 = N 秒以上の沈黙場面では padding 終了後に VAD が次発話を検知するまで完全停止する。
     public int SilencePaddingMs { get; set; } = 5000;
 
     // ⭐ D-7 fallback: 句点なし partial の最大累積文字数 (v1.0.28 復活)。

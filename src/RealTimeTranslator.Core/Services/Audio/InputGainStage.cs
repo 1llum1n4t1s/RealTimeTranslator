@@ -6,8 +6,8 @@ namespace RealTimeTranslator.Core.Services.Audio;
 /// ゲーム音量設定 / Windows アプリ別音量ミキサーで下げてる人のために、
 /// パイプライン入り口で底上げできるユーザー操作可能なゲイン。 デフォルト 0 dB (= no-op)。
 ///
-/// 信号フロー上は WASAPI capture の直後、 <see cref="AntiClipLimiter"/> の前段。
-/// ゲイン適用後にピークが 0 dBFS を超えても、 後段のリミッタが受け止めるため安全。
+/// 信号フロー上は WASAPI capture の直後、VAD・送信用のリサンプルの前段。
+/// ゲイン適用後に 0 dBFS を超えた部分は、送信 PCM16 への変換時にクリップされる。
 ///
 /// 範囲: -24 dB 〜 +24 dB (SettingsViewModel で制約)。
 /// </summary>

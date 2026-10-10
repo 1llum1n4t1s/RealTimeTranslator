@@ -3,12 +3,12 @@ using RealTimeTranslator.Core.Interfaces;
 namespace RealTimeTranslator.Core.Services;
 
 /// <summary>
-/// Silero VAD 初期化失敗時の緊急 fallback VAD (rere F-002 対応)。
+/// FireRed VAD 初期化失敗時の緊急 fallback VAD (rere F-002 対応)。
 /// 常に speech_prob=1.0 を返すため、 VAD ゲートは全フレームを speech 扱いし、
 /// 全音声を OpenAI に送信する旧素通し動作と等価になる。
 ///
 /// 想定する故障シナリオ:
-/// - Velopack 差分更新で `Assets/silero_vad.onnx` を取りこぼした
+/// - Velopack 差分更新で `Assets/fireredvad_stream_vad_with_cache.onnx` を取りこぼした
 /// - アンチウイルスが `onnxruntime.dll` を隔離した
 /// - VC++ Runtime 不足で ONNX ロードが失敗した
 ///
@@ -18,7 +18,7 @@ namespace RealTimeTranslator.Core.Services;
 /// </summary>
 public sealed class NullVoiceActivityDetector : IVoiceActivityDetector
 {
-    // Silero VAD 互換: 512 sample / 32ms / 16kHz 固定。 VAD ゲートの frame accumulator が
+    // FireRed VAD 互換: 512 sample / 32ms / 16kHz 固定。 VAD ゲートの frame accumulator が
     // 同じサイズを期待するため、 値を変えると ProcessVadFrame 経路が壊れる。
     public int RequiredFrameSize => 512;
     public int SampleRate => 16000;

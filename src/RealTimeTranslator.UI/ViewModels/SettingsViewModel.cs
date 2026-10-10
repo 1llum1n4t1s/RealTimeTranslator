@@ -103,41 +103,11 @@ public partial class SettingsViewModel : ObservableObject
         {
             // ⚠️⚠️ threshold を下げるとき / hangover を削るときは必ずこの経緯を読むこと ⚠️⚠️
             //
-            // この 2 値は「OpenAI server VAD が発話境界 (= 句点) を引けるか」を直接左右する。
-            // 下げ過ぎると BGM/SE が speech と誤検出されて継続送信になり、 server から見て
-            // 発話の切れ目が消える → **句点が返らず複数発話が 1 字幕に連結する**回帰になる。
-            //
-            // 経緯 (同じ回帰を 2 回踏んでいる):
-            //   v1.0.30: 全プリセット -0.2 シフト (0.5→0.3 基調) → 回帰発生。
-            //            実機ログ 23:40 セッションで 111 partial に対し完結文 emit=1 のみ、 5 文連結を確認。
-            //   v1.0.31: +0.1 シフト (Balanced 0.4) で解消 + MaxPartialChars 80→50 で D-7 fallback も早期化。
-            //   v1.0.42: **上記の警告コメントごと削除して再び -0.1 シフト (Balanced 0.3)** + Hangover -200ms。
-            //            → v1.0.30 と同じ回帰が再発。 2026-07-29 実機ログ (ARC Raiders、 v1.0.47) で
-            //              4 人の別発話が 1 SegmentId に 112 秒間連結、 完結文 emit=0 件、
-            //              response.done / transcript.done が 11 分間ゼロ (= server が turn end を一度も引けていない)。
-            //   v1.0.49: threshold を +0.1 戻し (Balanced 0.4) + Hangover を +200ms 戻し (Balanced 600)。
-            //            PreRoll は v1.0.42 の +200ms を維持する (頭の取りこぼし防止用で、 発話境界には無関係)。
-            //            → 連結は解消したが、 **ゲーム内ボイスチャットの声を拾えなくなった** (2026-07-30 ゆろさん報告)。
-            //              ゲーム収録ボイスは拾えてボイチャだけ落ちる差から、 ボイチャの speech probability は
-            //              **0.3 と 0.4 の間** と挟み撃ちで特定できた (v1.0.47 の threshold 0.3 では拾えていた)。
-            //              ボイチャ音声はマイク → ノイズ抑制 → 低ビットレート圧縮を経て帯域が削られ、
-            //              Silero VAD の「声らしさ」スコアがスタジオ品質の収録ボイスより低く出るため。
-            //   v1.0.50: Balanced を **0.3 / 1000 / 800** に変更 (threshold -0.1、 Hangover +200ms)。
-            //            ⚠️ 「また 0.3 に下げた」ように見えるが、 過去 2 回壊れた構成とは別物なので注意:
-            //              - 壊れた構成は **0.3 かつ Hangover 400** (v1.0.30 / v1.0.42 とも)。 今回は Hangover 800 で倍。
-            //              - v1.0.49 で **DeltaIdleFinalizeMs (6 秒アイドル確定)** を追加済み。 過去 2 回の当時は
-            //                存在しなかった保険で、 万一 server が句点を返さなくても発話ごとに確定 emit される。
-            //            threshold を下げる以上 BGM 誤検出は増えるが、 ボイチャを拾うには 0.3 が必須で、
-            //            「ボイチャは拾うが BGM は拾わない」を threshold 一本で分離するのは原理的に不可能。
-            //            境界は Hangover と アイドル確定の二段で担保する方針に切り替えた。
-            //
-            // Hangover を削ってはいけない理由: OpenAI Realtime は発音の後ろに無音を付けないと
-            // 後続音声に押し出されるまで出力が止まる (ロケット鉛筆方式)。 Hangover は発話末尾に
-            // 「間」を送り届けて server に turn end を引かせる役割を持つ。 token 節約のために薄くすると
-            // 境界が引けなくなる。 遠距離小音量の声拾いは入力プリプロセス DSP に委ねる方針。
-
-            // Balanced (デフォルト): threshold=0.3 でゲーム内ボイスチャット (帯域が削られて声らしさスコアが低い) も拾う。
-            // preroll=1000 で発話冒頭の子音を厚めに拾い、 hangover=800 で末尾の「間」を厚く送って server に句点を引かせる。
+            // 閾値と Hangover は送信量と発話境界に影響する。閾値だけを下げると
+            // BGM/SE の誤検出で継続送信が増え、複数発話が連結する場合がある。
+            // FireRed streaming への移行でも既存の組み合わせを維持し、低音量・冒頭・末尾と
+            // 無音送信の実音比較で判断する。モデル間で同じ閾値が同じ判定になるとは限らない。
+            // Balanced: 閾値 0.3 / pre-roll 1000ms / hangover 800ms。
             new("Balanced",          "ふつう (推奨)",                    0.3f, 1000, 800),
             // PrioritizeEdges: threshold=0.2 で Balanced (0.3) でも拾えない小声 (「はい」「うん」等) を拾う最終手段。
             // preroll=1200 / hangover=800 で文の頭・尻尾の音素切れを更に強く抑える。 通話・会議・コマンド発話向け。
@@ -146,7 +116,7 @@ public partial class SettingsViewModel : ObservableObject
             // (相対関係「頭尻尾重視 > ふつう > 節約」を維持する設計)。
             // 3 プリセット中 BGM 誤検出と課金増が最も大きいので、 Balanced で拾えない時だけ選ぶ位置づけ。
             new("PrioritizeEdges",   "頭と尻尾を取りこぼさない",         0.2f, 1200, 800),
-            // AggressiveSavings: threshold=0.5 (公式推奨値) で誤検出 (BGM のドラム/拍手等) を抑え、
+            // AggressiveSavings: threshold=0.5 で誤検出 (BGM のドラム/拍手等) を抑え、
             // preroll=700 / hangover=350 で送信秒数を最小化。 長時間視聴で課金を切り詰めたい時向け。
             new("AggressiveSavings", "ガッツリ節約",                      0.5f, 700, 350),
             // Custom は下の詳細スライダーで個別調整するモード。 setter で 3 値は上書きしないため、

@@ -61,14 +61,15 @@ rg -n --fixed-strings '"net10.0-windows10.0.20348/win-x64"' src -g packages.lock
 ### 音声と翻訳プロバイダ
 
 - `AudioCaptureService` はプロセス loopback を 48 kHz / stereo で取得し、mono float へ変換する。リサンプルは `TranslationPipelineService` に集約する。
-- OpenAI セッションでは、入力ゲイン後の同じ 48 kHz 信号から Silero VAD 用16 kHzと送信用24 kHzを並列生成する。16 kHz provider では16 kHz経路だけを判定と送信に共用し、24 kHz経路を回さない。16 kHzを経由して24 kHzを作らない。
+- OpenAI セッションでは、入力ゲイン後の同じ 48 kHz 信号から FireRed VAD 用16 kHzと送信用24 kHzを並列生成する。16 kHz provider では16 kHz経路だけを判定と送信に共用し、24 kHz経路を回さない。16 kHzを経由して24 kHzを作らない。
 - 選択中の `IRealtimeTranscriber.InputSampleRate` に従い、OpenAI は24 kHz、Gemini / Soniox / Speechmatics / Azure は16 kHzを送る。
 - provider の変更は次の `StartAsync` から有効にし、実行中セッションの client と設定スナップショットを途中で差し替えない。
 - provider を追加・変更するときは `TranscriptionProvider`、設定型、`SettingsViewModel`、DI、`TranslationPipelineService` の解決表、接続テスト、設定 clone、クライアントテストを一組で更新する。
 
 ### VAD と字幕確定
 
-- Silero VAD v6.2.2 の入力は 16 kHz、1フレーム512 samples 固定。`StartAsync` ごとに detector と両リサンプラの状態をリセットする。
+- FireRed VAD のストリーミング用 ONNX と CMVN を同梱する。外部フレームは 16 kHz / 512 samples を維持し、内部では 25 ms 窓 / 10 ms 刻みの 80 bin Fbank と推論 cache を使う。`StartAsync` ごとに detector の特徴量履歴・cache と両リサンプラをリセットする。前処理は公式 Kaldi の窓・振幅・CMVN と照合する。
+- 無音 PCM の padding 送信中も実音を pre-roll へ保持し、次の発話検出時に現在フレームと一つの PCM バッチで復元する。ゼロ PCM 送信と実音保存を両立させ、provider の bounded queue への連続 enqueue で復元した冒頭を押し出さない。
 - `VadPreset` が `Custom` 以外なら、`SettingsViewModel` の preset 定義を正本として threshold / pre-roll / hangover を sanitize 時にも強制同期する。preset 値を変えるときは3値の組み合わせと既存設定の移行挙動をまとめて検証する。
 - VAD の pre-roll は発話冒頭、hangover は発話末尾、silence padding はプロバイダに保留出力を押し出させる役割を持つ。値を単独で削る前に `VadGate.test.cs` と文分割テストで相互作用を確認する。
 - delta の確定順は句読点、`MaxPartialChars`、provider の完了通知、idle finalize。`ResolveIdleFinalizeMs` の不変条件 `idle <= 0` または `idle >= SilencePaddingMs + 1000` を維持する。

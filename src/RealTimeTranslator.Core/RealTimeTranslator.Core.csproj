@@ -7,9 +7,9 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="1llum1n4t1s.NAudio" Version="4.0.6" />
-    <!-- Silero VAD 推論用 (CPU 版、ネイティブ DLL は win-x64 のみ実質使用) -->
-    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.30.0" />
+    <PackageReference Include="1llum1n4t1s.NAudio" Version="4.0.7" />
+    <!-- FireRed VAD 推論用 (CPU 版、ネイティブ DLL は win-x64 のみ実質使用) -->
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.31.0" />
     <!-- Azure AI Speech 翻訳プロバイダ用 (TranslationRecognizer + PushAudioInputStream)。
          ネイティブ runtime は win-x64 のみ実質使用。 ⚠️ このパッケージ追加で packages.lock.json の
          再生成が必要 (restore を -r win-x64 + force-evaluate オプション付きで再実行する)。 -->
@@ -20,13 +20,16 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- Silero VAD ONNX モデル (v6.2.2, MIT License) を出力ディレクトリへコピー。
-         公式 tag: https://github.com/snakers4/silero-vad/tree/v6.2.2
-         SHA-256: 1A153A22F4509E292A94E67D6F9B85E8DEB25B4988682B7E174C65279D8788E3
+    <!-- FireRed VAD のストリーミング ONNX と CMVN (Apache-2.0) を同梱。
+         公式 commit: https://github.com/FireRedTeam/FireRedVAD/tree/c30ec49e8cc69642b0ee65362eba11b9d11c6e54
+         ONNX SHA-256: B3C97836130DC34FC32D56FAB551E88CF9454511DE2B3C250A5E6578DEE74B93
+         CMVN SHA-256: C87F6F13EDF0F0EC7535DDFC9CC3387D9268CB234B70182D566C5E2EDF3CA473
          Content にすることで ProjectReference された UI / Tests の output にも伝播する。
-         Velopack パッケージに同梱され、SileroVadDetector が実行時にロードする。 -->
-    <Content Include="Assets/silero_vad.onnx" CopyToOutputDirectory="PreserveNewest" />
-    <Content Include="Assets/LICENSE-silero_vad.txt" CopyToOutputDirectory="PreserveNewest" />
+         FireRedVadDetector が波形の特徴量とモデルの cache をセッション単位で保持する。 -->
+    <Content Include="Assets/fireredvad_stream_vad_with_cache.onnx" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="Assets/fireredvad_cmvn.ark" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="Assets/LICENSE-firered_vad.txt" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="Assets/NOTICE-firered_vad.txt" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

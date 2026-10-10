@@ -14,7 +14,7 @@ RealTimeTranslator は、Windows 上で指定したプロセスの再生音声�
 | `AudioLevelMonitor` | 翻訳開始前のプロセス音量プレビューと入力ゲイン後ピークの通知 | API へ接続・送信しない。本番 capture と同時実行しない |
 | `TranslationPipelineService` | provider 選択、開始停止、DSP、リサンプル、VAD、送信、字幕分割、統計、デバッグ録音を統括 | View や Avalonia 型に依存しない |
 | `IRealtimeTranscriber` と各 client | 音声ストリームを provider 固有のプロトコルへ変換し、delta / completed / error / state を共通イベントに正規化 | UI と音声 capture を知らない |
-| `SileroVadDetector` | 16 kHz / 512 samples のフレームから発話確率を推論し、セッション状態を保持 | provider 課金や表示を判断しない |
+| `FireRedVadDetector` | 16 kHz / 512 samples の波形から 10 ms 刻みの特徴量と発話確率を計算し、セッション状態を保持 | provider 課金や表示を判断しない |
 | `SettingsService` | 設定の初期化・移行・原子的保存、API secret の DPAPI 暗号化 | 実行時 object では復号値、ディスクでは暗号化値を扱う |
 | `TranslationLogService` | 確定字幕を日別 TSV に順序どおり保存し、保持期限・全削除を直列化 | partial 字幕を保存しない |
 | `MainViewModel` | ユーザー操作、capture preview、本番 pipeline、設定、更新、翻訳ログを調停 | UI thread への反映を担当 |
@@ -32,7 +32,7 @@ RealTimeTranslator は、Windows 上で指定したプロセスの再生音声�
   → bounded raw-audio channel
   → InputGainStage
        ├─→ peak dBFS → メイン画面のレベルメーター
-       ├─→ StreamingResampler 48 kHz → 16 kHz → Silero VAD / 16 kHz provider
+       ├─→ StreamingResampler 48 kHz → 16 kHz → FireRed VAD / 16 kHz provider
        └─→ StreamingResampler 48 kHz → 24 kHz → OpenAI
   → VAD の pre-roll / speech / hangover / silence-padding 制御
   → active provider の InputSampleRate を選択して PCM16 化
@@ -79,7 +79,11 @@ VAD gate は次の情報を組み合わせます。
 - silence padding: silence 遷移後も有限時間の無音 PCM を送り、provider 側に保留された出力を押し出す。
 - auto pause: 設定時間以上 speech がなければ capture を停止し、無人時の送信継続を防ぐ。
 
-Silero VAD を初期化できない場合は `NullVoiceActivityDetector` にフォールバックし、翻訳機能を継続します。この場合は全音声を speech として扱うため、UI で送信量増加を警告します。
+FireRed VAD はストリーミング用 ONNX と CMVN を同梱します。16 kHz の連続波形を int16 相当の振幅へ戻し、25 ms の Povey 窓、10 ms 刻み、80 bin の log Fbank と CMVN でモデルへ渡します。モデルの 8 層分の cache と特徴量用の波形履歴は `StartAsync` ごとにリセットします。既存ゲートの 32 ms フレームと 24 kHz 送信用フレームの対応を保ち、そのフレームで生成できた 10 ms の発話確率の最大値を判定に使います。モデル側の最短発話や平滑化は重ねません。
+
+silence padding 中も実音を pre-roll に保持します。送信する padding はゼロ PCM のまま、次の発話を検出したときだけ保持した実音と現在フレームを一つの PCM バッチで送るため、閾値未満の冒頭を補えます。復元するフレームを連続 enqueue して provider の bounded queue から冒頭を押し出すことも避けます。発話全体が閾値未満の場合は検出できないため、モデルの切り替えだけで全音源の取りこぼしがなくなるとは限りません。
+
+FireRed VAD を初期化できない場合は `NullVoiceActivityDetector` にフォールバックし、翻訳機能を継続します。この場合は全音声を speech として扱うため、UI で送信量増加を警告します。
 
 ## 字幕の状態モデル
 
