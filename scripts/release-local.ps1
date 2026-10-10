@@ -27,6 +27,8 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+$releaseInitialTemp = $env:TEMP
+$releaseInitialTmp = $env:TMP
 
 # ---- 定数 (旧 CI 版 release.yml / velopack.yml と揃える) ----
 # Velopack (vpk) の最新安定版はプリフライト後に解決し、今回専用の tool-path へ入れる。
@@ -420,12 +422,54 @@ function Remove-ReleaseWorkDirectory {
     foreach ($link in $links) {
         Remove-CodexItem -LiteralPath $link.FullName -AllowedRoot $WorkDir -LedgerRoot $LedgerDir -AllowLeafJunction
     }
+    # Shell のごみ箱は長い子パスを移せない。今回生成した cache だけを短いパスへ移す。
+    $cacheRoots = @(@($WorkDir) + @(Get-ChildItem -LiteralPath $WorkDir -Directory | ForEach-Object FullName) |
+        ForEach-Object { Join-Path $_ 'cache' } | Where-Object { Test-Path -LiteralPath $_ -PathType Container })
+    if ($cacheRoots.Count -gt 0) {
+        $shortRoot = Assert-ExternalPath (Join-Path ([IO.Path]::GetTempPath()) "Codex\RealTimeTranslator\c-$([Guid]::NewGuid().ToString('N').Substring(0,8))")
+        if (Test-Path -LiteralPath $shortRoot) { throw '短い清掃先が既に存在します。' }
+        if ([IO.Path]::GetPathRoot($shortRoot) -ne [IO.Path]::GetPathRoot($WorkDir)) { throw 'cache の移動は同じ volume 内に限定します。' }
+        New-Item -ItemType Directory -Path $shortRoot | Out-Null
+        New-Item -ItemType Directory -Path $LedgerDir -Force | Out-Null
+        $moveLedger = Join-Path $LedgerDir "cache-moves-$([Guid]::NewGuid().ToString('N')).json"
+        $moves = [System.Collections.Generic.List[object]]::new()
+        $moveCache = {
+            param([string]$Source)
+            $item = Get-Item -LiteralPath $Source -Force
+            if (-not $item.FullName.StartsWith($WorkDir + '\', [StringComparison]::OrdinalIgnoreCase) -or
+                ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw '作業先内の通常 cache directory だけを移動できます。' }
+            $destination = Join-Path $shortRoot $moves.Count.ToString('x')
+            $entry = [PSCustomObject]@{ Source = $item.FullName; Destination = $destination; State = 'planned'; Restore = '清掃前なら Destination を Source へ戻す' }
+            $moves.Add($entry)
+            $moves | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $moveLedger
+            Move-Item -LiteralPath $item.FullName -Destination $destination -ErrorAction Stop
+            $entry.State = 'moved'
+            $moves | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $moveLedger
+        }
+        foreach ($cacheRoot in $cacheRoots) {
+            $packageLinks = Join-Path $cacheRoot 'PNPM_HOME\store\v11\links'
+            if (Test-Path -LiteralPath $packageLinks) {
+                $packages = @(Get-ChildItem -LiteralPath $packageLinks -Recurse -Directory |
+                    Where-Object { $_.Name -match '^[a-f0-9]{64}$' -and (Test-Path -LiteralPath (Join-Path $_.FullName 'node_modules')) })
+                foreach ($package in $packages) { & $moveCache $package.FullName }
+            }
+            foreach ($cacheDirectory in @(Get-ChildItem -LiteralPath $cacheRoot -Directory)) { & $moveCache $cacheDirectory.FullName }
+        }
+        foreach ($cleanupRoot in @($shortRoot, $WorkDir)) {
+            if (@(Get-ChildItem -LiteralPath $cleanupRoot -Recurse -Force | Where-Object { $_.FullName.Length -gt 240 }).Count -gt 0) {
+                throw "ごみ箱へ移せない長いパスが残っています。移動先は台帳で確認できます: $moveLedger"
+            }
+        }
+        Remove-CodexItem -LiteralPath $shortRoot -AllowedRoot (Split-Path -Parent $shortRoot) -LedgerRoot $LedgerDir
+    }
     Remove-CodexItem -LiteralPath $WorkDir -AllowedRoot (Split-Path -Parent $WorkDir) -LedgerRoot $LedgerDir
     if (Test-Path -LiteralPath $WorkDir) { throw "清掃後も作業先が残っています: $WorkDir" }
 }
 if ($SkipCleanup) {
     Write-Host "作業先を保持します: $WorkDir"
 } else {
+    $env:TEMP = $releaseInitialTemp
+    $env:TMP = $releaseInitialTmp
     Remove-ReleaseWorkDirectory -WorkDir $WorkDir -LedgerDir $LedgerDir
 }
 
