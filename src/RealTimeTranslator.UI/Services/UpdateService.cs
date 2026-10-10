@@ -114,49 +114,53 @@ public class UpdateService : IUpdateService
             return;
         }
 
-        OnStatusChanged(UpdateStatus.Checking, "更新を確認しています...");
-
         try
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            // SimpleWebSource: Cloudflare R2 (静的 HTTP ホスティング) から `<UpdateBaseUrl>/releases.{channel}.json`
-            // を直接 GET し、同ディレクトリの nupkg をダウンロードする。channel はインストール時の値を
-            // Velopack が内部記憶して自動再利用するため、明示指定は不要 (win / win-arm64)。
-            var source = new SimpleWebSource(feedUri.AbsoluteUri.TrimEnd('/'));
-            var manager = new UpdateManager(source);
+            // 通知の購読者が例外を投げても、元の例外を伝播しつつ操作ロックを解放する。
+            OnStatusChanged(UpdateStatus.Checking, "更新を確認しています...");
 
-            // Velopack でインストールされていない場合（開発環境など）はチェックをスキップする。
-            // 手動チェック時のみ「最新版です」と扱ってダイアログを出す（Komorebi と同じ挙動）。
-            if (!manager.IsInstalled)
+            try
             {
-                OnStatusChanged(UpdateStatus.Idle, "Velopack でインストールされていないため、 更新確認をスキップします。");
-                if (manualCheck)
-                {
-                    await ShowDialogOnUiThreadAsync(manager, manualCheck, snapshot).ConfigureAwait(false);
-                }
-                return;
-            }
+                cancellationToken.ThrowIfCancellationRequested();
+                // SimpleWebSource: Cloudflare R2 (静的 HTTP ホスティング) から `<UpdateBaseUrl>/releases.{channel}.json`
+                // を直接 GET し、同ディレクトリの nupkg をダウンロードする。channel はインストール時の値を
+                // Velopack が内部記憶して自動再利用するため、明示指定は不要 (win / win-arm64)。
+                var source = new SimpleWebSource(feedUri.AbsoluteUri.TrimEnd('/'));
+                var manager = new UpdateManager(source);
 
-            await ShowDialogOnUiThreadAsync(manager, manualCheck, snapshot).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception ex) when (ex.GetType().Name == "AcquireLockFailedException"
-                                   && ex.GetType().Namespace?.StartsWith("Velopack", StringComparison.Ordinal) == true)
-        {
-            // Velopack の .velopack_lock 衝突: 別プロセス（同じインストール先の別バージョン起動など）が
-            // 操作中。 次回起動時に自然に再試行されるのでログだけ残す。
-            // rere A1-002: 型名文字列マッチに加えて namespace ガードを追加。 別 assembly の同名例外
-            // (DLL Hijacking 等) を誤判定しないため。
-            LoggerService.LogInfo($"UpdateService: Velopack ロック取得失敗（次回起動時に再試行）— {ex.Message}");
-            OnStatusChanged(UpdateStatus.Idle, "別の更新処理が実行中です。後で再試行します。");
-        }
-        catch (Exception ex)
-        {
-            LoggerService.LogError($"UpdateService.ShowUpdateDialogAsync 失敗 (manualCheck={manualCheck}): {ex}");
-            OnStatusChanged(UpdateStatus.Failed, $"更新チェックに失敗しました: {ex.Message}");
+                // Velopack でインストールされていない場合（開発環境など）はチェックをスキップする。
+                // 手動チェック時のみ「最新版です」と扱ってダイアログを出す（Komorebi と同じ挙動）。
+                if (!manager.IsInstalled)
+                {
+                    OnStatusChanged(UpdateStatus.Idle, "Velopack でインストールされていないため、 更新確認をスキップします。");
+                    if (manualCheck)
+                    {
+                        await ShowDialogOnUiThreadAsync(manager, manualCheck, snapshot).ConfigureAwait(false);
+                    }
+                    return;
+                }
+
+                await ShowDialogOnUiThreadAsync(manager, manualCheck, snapshot).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex) when (ex.GetType().Name == "AcquireLockFailedException"
+                                       && ex.GetType().Namespace?.StartsWith("Velopack", StringComparison.Ordinal) == true)
+            {
+                // Velopack の .velopack_lock 衝突: 別プロセス（同じインストール先の別バージョン起動など）が
+                // 操作中。 次回起動時に自然に再試行されるのでログだけ残す。
+                // rere A1-002: 型名文字列マッチに加えて namespace ガードを追加。 別 assembly の同名例外
+                // (DLL Hijacking 等) を誤判定しないため。
+                LoggerService.LogInfo($"UpdateService: Velopack ロック取得失敗（次回起動時に再試行）— {ex.Message}");
+                OnStatusChanged(UpdateStatus.Idle, "別の更新処理が実行中です。後で再試行します。");
+            }
+            catch (Exception ex)
+            {
+                LoggerService.LogError($"UpdateService.ShowUpdateDialogAsync 失敗 (manualCheck={manualCheck}): {ex}");
+                OnStatusChanged(UpdateStatus.Failed, $"更新チェックに失敗しました: {ex.Message}");
+            }
         }
         finally
         {

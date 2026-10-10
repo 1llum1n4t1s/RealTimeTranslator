@@ -29,14 +29,11 @@ public partial class TranslationLogViewModel : ObservableObject
     private const int InitialLoadCount = 1000;
 
     private readonly ITranslationLogger _logger;
-
-    /// <summary>
-    /// 起動時の履歴ロード完了フラグ (Phase 6 レビュー #R-H2 対応)。
-    /// 履歴ロード中に AddEntry が呼ばれた場合、 ReadAllAsync の結果と AddEntry のエントリが
-    /// 二重で ObservableCollection に追加される race を防ぐ。
-    /// false の間 (起動直後の数百ms) に来た AddEntry はファイルに書くだけで UI 表示は ReadAllAsync 後に反映される。
-    /// </summary>
-    private volatile bool _isHistoryLoaded;
+    // logger への enqueue と表示用の保留を同じ境界で管理する。UI のコレクションはロック外で更新する。
+    private readonly object _logStateLock = new();
+    private readonly List<TranslationLogEntry> _pendingEntries = new();
+    private bool _isHistoryLoaded;
+    private int _historyGeneration;
 
     /// <summary>翻訳ログの全エントリ。 ListBox の ItemsSource にバインドする。</summary>
     [ObservableProperty]
@@ -46,42 +43,74 @@ public partial class TranslationLogViewModel : ObservableObject
     [ObservableProperty]
     public partial bool IsEmpty { get; set; } = true;
 
+    /// <summary>履歴の読み込み・削除に失敗した場合の案内。</summary>
+    [ObservableProperty]
+    public partial string ErrorMessage { get; set; } = string.Empty;
+
     public TranslationLogViewModel(ITranslationLogger logger)
     {
         _logger = logger;
         // 起動時の履歴読み込みは非同期で別タスクへ。 コンストラクタを await しないため fire-and-forget。
-        // 例外はバックグラウンドで握ってログのみに残し、 翻訳ログタブが空表示になるだけで他には影響させない。
+        // 失敗時にも保留している確定字幕を表示し、エラーを翻訳ログタブへ通知する。
         _ = LoadHistoryAsync();
     }
 
     private async Task LoadHistoryAsync()
     {
-        try
+        Task cleanup;
+        Task<IReadOnlyList<TranslationLogEntry>> history;
+        lock (_logStateLock)
         {
-            // 起動時 cleanup (保持期間外の古いファイル削除) を済ませてから読み込む。
-            await _logger.PerformRetentionCleanupAsync().ConfigureAwait(false);
-
-            var historical = await _logger.ReadAllAsync(InitialLoadCount).ConfigureAwait(false);
-
-            // UI スレッドで ObservableCollection を更新 + _isHistoryLoaded フラグを立てる。
-            // この Post 完了までは AddEntry がファイルにだけ書く (UI には反映しない) ため、 二重追加 race を回避できる。
-            Dispatcher.UIThread.Post(() =>
-            {
-                foreach (var entry in historical)
-                {
-                    Entries.Add(entry);
-                }
-                _isHistoryLoaded = true;
-                // 履歴 0 件 → IsEmpty=true、 1 件以上 → IsEmpty=false (Phase 6 レビュー #R-H6: 冗長チェック整理)
-                IsEmpty = Entries.Count == 0;
-            });
+            // await より先に両方をキューへ入れる。以後の AddEntry は履歴に含まれず、保留分として表示する。
+            cleanup = _logger.PerformRetentionCleanupAsync();
+            history = _logger.ReadAllAsync(InitialLoadCount);
         }
+        await RefreshHistoryAsync(cleanup, history, 0, isClear: false).ConfigureAwait(false);
+    }
+
+    private async Task RefreshHistoryAsync(Task operation, Task<IReadOnlyList<TranslationLogEntry>> history,
+                                          int generation, bool isClear)
+    {
+        string error = string.Empty;
+        try { await operation.ConfigureAwait(false); }
         catch (Exception ex)
         {
-            LoggerService.LogException("TranslationLogViewModel.LoadHistoryAsync 失敗", ex);
-            // 例外時もフラグは立てて、 以後の AddEntry が永久にブロックされないようにする。
-            _isHistoryLoaded = true;
+            LoggerService.LogException(isClear ? "TranslationLogViewModel.ClearAllAsync 失敗" : "TranslationLogViewModel.LoadHistoryAsync 失敗", ex);
+            error = isClear
+                ? "翻訳ログをすべて削除できませんでした。使用中のファイルを閉じて、もう一度お試しください。"
+                : "翻訳ログの保持期間処理に失敗しました。保存フォルダーを確認してください。";
         }
+
+        IReadOnlyList<TranslationLogEntry>? historical = null;
+        try { historical = await history.ConfigureAwait(false); }
+        catch (Exception ex)
+        {
+            LoggerService.LogException("TranslationLogViewModel 履歴の読み込み失敗", ex);
+            error = isClear
+                ? "削除結果を読み込めませんでした。表示を保持しています。使用中のファイルを閉じて、もう一度お試しください。"
+                : "翻訳ログの履歴を読み込めませんでした。使用中のファイルを閉じて、再読み込みしてください。";
+        }
+
+        await Dispatcher.UIThread.InvokeAsync(() =>
+        {
+            TranslationLogEntry[] pending;
+            lock (_logStateLock)
+            {
+                // 削除前の履歴や表示予約が遅れて届いても、現在の表示へ戻さない。
+                if (generation != _historyGeneration) return;
+                pending = _pendingEntries.ToArray();
+                _pendingEntries.Clear();
+                _isHistoryLoaded = true;
+            }
+            if (historical is not null)
+            {
+                Entries.Clear();
+                foreach (var entry in historical) AddToDisplay(entry);
+            }
+            foreach (var entry in pending) AddToDisplay(entry);
+            IsEmpty = Entries.Count == 0;
+            ErrorMessage = error;
+        });
     }
 
     /// <summary>
@@ -90,24 +119,49 @@ public partial class TranslationLogViewModel : ObservableObject
     /// </summary>
     public void AddEntry(TranslationLogEntry entry)
     {
-        // ファイルへの書き込みは常時実行 (履歴ロード中でも記録は失わない)。
-        // Channel 経由で順序保証されるため、 履歴ロード完了後に来た Append との順序も担保される。
-        _logger.Append(entry);
-
-        Dispatcher.UIThread.Post(() =>
+        lock (_logStateLock)
         {
-            // Phase 6 レビュー #R-H2 対応: 履歴ロード前は UI 追加をスキップして、 ReadAllAsync 結果と二重表示にしない。
-            // Append でファイルに書き込まれた entry は次回起動時 (or 履歴ロード完了後) に ObservableCollection に反映される。
-            if (!_isHistoryLoaded) return;
-
-            Entries.Add(entry);
-            // メモリ上限超過時は古い側から削除 (ファイルには残るので閲覧したい場合はフォルダを開く)。
-            while (Entries.Count > MaxDisplayEntries)
+            _logger.Append(entry);
+            if (!_isHistoryLoaded)
             {
-                Entries.RemoveAt(0);
+                _pendingEntries.Add(entry);
+                if (_pendingEntries.Count > MaxDisplayEntries) _pendingEntries.RemoveAt(0);
+                return;
             }
-            IsEmpty = false;
-        });
+            int generation = _historyGeneration;
+            Dispatcher.UIThread.Post(() =>
+            {
+                lock (_logStateLock)
+                {
+                    if (generation != _historyGeneration) return;
+                }
+                AddToDisplay(entry);
+                IsEmpty = false;
+            });
+        }
+    }
+
+    private void AddToDisplay(TranslationLogEntry entry)
+    {
+        Entries.Add(entry);
+        // メモリ上限は履歴・保留・通常追記のすべてに適用する。ファイル上のログは削らない。
+        while (Entries.Count > MaxDisplayEntries) Entries.RemoveAt(0);
+    }
+
+    /// <summary>読み込み失敗後に、保存済みのログを削除せず再試行する。</summary>
+    [RelayCommand]
+    private async Task ReloadHistoryAsync()
+    {
+        Task<IReadOnlyList<TranslationLogEntry>> history;
+        int generation;
+        lock (_logStateLock)
+        {
+            generation = ++_historyGeneration;
+            _isHistoryLoaded = false;
+            _pendingEntries.Clear();
+            history = _logger.ReadAllAsync(MaxDisplayEntries);
+        }
+        await RefreshHistoryAsync(Task.CompletedTask, history, generation, isClear: false).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -137,23 +191,23 @@ public partial class TranslationLogViewModel : ObservableObject
     }
 
     /// <summary>
-    /// 翻訳ログをすべて削除する。 ファイル / メモリの両方をクリアする。
+    /// 翻訳ログをすべて削除し、部分失敗時は残った履歴を表示する。
     /// </summary>
     [RelayCommand]
     private async Task ClearAllAsync()
     {
-        try
+        Task clear;
+        Task<IReadOnlyList<TranslationLogEntry>> history;
+        int generation;
+        lock (_logStateLock)
         {
-            await _logger.ClearAllAsync().ConfigureAwait(false);
-            Dispatcher.UIThread.Post(() =>
-            {
-                Entries.Clear();
-                IsEmpty = true;
-            });
+            generation = ++_historyGeneration;
+            _isHistoryLoaded = false;
+            _pendingEntries.Clear();
+            // 再読み込みも同じ境界へ enqueue。削除後の追記は snapshot と重複せず保留分になる。
+            clear = _logger.ClearAllAsync();
+            history = _logger.ReadAllAsync(MaxDisplayEntries);
         }
-        catch (Exception ex)
-        {
-            LoggerService.LogException("TranslationLogViewModel.ClearAllAsync 失敗", ex);
-        }
+        await RefreshHistoryAsync(clear, history, generation, isClear: true).ConfigureAwait(false);
     }
 }

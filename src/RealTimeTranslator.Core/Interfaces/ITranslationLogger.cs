@@ -29,6 +29,8 @@ public interface ITranslationLogger
     /// <summary>
     /// 保存済みの翻訳ログをすべて読み戻す (新しい順 / 古い順は実装次第、 通常は古い順)。
     /// 起動時に翻訳ログタブの ObservableCollection に流し込むのに使う。
+    /// 呼び出し前の追記・削除の完了後、呼び出し後の追記・削除より前に読み込む。
+    /// ファイルを読み込めない場合は例外を返し、不完全な履歴を成功として返さない。
     /// </summary>
     /// <param name="maxEntries">最大読込件数。 null なら無制限。 多すぎる場合は古い側から打ち切る。</param>
     Task<IReadOnlyList<TranslationLogEntry>> ReadAllAsync(int? maxEntries = null);
@@ -42,6 +44,8 @@ public interface ITranslationLogger
     /// <summary>
     /// 保存済みの翻訳ログをすべて削除する (翻訳ログタブの「すべて削除」ボタン用)。
     /// メモリ上の表示は呼び出し側で別途クリアすること。
+    /// 一部でも削除できなかった場合は例外を返す。削除できたファイルは元に戻らないため、
+    /// 呼び出し側は履歴を読み直して残存分を表示すること。
     /// </summary>
     Task ClearAllAsync();
 }

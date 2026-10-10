@@ -13,11 +13,9 @@ namespace RealTimeTranslator.Core.Services;
 /// (Roaming AppData なので Velopack 更新で消えない、 LoggerService と同じ設計)
 ///
 /// 並行性 (Phase 6 レビュー #R-C1 / #R-H1 / #R-H3 対応):
-/// - 書き込み系 (<see cref="Append"/> / <see cref="ClearAllAsync"/> / <see cref="PerformRetentionCleanupAsync"/>) は
+/// - 読み書き (<see cref="Append"/> / <see cref="ReadAllAsync"/> / <see cref="ClearAllAsync"/> / <see cref="PerformRetentionCleanupAsync"/>) は
 ///   単一ワーカータスクが <see cref="Channel{T}"/> から順次取り出して直列実行する。
-///   これで Append の発火順序が TSV ファイル上で保証される + ClearAll 直後の Append が UI と乖離する race も消える。
-/// - 読み取り系 (<see cref="ReadAllAsync"/>) は lock を一切取らず並行可能。 起動時の初期読み込みのみで
-///   翻訳開始前に完了する想定なので、 書き込みとの厳密な整合性は不要。
+///   履歴は呼び出し前の追記・削除を反映し、呼び出し後の追記を含めないスナップショットになる。
 ///
 /// /rere 第2R #C2-R2-001 + #F-R2-002 (v1.0.29 候補):
 /// - **keep-open StreamWriter**: 旧実装は Append ごとに File.AppendAllTextAsync で open/close を繰り返し、
@@ -34,7 +32,7 @@ public sealed class TranslationLogService : ITranslationLogger, IAsyncDisposable
     /// <summary>RetentionDays などの設定値を hot-reload で受け取る。</summary>
     private readonly IOptionsMonitor<AppSettings> _settingsMonitor;
 
-    /// <summary>書き込み系操作 (Append / ClearAll / Cleanup) を直列化する Channel。</summary>
+    /// <summary>読み書き操作 (Append / ReadAll / ClearAll / Cleanup) を直列化する Channel。</summary>
     private readonly Channel<Func<Task>> _writeChannel = Channel.CreateUnbounded<Func<Task>>(
         new UnboundedChannelOptions { SingleReader = true, SingleWriter = false });
 
@@ -194,10 +192,23 @@ public sealed class TranslationLogService : ITranslationLogger, IAsyncDisposable
         }
     }
 
-    public async Task<IReadOnlyList<TranslationLogEntry>> ReadAllAsync(int? maxEntries = null)
+    public Task<IReadOnlyList<TranslationLogEntry>> ReadAllAsync(int? maxEntries = null)
     {
-        // Phase 6 レビュー #R-H1 対応: lock を取らず読み取り専用で動作。
-        // 起動時の初期ロードのみで翻訳開始前に完了する想定 (= 書き込みは発生しない)。
+        // 呼び出し時点でキューへ入れ、前後の Append / ClearAll との境界を固定する。
+        var tcs = new TaskCompletionSource<IReadOnlyList<TranslationLogEntry>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (!_writeChannel.Writer.TryWrite(async () =>
+        {
+            try { tcs.SetResult(await ReadAllInternalAsync(maxEntries).ConfigureAwait(false)); }
+            catch (Exception ex) { tcs.SetException(ex); }
+        }))
+        {
+            tcs.SetException(new InvalidOperationException("TranslationLogService の書き込みチャネルが閉じています。"));
+        }
+        return tcs.Task;
+    }
+
+    private async Task<IReadOnlyList<TranslationLogEntry>> ReadAllInternalAsync(int? maxEntries)
+    {
         if (!Directory.Exists(LogDirectory)) return Array.Empty<TranslationLogEntry>();
 
         // ファイル名 (TranslationLog_yyyyMMdd.tsv) は日付昇順でソートできるため、
@@ -208,12 +219,17 @@ public sealed class TranslationLogService : ITranslationLogger, IAsyncDisposable
                              .ToArray();
 
         var entries = new List<TranslationLogEntry>();
+        var failures = new List<Exception>();
         foreach (var file in files)
         {
             try
             {
-                var lines = await File.ReadAllLinesAsync(file, System.Text.Encoding.UTF8).ConfigureAwait(false);
-                foreach (var line in lines)
+                // 自分の keep-open writer を閉じずに読める共有モードを使う。
+                // 書き込み自体は同じワーカーで直列化済みなので、読み込み中に追記されない。
+                await using var stream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite,
+                                                        bufferSize: 4096, useAsync: true);
+                using var reader = new StreamReader(stream, Encoding.UTF8);
+                while (await reader.ReadLineAsync().ConfigureAwait(false) is { } line)
                 {
                     if (TranslationLogEntry.TryParseTsvLine(line, out var parsed) && parsed is not null)
                     {
@@ -225,7 +241,14 @@ public sealed class TranslationLogService : ITranslationLogger, IAsyncDisposable
             catch (Exception ex)
             {
                 LoggerService.LogWarning($"TranslationLogService.ReadAllAsync: {Path.GetFileName(file)} を読めませんでした: {ex.Message}");
+                failures.Add(ex);
             }
+        }
+
+        // 不完全な履歴を空・成功として表示しない。壊れた TSV 行のスキップは維持する。
+        if (failures.Count > 0)
+        {
+            throw new IOException($"翻訳ログを読み込めませんでした ({failures.Count} ファイル)。", new AggregateException(failures));
         }
 
         // 件数制限: 古い側を切り捨てて新しい maxEntries 件を返す (ADV ログとして直近を見せたい想定)。
@@ -316,18 +339,27 @@ public sealed class TranslationLogService : ITranslationLogger, IAsyncDisposable
 
         if (!Directory.Exists(LogDirectory)) return;
         var files = Directory.GetFiles(LogDirectory, $"{FilePrefix}_*{FileExtension}");
+        var failures = new List<Exception>();
+        int deletedCount = 0;
         foreach (var file in files)
         {
             try
             {
                 File.Delete(file);
+                deletedCount++;
             }
             catch (Exception ex)
             {
                 LoggerService.LogWarning($"TranslationLogService.ClearAll: {Path.GetFileName(file)} の削除に失敗: {ex.Message}");
+                failures.Add(ex);
             }
         }
-        LoggerService.LogInfo($"TranslationLogService: 全翻訳ログを削除しました ({files.Length} ファイル)");
+        if (failures.Count > 0)
+        {
+            LoggerService.LogWarning($"TranslationLogService: {deletedCount} ファイルを削除、{failures.Count} ファイルの削除に失敗しました。");
+            throw new IOException($"翻訳ログを削除できませんでした ({failures.Count} ファイル)。", new AggregateException(failures));
+        }
+        LoggerService.LogInfo($"TranslationLogService: 全翻訳ログを削除しました ({deletedCount} ファイル)");
     }
 
     private void EnsureDirectory()

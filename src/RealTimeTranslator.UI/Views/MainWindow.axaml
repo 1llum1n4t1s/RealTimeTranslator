@@ -815,10 +815,10 @@
                             <StackPanel>
                                 <TextBlock Text="🛠 カスタム詳細" FontWeight="Bold" Margin="0,0,0,8"/>
 
-                                <TextBlock Text="検出しきい値 (Silero VAD speech probability)" FontSize="12" Margin="0,4,0,2"/>
+                                <TextBlock Text="検出しきい値 (FireRed VAD speech probability)" FontSize="12" Margin="0,4,0,2"/>
                                 <Slider Minimum="0.1" Maximum="0.9" Value="{Binding VadThreshold, Mode=TwoWay}"
                                         TickFrequency="0.05" IsSnapToTickEnabled="True"/>
-                                <TextBlock Text="{Binding VadThreshold, StringFormat='現在: {0:F2} (本アプリ既定 0.40、 Silero VAD 公式推奨 0.50、 上げるほど判定が厳しくなり送信量減)'}"
+                                <TextBlock Text="{Binding VadThreshold, StringFormat='現在: {0:F2} (本アプリ既定 0.30、 上げるほど判定が厳しくなり送信量減)'}"
                                            FontSize="11" Foreground="{DynamicResource Brush.FG2}" Margin="0,0,0,8"/>
 
                                 <TextBlock Text="プリロール時間 (ms) — 発話冒頭の取りこぼし防止" FontSize="12" Margin="0,4,0,2"/>
@@ -1159,18 +1159,26 @@
                     <Border Grid.Row="1" Padding="0,8,0,0"
                             BorderBrush="{DynamicResource Brush.Border}"
                             BorderThickness="0,1,0,0">
-                        <StackPanel Orientation="Horizontal" Spacing="8">
-                            <Button Command="{Binding OpenTranslationLogsFolderCommand}"
-                                    Content="保存フォルダを開く" FontSize="12"/>
-                            <Button Command="{Binding ClearAllCommand}"
-                                    Content="すべて削除" FontSize="12"
-                                    IsEnabled="{Binding !IsEmpty}"/>
-                            <!-- 最新へ移動: 上にスクロールして追従が外れている間だけ有効 (IsEnabled は code-behind が制御)。
-                                 Click は code-behind の MainWindow.OnJumpToLatestClick に解決される。 -->
-                            <Button x:Name="JumpToLatestButton"
-                                    Click="OnJumpToLatestClick"
-                                    Content="↓ 最新へ" FontSize="12"
-                                    IsEnabled="False"/>
+                        <StackPanel Spacing="8">
+                            <TextBlock Text="{Binding ErrorMessage}" TextWrapping="Wrap" FontSize="12"
+                                       Foreground="{DynamicResource Brush.Error}"
+                                       IsVisible="{Binding ErrorMessage, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"/>
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                <Button Command="{Binding OpenTranslationLogsFolderCommand}"
+                                        Content="保存フォルダを開く" FontSize="12"/>
+                                <Button Command="{Binding ClearAllCommand}"
+                                        Content="すべて削除" FontSize="12"
+                                        IsEnabled="{Binding !IsEmpty}"/>
+                                <Button Command="{Binding ReloadHistoryCommand}"
+                                        Content="再読み込み" FontSize="12"
+                                        IsVisible="{Binding ErrorMessage, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"/>
+                                <!-- 最新へ移動: 上にスクロールして追従が外れている間だけ有効 (IsEnabled は code-behind が制御)。
+                                     Click は code-behind の MainWindow.OnJumpToLatestClick に解決される。 -->
+                                <Button x:Name="JumpToLatestButton"
+                                        Click="OnJumpToLatestClick"
+                                        Content="↓ 最新へ" FontSize="12"
+                                        IsEnabled="False"/>
+                            </StackPanel>
                         </StackPanel>
                     </Border>
                 </Grid>
