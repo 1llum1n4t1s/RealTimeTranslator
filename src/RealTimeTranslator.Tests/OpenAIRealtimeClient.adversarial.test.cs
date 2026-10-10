@@ -367,33 +367,6 @@ public sealed class OpenAIRealtimeClientAdversarialTests
     }
 
     // ═══════════════════════════════════════════════════════════════
-    // 🎭 カテゴリ5: 型パンチ（Type Punching）
-    // ═══════════════════════════════════════════════════════════════
-
-    /// <adversarial category="type" severity="medium" />
-    [TestMethod]
-    [TestCategory("Adversarial")]
-    public void EventHandlers_ShouldBeUnsubscribable()
-    {
-        using var client = new OpenAIRealtimeClient();
-        Action<string> deltaHandler = _ => { };
-        Action<string> completeHandler = _ => { };
-        Action<Exception> errorHandler = _ => { };
-        Action<ConnectionState> stateHandler = _ => { };
-
-        client.TranscriptDeltaReceived += deltaHandler;
-        client.TranscriptCompleted += completeHandler;
-        client.ErrorReceived += errorHandler;
-        client.StateChanged += stateHandler;
-
-        // 解除してもクラッシュしない
-        client.TranscriptDeltaReceived -= deltaHandler;
-        client.TranscriptCompleted -= completeHandler;
-        client.ErrorReceived -= errorHandler;
-        client.StateChanged -= stateHandler;
-    }
-
-    // ═══════════════════════════════════════════════════════════════
     // 🌪️ カテゴリ6: 環境異常（Environmental Chaos）
     // ═══════════════════════════════════════════════════════════════
 

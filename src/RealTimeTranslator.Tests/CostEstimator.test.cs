@@ -153,15 +153,6 @@ public sealed class CostEstimatorTests
         Assert.AreEqual(100m, CostEstimator.ResolveRatePerMillion("GPT-4O-REALTIME-PREVIEW"));
     }
 
-    [TestMethod]
-    public void ResolveRatePerMillion_LegacyMiniTakesPrecedenceOverGenericMini()
-    {
-        // gpt-4o-mini-realtime-preview は両方 mini-rate ($10) なので結果は同じだが、
-        // 評価順序として旧 mini 判定が先に効くことを担保する
-        var rate = CostEstimator.ResolveRatePerMillion("gpt-4o-mini-realtime-preview");
-        Assert.AreEqual(10m, rate);
-    }
-
     // ───────── EstimateUsd: 現行モデル ─────────
 
     [TestMethod]

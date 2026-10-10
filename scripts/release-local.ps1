@@ -12,24 +12,25 @@
 # 使い方:
 #   pwsh scripts/release-local.ps1                # フルリリース (build + sign + upload + cleanup)
 #   pwsh scripts/release-local.ps1 -SkipUpload    # ビルド + 署名のみ (アップロードしない動作確認用)
-#   pwsh scripts/release-local.ps1 -Runtimes win-x64   # 対象 RID を絞る (テスト用)
+#   pwsh scripts/release-local.ps1 -SkipCleanup   # 配信確認後も外部の作業先を保持する
+#   WorkDirectory は未作成の絶対パス、DirectoryBuildPropsPath はその配下へ出力する既存 props。
 
 [CmdletBinding()]
 param(
     [switch]$SkipUpload,
-    [string[]]$Runtimes = @('win-x64')
+    [switch]$SkipCleanup,
+    [string[]]$Runtimes = @('win-x64'),
+    [string]$WorkDirectory,
+    [string]$DirectoryBuildPropsPath,
+    [string]$LedgerDirectory
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 # ---- 定数 (旧 CI 版 release.yml / velopack.yml と揃える) ----
-# Velopack (vpk) は常に最新安定版を使う (ゆろ君ルール): NuGet から実行時に最新を解決して pin する
-$VpkVersion = (Invoke-RestMethod 'https://api.nuget.org/v3-flatcontainer/vpk/index.json' -TimeoutSec 30).versions |
-    Where-Object { $_ -notmatch '-' } | Select-Object -Last 1
-if (-not $VpkVersion) { throw 'vpk の最新安定版バージョンの取得に失敗しました (NuGet API)' }
-Write-Host "vpk 最新安定版: $VpkVersion"
-$WranglerVersion = '4.144.0'        # サプライチェーン対策でバージョン固定
+# Velopack (vpk) の最新安定版はプリフライト後に解決し、今回専用の tool-path へ入れる。
+$WranglerVersion = '4.149.0'        # サプライチェーン対策でバージョン固定
 $Bucket = 'realtimetranslator-updates'
 $BaseUrl = 'https://rtt.kagayoi.com'
 $AccountId = '10901bfadbf1005164774a7350082985'
@@ -45,13 +46,44 @@ $RuntimeMatrix = @{
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $RepoRoot
-$WorkDir = Join-Path $RepoRoot 'local-release'
-$ArtifactsDir = Join-Path $WorkDir 'artifacts'
 
 function Invoke-Native {
     param([string]$Description, [scriptblock]$Block)
     & $Block
     if ($LASTEXITCODE -ne 0) { throw "$Description が失敗しました (exit $LASTEXITCODE)" }
+}
+
+function Assert-ExternalPath {
+    param([string]$Path)
+    if ($Path -notmatch '^(?:[A-Za-z]:[\\/]|\\\\)' -or [WildcardPattern]::ContainsWildcardCharacters($Path)) {
+        throw "絶対パスを指定してください: $Path"
+    }
+    $absolute = [IO.Path]::GetFullPath($Path).TrimEnd([char[]]'\/')
+    $codexRoot = if ($env:CODEX_HOME) { [IO.Path]::GetFullPath($env:CODEX_HOME) } else { Join-Path $env:USERPROFILE '.codex' }
+    foreach ($forbidden in @($RepoRoot, (Join-Path $env:USERPROFILE '.codex'), $codexRoot)) {
+        $root = $forbidden.TrimEnd([char[]]'\/')
+        if ($absolute.Equals($root, [StringComparison]::OrdinalIgnoreCase) -or
+            $absolute.StartsWith($root + '\', [StringComparison]::OrdinalIgnoreCase)) {
+            throw "作業先はリポジトリと Codex ユーザーディレクトリの外に指定してください: $absolute"
+        }
+    }
+    if (($absolute -split '[\\/]') -contains 'artifacts') { throw "artifacts というフォルダー名は使用できません: $absolute" }
+    $ancestor = $absolute
+    while ($ancestor) {
+        if (Test-Path -LiteralPath $ancestor) {
+            $item = Get-Item -LiteralPath $ancestor -Force
+            if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw "作業先と親フォルダーに reparse point は使用できません: $ancestor"
+            }
+            if ($item.PSIsContainer -and (Test-Path -LiteralPath (Join-Path $ancestor '.git'))) {
+                throw "作業先はすべてのリポジトリの外に限定します: $ancestor"
+            }
+        }
+        $parent = Split-Path -Parent $ancestor
+        if ($parent -eq $ancestor) { break }
+        $ancestor = $parent
+    }
+    return $absolute
 }
 
 # ---- 0. プリフライト ----
@@ -73,6 +105,72 @@ $versionNode = ([xml](Get-Content 'Directory.Build.props' -Raw)).SelectSingleNod
 $version = if ($versionNode) { $versionNode.InnerText.Trim() } else { $null }
 if (-not $version) { throw 'Directory.Build.props から <Version> を取得できませんでした' }
 Write-Host "バージョン: $version"
+if ($Runtimes.Count -ne 1 -or $Runtimes[0] -ne 'win-x64') { throw 'リリース対象は win-x64 のみです。' }
+if (-not $WorkDirectory) {
+    $WorkDirectory = Join-Path ([IO.Path]::GetTempPath()) "Codex\RealTimeTranslator\release-$version-$([Guid]::NewGuid().ToString('N'))"
+}
+$WorkDir = Assert-ExternalPath $WorkDirectory
+if (Test-Path -LiteralPath $WorkDir) { throw "既存の作業先は上書きしません。新しい WorkDirectory を指定してください: $WorkDir" }
+if (-not $LedgerDirectory) {
+    $LedgerDirectory = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) "Codex\TaskArtifacts\RealTimeTranslator\release-$version-$([Guid]::NewGuid().ToString('N'))\cleanup"
+}
+$LedgerDir = Assert-ExternalPath $LedgerDirectory
+if ($LedgerDir.Equals($WorkDir, [StringComparison]::OrdinalIgnoreCase) -or $LedgerDir.StartsWith($WorkDir + '\', [StringComparison]::OrdinalIgnoreCase)) {
+    throw 'LedgerDirectory は清掃対象の WorkDirectory の外に指定してください。'
+}
+if ($DirectoryBuildPropsPath) {
+    $DirectoryBuildPropsPath = Assert-ExternalPath $DirectoryBuildPropsPath
+    if (-not (Test-Path -LiteralPath $DirectoryBuildPropsPath -PathType Leaf)) { throw 'DirectoryBuildPropsPath が見つかりません。' }
+}
+$PackagesDir = Join-Path $WorkDir 'packages'
+New-Item -ItemType Directory -Path $PackagesDir | Out-Null
+Write-Host "作業先: $WorkDir / 清掃台帳: $LedgerDir"
+
+# 生成物、ツールの download/cache/log、一時ファイルを今回の作業先へ集約する。
+foreach ($name in @('TEMP', 'TMP', 'DOTNET_CLI_HOME', 'NUGET_PACKAGES', 'NUGET_HTTP_CACHE_PATH', 'npm_config_cache',
+        'npm_config_logs_dir', 'npm_config_store_dir', 'npm_config_cache_dir', 'npm_config_state_dir',
+        'PNPM_HOME', 'XDG_CACHE_HOME', 'XDG_CONFIG_HOME', 'WRANGLER_HOME')) {
+    $directory = Join-Path $WorkDir "cache\$name"
+    New-Item -ItemType Directory -Path $directory -Force | Out-Null
+    [Environment]::SetEnvironmentVariable($name, $directory, 'Process')
+}
+$env:WRANGLER_LOG_PATH = Join-Path $WorkDir 'wrangler.log'
+$env:WRANGLER_SEND_METRICS = 'false'
+$env:npm_config_update_notifier = 'false'
+$env:npm_config_userconfig = Join-Path $WorkDir 'npmrc'
+Set-Content -LiteralPath $env:npm_config_userconfig -Value ''
+
+if (-not $DirectoryBuildPropsPath) {
+    $DirectoryBuildPropsPath = Join-Path $WorkDir 'ReleaseBuild.props'
+    $repoProps = [Security.SecurityElement]::Escape((Join-Path $RepoRoot 'Directory.Build.props'))
+    $buildRoot = [Security.SecurityElement]::Escape((Join-Path $WorkDir 'build'))
+    @"
+<Project>
+  <Import Project="$repoProps" />
+  <PropertyGroup>
+    <BaseOutputPath>$buildRoot\bin\`$(MSBuildProjectName)\</BaseOutputPath>
+    <OutputPath>`$(BaseOutputPath)`$(Configuration)\</OutputPath>
+    <BaseIntermediateOutputPath>$buildRoot\obj\`$(MSBuildProjectName)\</BaseIntermediateOutputPath>
+    <IntermediateOutputPath>`$(BaseIntermediateOutputPath)`$(Configuration)\</IntermediateOutputPath>
+    <MSBuildProjectExtensionsPath>`$(IntermediateOutputPath)</MSBuildProjectExtensionsPath>
+    <DefaultItemExcludes>`$(DefaultItemExcludes);`$(MSBuildProjectDirectory)\bin\**;`$(MSBuildProjectDirectory)\obj\**</DefaultItemExcludes>
+  </PropertyGroup>
+</Project>
+"@ | Set-Content -LiteralPath $DirectoryBuildPropsPath -Encoding utf8
+}
+# 呼び出し側が渡した props も評価して、全プロジェクトの出力境界を確認する。
+foreach ($projectName in @('RealTimeTranslator.Core', 'RealTimeTranslator.UI', 'RealTimeTranslator.Tests')) {
+    $project = Get-Item -LiteralPath (Join-Path $RepoRoot "src\$projectName\$projectName.csproj")
+    $properties = & dotnet msbuild $project.FullName -nologo -p:Configuration=Release -p:Platform=x64 `
+        "-p:DirectoryBuildPropsPath=$DirectoryBuildPropsPath" -getProperty:BaseOutputPath,OutputPath,BaseIntermediateOutputPath,IntermediateOutputPath,MSBuildProjectExtensionsPath
+    if ($LASTEXITCODE -ne 0) { throw "外部出力先の評価に失敗しました: $($project.Name)" }
+    foreach ($property in (($properties -join "`n" | ConvertFrom-Json).Properties.PSObject.Properties)) {
+        $output = Assert-ExternalPath $property.Value
+        if (-not $output.StartsWith($WorkDir + '\', [StringComparison]::OrdinalIgnoreCase)) {
+            throw "$($project.Name) の $($property.Name) が WorkDirectory の外です: $output"
+        }
+    }
+}
 
 # SimplySign 接続確認 (証明書が見えなければ署名できないので最初に落とす)
 $cert = Get-ChildItem Cert:\CurrentUser\My |
@@ -82,13 +180,14 @@ if (-not $cert) {
 }
 Write-Host "署名証明書: $($cert.Subject) (期限 $($cert.NotAfter.ToString('yyyy-MM-dd')))"
 
-# vpk を固定バージョンで用意
-$vpkInstalled = (dotnet tool list --global | Select-String -SimpleMatch 'vpk') -match [regex]::Escape($VpkVersion)
-if (-not $vpkInstalled) {
-    Write-Host "vpk $VpkVersion をインストールします..."
-    dotnet tool uninstall --global vpk 2>$null | Out-Null
-    Invoke-Native 'vpk のインストール' { dotnet tool install --global vpk --version $VpkVersion }
-}
+# グローバル vpk は変更しない。今回専用の最新安定版を使う。
+$VpkVersion = (Invoke-RestMethod 'https://api.nuget.org/v3-flatcontainer/vpk/index.json' -TimeoutSec 30).versions |
+    Where-Object { $_ -notmatch '-' } | Select-Object -Last 1
+if (-not $VpkVersion) { throw 'vpk の最新安定版バージョンを取得できませんでした。' }
+$toolDir = Join-Path $WorkDir 'tools'
+Write-Host "vpk 最新安定版: $VpkVersion"
+Invoke-Native 'vpk のインストール' { dotnet tool install --tool-path $toolDir vpk --version $VpkVersion }
+$vpkExe = Join-Path $toolDir 'vpk.exe'
 
 # Cloudflare トークン (アップロード時のみ必要)
 if (-not $SkipUpload) {
@@ -98,18 +197,11 @@ if (-not $SkipUpload) {
     $env:CLOUDFLARE_ACCOUNT_ID = $AccountId
 }
 
-if (Test-Path $WorkDir) { Remove-Item $WorkDir -Recurse -Force }
-New-Item -ItemType Directory -Path $ArtifactsDir -Force | Out-Null
-
-# ReadyToRun は入力/出力の更新時刻だけで増分判定するため、更新後パッケージの DLL が
-# 既存 R2R 出力より古い時刻だと旧 DLL を再利用してしまう。リリース時だけ生成キャッシュを
-# 破棄し、lockfile が解決した依存を必ず crossgen2 し直す。
-$uiReleaseObjDir = [IO.Path]::GetFullPath((Join-Path $RepoRoot 'src\RealTimeTranslator.UI\obj\Release'))
-$r2rCacheDir = [IO.Path]::GetFullPath((Join-Path $uiReleaseObjDir 'R2R'))
-if (-not $r2rCacheDir.StartsWith("$uiReleaseObjDir$([IO.Path]::DirectorySeparatorChar)", [StringComparison]::OrdinalIgnoreCase)) {
-    throw "ReadyToRun キャッシュが UI Release obj 配下ではありません: $r2rCacheDir"
+# 毎回新しい外部 obj を使うため、古い ReadyToRun キャッシュは再利用しない。
+Invoke-Native 'locked RID restore' {
+    dotnet restore RealTimeTranslator.slnx -r win-x64 --locked-mode -p:Configuration=Release -p:Platform=x64 `
+        "-p:DirectoryBuildPropsPath=$DirectoryBuildPropsPath"
 }
-if (Test-Path -LiteralPath $r2rCacheDir) { Remove-Item -LiteralPath $r2rCacheDir -Recurse -Force }
 
 # ---- 1. ビルド + 署名付きパッケージング (RID ごと) ----
 foreach ($runtime in $Runtimes) {
@@ -120,7 +212,7 @@ foreach ($runtime in $Runtimes) {
     Write-Host "== publish: $runtime ==" -ForegroundColor Cyan
     Invoke-Native "dotnet publish ($runtime)" {
         dotnet publish src/RealTimeTranslator.UI/RealTimeTranslator.UI.csproj -c Release -r $runtime `
-            --self-contained true -o $publishDir
+            --self-contained true --no-restore -p:Platform=x64 "-p:DirectoryBuildPropsPath=$DirectoryBuildPropsPath" -o $publishDir
     }
 
     foreach ($required in @('RealTimeTranslator.UI.exe')) {
@@ -131,7 +223,7 @@ foreach ($runtime in $Runtimes) {
 
     Write-Host "== vpk pack + 署名: $runtime ==" -ForegroundColor Cyan
     Invoke-Native "vpk pack ($runtime)" {
-        vpk pack `
+        & $vpkExe pack `
             --packId RealTimeTranslator `
             --packVersion $version `
             --packTitle 'RealTimeTranslator' `
@@ -139,8 +231,9 @@ foreach ($runtime in $Runtimes) {
             --mainExe RealTimeTranslator.UI.exe `
             --icon (Join-Path 'icon' 'app.ico') `
             --packDir $publishDir `
-            --outputDir $ArtifactsDir `
+            --outputDir $PackagesDir `
             --channel $config.Channel `
+            --runtime $runtime `
             --shortcuts 'StartMenuRoot,Desktop' `
             --signParams $SignParams
     }
@@ -148,7 +241,7 @@ foreach ($runtime in $Runtimes) {
 
 # 署名検証 (Setup.exe が正しく署名されているかリリース前に確認)
 Write-Host '== 署名検証 ==' -ForegroundColor Cyan
-foreach ($exe in Get-ChildItem $ArtifactsDir -Filter '*.exe') {
+foreach ($exe in Get-ChildItem $PackagesDir -Filter '*.exe') {
     $sig = Get-AuthenticodeSignature $exe.FullName
     if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notlike "CN=$CertSubjectName*") {
         throw "署名検証失敗: $($exe.Name) → $($sig.Status)"
@@ -157,8 +250,8 @@ foreach ($exe in Get-ChildItem $ArtifactsDir -Filter '*.exe') {
 }
 
 if ($SkipUpload) {
-    Write-Host "`n✅ -SkipUpload 指定のためここで終了。成果物: $ArtifactsDir" -ForegroundColor Green
-    Get-ChildItem $ArtifactsDir | Format-Table Name, @{n='Size(MB)'; e={[math]::Round($_.Length/1MB,1)}}
+    Write-Host "`n✅ -SkipUpload 指定のため署名済み成果物を保持します: $PackagesDir" -ForegroundColor Green
+    Get-ChildItem $PackagesDir | Format-Table Name, @{n='Size(MB)'; e={[math]::Round($_.Length/1MB,1)}}
     return
 }
 
@@ -167,7 +260,10 @@ if ($SkipUpload) {
 # - *.nupkg は put のみ (過去版は cleanup ステップが manifest 基準で削除)
 Write-Host '== R2 アップロード ==' -ForegroundColor Cyan
 $uploaded = 0
-foreach ($f in Get-ChildItem $ArtifactsDir -File) {
+# 更新 metadata は、参照する package と assets をすべて置いてから最後に公開する。
+$packageFiles = @(Get-ChildItem $PackagesDir -File)
+$uploadFiles = @($packageFiles | Sort-Object @{ Expression = { if ($_.Name -like 'releases.*.json' -or $_.Name -like 'RELEASES*') { 1 } else { 0 } } }, Name)
+foreach ($f in $uploadFiles) {
     Write-Host "  ↑ $($f.Name)"
     Invoke-Native "R2 put ($($f.Name))" {
         pnpm dlx "wrangler@$WranglerVersion" r2 object put "$Bucket/$($f.Name)" --file $f.FullName --remote
@@ -176,62 +272,68 @@ foreach ($f in Get-ChildItem $ArtifactsDir -File) {
 }
 Write-Host "✅ R2 アップロード完了: $uploaded ファイル"
 
-# ---- 2.5 Cloudflare エッジキャッシュのパージ ----
-# 固定名ファイル (Setup.exe / Portable.zip / RELEASES / releases.*.json / assets.*.json) は
-# 毎リリースで中身が変わるのに URL が不変。CDN エッジが旧版を Cache-Control の max-age 分保持するため、
-# パージしないと新規ダウンロード・自動更新が旧バージョンを掴む。アップロード直後に該当 URL をパージして
-# 伝播を確定する。バージョン付き nupkg は URL が一意 (旧キャッシュなし) のためパージ不要。
-Write-Host '== Cloudflare キャッシュパージ ==' -ForegroundColor Cyan
+# ---- 2.5 配信実物の SHA256 確認と、実証された stale URL のみのパージ ----
+Write-Host '== 配信物 SHA256 確認 ==' -ForegroundColor Cyan
 $cfHeaders = @{ Authorization = "Bearer $($env:CLOUDFLARE_API_TOKEN)" }
-$zoneName = ([uri]$BaseUrl).Host -replace '^[^.]+\.', ''   # <sub>.kagayoi.com → kagayoi.com (apex)
-$zoneResp = Invoke-RestMethod -Uri "https://api.cloudflare.com/client/v4/zones?name=$zoneName" -Headers $cfHeaders -TimeoutSec 30
-if (-not $zoneResp.success -or @($zoneResp.result).Count -eq 0) { throw "Cloudflare zone '$zoneName' の取得に失敗しました" }
-$zoneId = $zoneResp.result[0].id
-$purgeUrls = @(Get-ChildItem $ArtifactsDir -File | Where-Object { $_.Name -notlike '*.nupkg' } | ForEach-Object { "$BaseUrl/$($_.Name)" })
-if ($purgeUrls.Count -gt 0) {
-    $purgeBody = "{`"files`":$(ConvertTo-Json -InputObject $purgeUrls -AsArray -Compress)}"
-    $purgeResp = Invoke-RestMethod -Method Post -Uri "https://api.cloudflare.com/client/v4/zones/$zoneId/purge_cache" `
-        -Headers $cfHeaders -ContentType 'application/json' -Body $purgeBody -TimeoutSec 30
-    if (-not $purgeResp.success) { throw "Cloudflare キャッシュパージに失敗しました: $($purgeResp.errors | ConvertTo-Json -Compress)" }
-    Write-Host "  ✅ パージ: $($purgeUrls.Count) URL"
-    $purgeUrls | ForEach-Object { Write-Host "     $_" }
-} else {
-    Write-Host '  パージ対象なし'
+$downloadDir = Join-Path $WorkDir 'download'
+New-Item -ItemType Directory -Path $downloadDir | Out-Null
+function Test-DeliveredHash {
+    param([IO.FileInfo]$File, [string]$Url, [switch]$Fresh)
+    $download = Join-Path $downloadDir "$([Guid]::NewGuid().ToString('N'))-$($File.Name)"
+    $requestUrl = if ($Fresh) { "$Url`?release_check=$([Guid]::NewGuid().ToString('N'))" } else { $Url }
+    Invoke-WebRequest -Uri $requestUrl -OutFile $download -TimeoutSec 300 -MaximumRetryCount 2 -RetryIntervalSec 3 | Out-Null
+    $localHash = (Get-FileHash -LiteralPath $File.FullName -Algorithm SHA256).Hash
+    $remoteHash = (Get-FileHash -LiteralPath $download -Algorithm SHA256).Hash
+    $matches = $localHash -eq $remoteHash
+    Write-Host "  $($File.Name): SHA256 $(if ($matches) { '一致' } else { '不一致' })"
+    [PSCustomObject]@{ File = $File.Name; Url = $requestUrl; LocalSHA256 = $localHash; RemoteSHA256 = $remoteHash; Matches = $matches } |
+        ConvertTo-Json -Compress | Add-Content -LiteralPath (Join-Path $WorkDir 'delivery-verification.jsonl')
+    return $matches
 }
-
-# ---- 3. 配信確認 (CDN/edge 伝播チェック) ----
-# 旧 CI の /rere #A2-008 + #F-R2-004 対応を踏襲: releases.{channel}.json の HTTP 200 だけでなく
-# アップロードした全ファイルを HEAD で到達性確認し、部分アップロード失敗の中間状態露出を防ぐ。
-Write-Host '== 配信確認 ==' -ForegroundColor Cyan
-foreach ($runtime in $Runtimes) {
-    $channel = $RuntimeMatrix[$runtime].Channel
-    $url = "$BaseUrl/releases.$channel.json"
-    $resp = Invoke-WebRequest -Uri $url -TimeoutSec 30 -MaximumRetryCount 3 -RetryIntervalSec 5
-    Write-Host "  $url → HTTP $($resp.StatusCode) ($($resp.RawContentLength) bytes)"
+$staleFiles = @()
+foreach ($file in $packageFiles) {
+    $url = "$BaseUrl/$([uri]::EscapeDataString($file.Name))"
+    if (-not (Test-DeliveredHash $file $url -Fresh)) { throw "新規取得でも配信物が一致しません: $url" }
+    # 利用者が取得する query なし URL も確認し、新しい cache key の一致だけで完了にしない。
+    if (-not (Test-DeliveredHash $file $url)) { $staleFiles += $file }
 }
-$headFailed = 0
-foreach ($f in Get-ChildItem $ArtifactsDir -File) {
-    $url = "$BaseUrl/$($f.Name)"
-    try {
-        $resp = Invoke-WebRequest -Uri $url -Method Head -TimeoutSec 15 -MaximumRetryCount 2 -RetryIntervalSec 3
-        Write-Host "  HEAD $($f.Name) → HTTP $($resp.StatusCode)"
-    } catch {
-        Write-Warning "  R2 配信物が見つかりません: $url — $($_.Exception.Message)"
-        $headFailed++
+if ($staleFiles.Count -gt 0) {
+    # 一意なバージョン名への不一致は upload 異常として停止し、cache purge で隠さない。
+    if (@($staleFiles | Where-Object { $_.Name -match '\d+\.\d+\.\d+' }).Count -gt 0) {
+        throw 'バージョン付き配信物の SHA256 が一致しません。成果物を保持します。'
     }
-}
-if ($headFailed -gt 0) {
-    throw "配信検証失敗 — $headFailed 件のファイルが R2 から取得できません。wrangler r2 object list を確認してください。"
+    $hostname = ([uri]$BaseUrl).Host
+    $zoneName = $hostname -replace '^[^.]+\.', ''
+    $zoneResp = Invoke-RestMethod -Uri "https://api.cloudflare.com/client/v4/zones?name=$zoneName&account.id=$AccountId" -Headers $cfHeaders -TimeoutSec 30
+    $zones = @($zoneResp.result | Where-Object { $_.name -eq $zoneName -and $_.account.id -eq $AccountId })
+    if (-not $zoneResp.success -or $zones.Count -ne 1 -or -not $hostname.EndsWith(".$zoneName", [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'パージ対象の account / Zone / hostname を一意に確認できません。成果物を保持します。'
+    }
+    # hostname が今回の R2 bucket の custom domain であることを確認する。
+    $domainResp = Invoke-RestMethod -Uri "https://api.cloudflare.com/client/v4/accounts/$AccountId/r2/buckets/$Bucket/domains/custom" -Headers $cfHeaders -TimeoutSec 30
+    $domains = @($domainResp.result.domains | Where-Object { $_.domain -eq $hostname -and $_.zoneId -eq $zones[0].id -and $_.enabled })
+    if (-not $domainResp.success -or $domains.Count -ne 1) { throw 'R2 bucket と配信 hostname の対応を確認できません。' }
+    $purgeUrls = @($staleFiles | ForEach-Object { "$BaseUrl/$([uri]::EscapeDataString($_.Name))" })
+    $purgeBody = [PSCustomObject]@{ files = $purgeUrls } | ConvertTo-Json -Compress
+    $purgeResp = Invoke-RestMethod -Method Post -Uri "https://api.cloudflare.com/client/v4/zones/$($zones[0].id)/purge_cache" `
+        -Headers $cfHeaders -ContentType 'application/json' -Body $purgeBody -TimeoutSec 30
+    if (-not $purgeResp.success) { throw '実証された stale URL のパージに失敗しました。' }
+    foreach ($file in $staleFiles) {
+        $url = "$BaseUrl/$([uri]::EscapeDataString($file.Name))"
+        if (-not (Test-DeliveredHash $file $url)) { throw "パージ後も配信物が一致しません: $url" }
+    }
+} else {
+    Write-Host '  全配信物が一致したためパージは不要です。'
 }
 
 # ---- 4. 旧バージョン nupkg のクリーンアップ (Aggressive 戦略) ----
-# ローカル artifacts の manifest (= 今アップロードしたものと同一) から keep set を作り、
+# ローカル packages の manifest (= 今アップロードしたものと同一) から keep set を作り、
 # R2 上の「.nupkg かつ manifest 外」だけを削除する。固定ファイル名 (Setup.exe /
 # Portable.zip / RELEASES* / assets.*.json / releases.*.json) は対象外なので安全。
 Write-Host '== 旧 nupkg クリーンアップ ==' -ForegroundColor Cyan
 $keep = @{}
-$manifests = Get-ChildItem $ArtifactsDir -Filter 'releases.*.json'
-if (-not $manifests) { throw 'artifacts に releases.*.json が見つかりません' }
+$manifests = Get-ChildItem $PackagesDir -Filter 'releases.*.json'
+if (-not $manifests) { throw 'packages に releases.*.json が見つかりません' }
 foreach ($m in $manifests) {
     foreach ($asset in (Get-Content $m.FullName -Raw | ConvertFrom-Json).Assets) {
         if ($asset.FileName) { $keep[$asset.FileName] = $true }
@@ -300,26 +402,14 @@ if (-not $toDelete) {
     if ($failed -gt 0 -and $deleted -eq 0) { throw '旧 nupkg の削除がすべて失敗しました。API token の権限を確認してください。' }
 }
 
-# ---- 5. packages.lock.json のクリーンアップ (リリース後の working tree clean 化) ----
-# RID 付き publish (dotnet publish -r win-x64 --self-contained) 後、 Core/Tests の packages.lock.json から
-# net10.0-windows/win-x64 セクションが剥がれて working tree が dirty になることがある (IDE/裏 restore でも同様)。
-# ci.yml は `dotnet restore -r win-x64` + RestoreLockedMode (Directory.Build.props) で復元するため、 lockfile は
-# win-x64 セクションを保持している必要がある (剥がれた版を commit すると NU1004 で CI が落ちる)。
-# ここで `-r win-x64 --force-evaluate` で win-x64 込みに再生成して HEAD と一致させ、 working tree を clean な
-# 状態でリリースを終える (/vava のリリース後 lock drift 手動 commit/revert が不要になる)。
-# 成果物は既にアップロード済みなので、ここでの失敗はリリースには影響しない → warning に留めて継続する。
-Write-Host '== packages.lock.json クリーンアップ ==' -ForegroundColor Cyan
-try {
-    Invoke-Native 'dotnet restore -r win-x64 --force-evaluate' {
-        dotnet restore RealTimeTranslator.slnx -r win-x64 --force-evaluate
-    }
-    # CI と同条件 (-r win-x64 + locked-mode) で検証: NU1004 ゼロなら CI の restore も通る
-    Invoke-Native 'dotnet restore -r win-x64 --locked-mode (CI 同条件検証)' {
-        dotnet restore RealTimeTranslator.slnx -r win-x64 --locked-mode
-    }
-    Write-Host '  ✅ packages.lock.json は win-x64 込み clean 状態 (CI 同条件 locked-mode 検証 OK)'
-} catch {
-    Write-Warning "  packages.lock.json のクリーンアップに失敗しました (アップロード済みリリースには影響なし)。手動で 'dotnet restore RealTimeTranslator.slnx -r win-x64 --force-evaluate' を実行してください — $($_.Exception.Message)"
+# ---- 5. 今回の外部作業先だけをごみ箱経由で清掃 ----
+# SkipUpload と途中失敗は復元・再開用に保持する。再生成 restore は行わない。
+if ($SkipCleanup) {
+    Write-Host "作業先を保持します: $WorkDir"
+} else {
+    Import-Module (Join-Path $env:USERPROFILE '.codex\scripts\CodexCleanup.psm1') -ErrorAction Stop
+    Remove-CodexItem -LiteralPath $WorkDir -AllowedRoot (Split-Path -Parent $WorkDir) -LedgerRoot $LedgerDir
+    if (Test-Path -LiteralPath $WorkDir) { throw "清掃後も作業先が残っています: $WorkDir" }
 }
 
 Write-Host "`n🎉 リリース完了: v$version → $BaseUrl" -ForegroundColor Green

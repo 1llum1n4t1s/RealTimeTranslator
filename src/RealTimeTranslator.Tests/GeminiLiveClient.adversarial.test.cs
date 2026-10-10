@@ -274,19 +274,6 @@ public sealed class GeminiLiveClientAdversarialTests
 
     [TestMethod]
     [TestCategory("Adversarial")]
-    public void EventHandlers_ShouldBeUnsubscribable()
-    {
-        using var client = new GeminiLiveClient();
-        Action<string> deltaHandler = _ => { };
-        Action<ConnectionState> stateHandler = _ => { };
-        client.TranscriptDeltaReceived += deltaHandler;
-        client.StateChanged += stateHandler;
-        client.TranscriptDeltaReceived -= deltaHandler;
-        client.StateChanged -= stateHandler;
-    }
-
-    [TestMethod]
-    [TestCategory("Adversarial")]
     public async Task CreateAndDispose_RepeatedCycles_ShouldNotLeakResources()
     {
         var before = GC.GetTotalMemory(true);

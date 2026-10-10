@@ -4,7 +4,7 @@
 # Actions は SHA 固定を推奨するが、Dependabot が SHA と更新 PR を自動で提示する。
 version: 2
 updates:
-  # GitHub Actions のバージョン固定（タグ → SHA 自動更新）
+  # GitHub Actions の SHA 固定参照を更新
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
@@ -30,7 +30,7 @@ updates:
       timezone: "Asia/Tokyo"
     commit-message:
       prefix: "deps"
-    # プレビュー / ベータも更新対象に含める（必要に応じて手動マージで取捨選択）
+    # 依存の種類による更新対象の制限を設けない
     allow:
       - dependency-type: "all"
     # patch/minor はまとめて1 PR、majorはそもそも下記 ignore で対象外

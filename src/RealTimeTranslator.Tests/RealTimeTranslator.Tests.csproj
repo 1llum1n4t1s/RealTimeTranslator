@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
-    <PackageReference Include="MSTest" Version="4.4.1" />
+    <PackageReference Include="MSTest" Version="4.5.1" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.10.1" />
   </ItemGroup>
 
@@ -18,9 +18,10 @@
 
   <ItemGroup>
     <!-- silero-vad 公式テスト wav (人声サンプル、 16kHz mono PCM16、 ~60秒)。
-         SileroVadDetector が実音声で speech prob を返せるかの結合テスト用 (sr scalar 修正の検証)。
+         FireRedVadDetector が実音声で speech prob を返せるかの結合テスト用。
          ライセンス: MIT (snakers4/silero-vad リポジトリと同じ)。 -->
     <Content Include="Assets/test.wav" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="Assets/LICENSE-test-wav.txt" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>
