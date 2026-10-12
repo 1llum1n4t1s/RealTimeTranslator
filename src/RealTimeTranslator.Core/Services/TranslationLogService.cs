@@ -219,6 +219,8 @@ public sealed class TranslationLogService : ITranslationLogger, IAsyncDisposable
                              .ToArray();
 
         var entries = new List<TranslationLogEntry>();
+        // 正の件数制限では最新分だけ保持する。全ファイルの走査と失敗通知は維持する。
+        Queue<TranslationLogEntry>? recentEntries = maxEntries is > 0 ? new() : null;
         var failures = new List<Exception>();
         foreach (var file in files)
         {
@@ -233,7 +235,15 @@ public sealed class TranslationLogService : ITranslationLogger, IAsyncDisposable
                 {
                     if (TranslationLogEntry.TryParseTsvLine(line, out var parsed) && parsed is not null)
                     {
-                        entries.Add(parsed);
+                        if (recentEntries is not null)
+                        {
+                            if (recentEntries.Count == maxEntries) recentEntries.Dequeue();
+                            recentEntries.Enqueue(parsed);
+                        }
+                        else
+                        {
+                            entries.Add(parsed);
+                        }
                     }
                     // パース失敗行は静かに skip (壊れた行が混じっても全体を諦めない設計)。
                 }
@@ -251,7 +261,9 @@ public sealed class TranslationLogService : ITranslationLogger, IAsyncDisposable
             throw new IOException($"翻訳ログを読み込めませんでした ({failures.Count} ファイル)。", new AggregateException(failures));
         }
 
-        // 件数制限: 古い側を切り捨てて新しい maxEntries 件を返す (ADV ログとして直近を見せたい想定)。
+        if (recentEntries is not null) return recentEntries.ToArray();
+
+        // null / 0 / 負数の既存契約を維持する。
         if (maxEntries is int max && entries.Count > max)
         {
             return entries.Skip(entries.Count - max).ToList();
@@ -295,8 +307,7 @@ public sealed class TranslationLogService : ITranslationLogger, IAsyncDisposable
                 var name = Path.GetFileNameWithoutExtension(file);
                 var parts = name.Split('_');
                 if (parts.Length < 2 || parts[1].Length != 8) continue;
-                if (!DateTime.TryParseExact(parts[1], "yyyyMMdd", null,
-                                            System.Globalization.DateTimeStyles.None, out var fileDate))
+                if (!LogFileDateParser.TryParseUnambiguousDate(parts[1], DateTime.Now.Date, out var fileDate))
                 {
                     continue;
                 }
@@ -373,7 +384,7 @@ public sealed class TranslationLogService : ITranslationLogger, IAsyncDisposable
     private string GetFilePathForDate(DateTime date)
     {
         // 日付別ファイル: TranslationLog_yyyyMMdd.tsv
-        return Path.Combine(LogDirectory, $"{FilePrefix}_{date:yyyyMMdd}{FileExtension}");
+        return Path.Combine(LogDirectory, $"{FilePrefix}_{date.ToString("yyyyMMdd", System.Globalization.CultureInfo.InvariantCulture)}{FileExtension}");
     }
 
     /// <summary>

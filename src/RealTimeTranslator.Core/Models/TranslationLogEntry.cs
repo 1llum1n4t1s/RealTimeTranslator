@@ -21,7 +21,7 @@ public sealed record TranslationLogEntry(
 {
     private const char TsvSeparator = '\t';
 
-    // ISO 8601 ベースだが秒精度で UI / ファイル両方に使える形式。 タイムゾーン情報なし (Local 想定)。
+    // 永続化はグレゴリオ暦の秒精度。UI 表示の暦は CurrentCulture に従う。
     private const string TimestampFormat = "yyyy-MM-ddTHH:mm:ss";
 
     /// <summary>UI 表示用にフォーマットした「日付 + 時刻」文字列。 ADV ログのヘッダーに使う。</summary>
@@ -33,7 +33,7 @@ public sealed record TranslationLogEntry(
     public string ToTsvLine()
     {
         return string.Join(TsvSeparator,
-            Timestamp.ToString(TimestampFormat),
+            Timestamp.ToString(TimestampFormat, System.Globalization.CultureInfo.InvariantCulture),
             Sanitize(Language),
             Sanitize(SessionId),
             Sanitize(ProcessName),

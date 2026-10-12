@@ -266,7 +266,7 @@ public static class LoggerService
                     var fileName = Path.GetFileNameWithoutExtension(file);
                     var parts = fileName.Split('_');
                     if (parts.Length >= 2 && parts[1].Length == 8 &&
-                        DateTime.TryParseExact(parts[1], "yyyyMMdd", null, System.Globalization.DateTimeStyles.None, out var fileDate))
+                        LogFileDateParser.TryParseUnambiguousDate(parts[1], DateTime.Now.Date, out var fileDate))
                     {
                         if (fileDate < cutoffDate)
                         {
