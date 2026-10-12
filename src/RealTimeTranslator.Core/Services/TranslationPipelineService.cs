@@ -127,8 +127,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     // EnableVad=false の場合は素通し (旧挙動)。
     private enum VadState { Silence, InSpeech, Hangover }
     private readonly IVoiceActivityDetector _vad;
-    // VAD 有効/無効の切替検知用 (B1-001 / D-I3 対応)。 hot-reload で切替時に _vadResampler の
-    // filter state を Reset することで、 VAD 無効パスでの「戻り値捨て Resample」を不要にする。
+    // VAD 有効/無効の切替検知用。hot-reload の境界で検出器・ゲート・蓄積実音を初期化する。
     // 初期値は default (EnableVad=true) と一致させて、 起動直後の不要 Reset を避ける。
     private bool _lastEnableVad = true;
 
@@ -669,10 +668,8 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                 {
                     var audioCaptureSettings = _settingsMonitor.CurrentValue.AudioCapture;
 
-                    // /rere B1-001 / D-I3 対応: VAD 有効/無効の hot-reload 切替を検知して
-                    // _vadResampler の filter state を Reset する。 これにより VAD 無効パスでの
-                    // 「戻り値捨て Resample」 (CPU 浪費) が不要になる。 切替直後の数フレームは
-                    // VAD 判定がやや不安定だが、 PreRoll (default 800ms) で吸収される。
+                    // VAD 切替を発話境界として扱い、切替前の実音・検出履歴を次の発話へ持ち越さない。
+                    // 送信用リサンプラは素通し中も進むので、filter state の連続性を保つ。
                     if (audioCaptureSettings.EnableVad != _lastEnableVad)
                     {
                         // OpenAI は VAD 無効パスで _vadResampler を回さない (送信は _sendResampler) ため、
@@ -680,6 +677,13 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                         // どちらも _vadResampler を送信に使うので Reset 不要 (連続性を保つ)。
                         if (_activeClient.InputSampleRate != 16000)
                             _vadResampler.Reset();
+                        _vad.Reset();
+                        _preRollBuffer.Clear();
+                        _vadState = VadState.Silence;
+                        _hangoverFramesRemaining = 0;
+                        _silenceStartUtc = DateTime.MinValue;
+                        _frameAccumulatorLen = 0;
+                        _frameAccumulator24kLen = 0;
                         _lastEnableVad = audioCaptureSettings.EnableVad;
                     }
 
@@ -1103,41 +1107,39 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
             // 句読点なしの trailing も確定させる必要があるかの判定に使う (下記 trailing 処理参照)。
             bool hardFinalize = string.IsNullOrEmpty(transcript);
 
-            string effective;
+            string newPortion;
             if (hardFinalize)
             {
-                // fallback 経路 (response.done で transcript が空): 既存の確定累積 + 直前の delta 蓄積。
-                // この経路は稀なので ToString() の O(N) コストは許容。
-                effective = _lastFinalizedTranscript.ToString() + _accumulatedText.ToString();
+                // 空 done は今回の delta だけを確定する。既確定全文のコピー・prefix 再比較は不要。
+                newPortion = _accumulatedText.ToString();
             }
             else
             {
-                effective = transcript;
-            }
+                // ⚠️ rere レビュー P0 #1 修正: prefix 不一致時の「transcript 全体を newPortion 扱い」
+                // を廃止し、 skip + Warn ログに倒す。
+                //
+                // 旧設計では `transcript.StartsWith(_lastFinalizedTranscript) ? slice : transcript` で
+                // 不一致時に transcript 全体を newPortion として再 emit していたが、 これは
+                // 「_lastFinalizedTranscript と transcript に重複する部分」を含めて再 emit し、
+                // 新 SegmentId で overlay に追加されるため重複字幕を作る経路があった。
+                // 「重複表示よりも欠落のほうがマシ」方針で skip に倒す。
+                // 再接続経由の不一致は OnConnectionStateChanged のリセットで吸収するので、
+                // ここに来るのは「API 側で transcript 正規化が入った」「順序入れ替わり」等の
+                // 稀ケースのみで実質ゼロ件のはず。
+                if (!StringBuilderIsPrefixOf(_lastFinalizedTranscript, transcript))
+                {
+                    Logger.Warn($"OnTranscriptCompleted: prefix 不整合検出 — done 経路スキップ (finalized 長={_lastFinalizedTranscript.Length} transcript 長={transcript.Length} finalized 末尾='{TruncateForLog(TailOf(_lastFinalizedTranscript, 20), 20)}' transcript 先頭='{TruncateForLog(transcript, 30)}')");
+                    _accumulatedText.Clear();
+                    _lastEmitTime = DateTime.MinValue;
+                    _hasPendingDelta = false;
+                    _throttleTimer.Change(Timeout.Infinite, Timeout.Infinite);
+                    _latencyStopwatch.Reset();
+                    return;
+                }
 
-            // ⚠️ rere レビュー P0 #1 修正: prefix 不一致時の「effective 全体を newPortion 扱い」
-            // を廃止し、 skip + Warn ログに倒す。
-            //
-            // 旧設計では `effective.StartsWith(_lastFinalizedTranscript) ? slice : effective` で
-            // 不一致時に effective 全体を newPortion として再 emit していたが、 これは
-            // 「_lastFinalizedTranscript と effective に重複する部分」を含めて再 emit し、
-            // 新 SegmentId で overlay に追加されるため重複字幕を作る経路があった。
-            // 「重複表示よりも欠落のほうがマシ」方針で skip に倒す。
-            // 再接続経由の不一致は OnConnectionStateChanged のリセットで吸収するので、
-            // ここに来るのは「API 側で transcript 正規化が入った」「順序入れ替わり」等の
-            // 稀ケースのみで実質ゼロ件のはず。
-            if (!StringBuilderIsPrefixOf(_lastFinalizedTranscript, effective))
-            {
-                Logger.Warn($"OnTranscriptCompleted: prefix 不整合検出 — done 経路スキップ (finalized 長={_lastFinalizedTranscript.Length} effective 長={effective.Length} finalized 末尾='{TruncateForLog(TailOf(_lastFinalizedTranscript, 20), 20)}' effective 先頭='{TruncateForLog(effective, 30)}')");
-                _accumulatedText.Clear();
-                _lastEmitTime = DateTime.MinValue;
-                _hasPendingDelta = false;
-                _throttleTimer.Change(Timeout.Infinite, Timeout.Infinite);
-                _latencyStopwatch.Reset();
-                return;
-            }
 
-            string newPortion = effective[_lastFinalizedTranscript.Length..];
+                newPortion = transcript[_lastFinalizedTranscript.Length..];
+            }
             newPortionLength = newPortion.Length;
 
             if (string.IsNullOrEmpty(newPortion))

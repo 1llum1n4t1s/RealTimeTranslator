@@ -27,22 +27,21 @@ public class AudioCaptureService : IAudioCaptureService
     private const int CaptureStateTransitionTimeoutMs = 3000;
     private const int MaxBufferSize = 48000; // 最大バッファサイズ（1秒分の48kHzオーディオ）
     private static readonly WaveFormat ProcessLoopbackFormat = new(48000, 16, 2);
-    private WasapiRecorder? _capture;
+    private ICaptureRecorder? _capture;
     private WaveFormat? _targetFormat;
     private readonly AudioCaptureSettings _settings;
+    private readonly Func<int, CancellationToken, Task<ICaptureRecorder>> _createRecorder;
     // Queue&lt;float&gt; を使うことで先頭からの Dequeue が O(1) になる。
     // 旧 List&lt;float&gt;.RemoveRange(0, N) は内部 memmove で O(残量) だった。
     private readonly Queue<float> _audioBuffer = new();
     private readonly System.Threading.Lock _bufferLock = new();
     private bool _isCapturing;
-    private bool _isDisposed;
+    private volatile bool _isDisposed;
     private int _targetProcessId;
 
-    // ⭐ rere P1 #6 修正: StopCapture と StartCaptureWithRetryAsync の race ガード。
-    // TranslationPipelineService.StopAsync は Task.Run + WaitAsync(3s) で StopCapture を
-    // バックグラウンド実行する設計なので、 3 秒タイムアウト後にユーザーが急いで「再開」を
-    // 押すと、 旧 StopCapture 完了前に新 StartCapture が走り _capture フィールドが race する。
-    // _isStopping フラグで「stop 進行中」を明示し、 新 Start は完了を待つ。
+    // pipeline の停止期限後もネイティブ停止は継続する。参照の生成から破棄までを
+    // 同じゲートで囲み、旧停止が新しい recorder の所有権を消さないようにする。
+    private readonly SemaphoreSlim _captureLifecycleGate = new(1, 1);
     private readonly System.Threading.Lock _stopLock = new();
     private volatile bool _isStopping;
     private int _dataAvailableCallCount;
@@ -72,9 +71,47 @@ public class AudioCaptureService : IAudioCaptureService
     public event EventHandler<CaptureStatusEventArgs>? CaptureStatusChanged;
 
     public AudioCaptureService(AudioCaptureSettings? settings = null)
+        : this(settings, CreateProcessLoopbackRecorderAsync)
+    {
+    }
+
+    internal AudioCaptureService(
+        AudioCaptureSettings? settings,
+        Func<int, CancellationToken, Task<ICaptureRecorder>> createRecorder)
     {
         _settings = settings ?? new AudioCaptureSettings();
         _targetFormat = WaveFormat.CreateIeeeFloatWaveFormat(_settings.SampleRate, MonoChannelCount);
+        _createRecorder = createRecorder;
+    }
+
+    // ネイティブ境界だけを差し替え、開始・停止・所有状態は本サービスで検証する。
+    internal interface ICaptureRecorder : IDisposable
+    {
+        WaveFormat WaveFormat { get; }
+        CaptureState CaptureState { get; }
+        event CaptureDataAvailableHandler DataAvailable;
+        event EventHandler<StoppedEventArgs> RecordingStopped;
+        void StartRecording();
+        void StopRecording();
+    }
+
+    private sealed class WasapiCaptureRecorder(WasapiRecorder recorder) : ICaptureRecorder
+    {
+        public WaveFormat WaveFormat => recorder.WaveFormat;
+        public CaptureState CaptureState => recorder.CaptureState;
+        public event CaptureDataAvailableHandler DataAvailable
+        {
+            add => recorder.DataAvailable += value;
+            remove => recorder.DataAvailable -= value;
+        }
+        public event EventHandler<StoppedEventArgs> RecordingStopped
+        {
+            add => recorder.RecordingStopped += value;
+            remove => recorder.RecordingStopped -= value;
+        }
+        public void StartRecording() => recorder.StartRecording();
+        public void StopRecording() => recorder.StopRecording();
+        public void Dispose() => recorder.Dispose();
     }
 
     /// <summary>
@@ -104,17 +141,41 @@ public class AudioCaptureService : IAudioCaptureService
         if (processId <= 0)
             throw new ArgumentOutOfRangeException(nameof(processId), "プロセスIDは正の値で指定してください。");
 
-        if (_capture != null)
-            StopCapture();
+        ObjectDisposedException.ThrowIf(_isDisposed, this);
+        if (!_captureLifecycleGate.Wait(0))
+            throw new InvalidOperationException("音声キャプチャの開始・停止処理が完了していません。");
+        try
+        {
+            ObjectDisposedException.ThrowIf(_isDisposed, this);
+            if (_isStopping)
+                throw new InvalidOperationException("音声キャプチャの停止処理が完了していません。");
 
-        _targetProcessId = processId;
-        _audioBuffer.Clear();
+            CleanupCapture();
+            _isCapturing = false;
+            _targetProcessId = processId;
+            _audioBuffer.Clear();
 
-        _capture = CreateProcessLoopbackRecorderAsync(_targetProcessId, CancellationToken.None)
-            .GetAwaiter().GetResult();
-        AttachCaptureEvents();
-        StartRecorderAsync(_capture, CancellationToken.None).GetAwaiter().GetResult();
-        _isCapturing = true;
+            _capture = _createRecorder(_targetProcessId, CancellationToken.None)
+                .GetAwaiter().GetResult();
+            ObjectDisposedException.ThrowIf(_isDisposed, this);
+            if (_isStopping)
+                throw new InvalidOperationException("音声キャプチャの停止が要求されました。");
+            AttachCaptureEvents();
+            StartRecorderAsync(_capture, CancellationToken.None).GetAwaiter().GetResult();
+            ObjectDisposedException.ThrowIf(_isDisposed, this);
+            if (_isStopping)
+                throw new InvalidOperationException("音声キャプチャの停止が要求されました。");
+            _isCapturing = true;
+        }
+        catch
+        {
+            CleanupCapture();
+            throw;
+        }
+        finally
+        {
+            _captureLifecycleGate.Release();
+        }
     }
 
     /// <summary>
@@ -127,20 +188,38 @@ public class AudioCaptureService : IAudioCaptureService
         if (processId <= 0)
             throw new ArgumentOutOfRangeException(nameof(processId), "プロセスIDは正の値で指定してください。");
 
-        // ⭐ rere P1 #6: 進行中の StopCapture を最大 5 秒待つ (race ガード)。
-        // TranslationPipelineService.StopAsync が 3 秒タイムアウトしてバックグラウンドで継続中の
-        // 場合、 新 Start で _capture フィールドが上書き race するため、 ここで完了を待つ。
-        var stopWaitStopwatch = Stopwatch.StartNew();
-        while (_isStopping && stopWaitStopwatch.ElapsedMilliseconds < 5000)
+        if (_isDisposed) return false;
+        bool entered;
+        try
         {
-            if (cancellationToken.IsCancellationRequested) return false;
-            await Task.Delay(50, cancellationToken).ConfigureAwait(false);
+            entered = await _captureLifecycleGate.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken).ConfigureAwait(false);
         }
-        if (_isStopping)
-            LoggerService.LogWarning($"[キャプチャ] StopCapture が 5 秒を超えても完了せず — race の可能性 (旧 capture が残る可能性)");
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            OnCaptureStatusChanged("音声キャプチャがキャンセルされました。", false);
+            return false;
+        }
+        if (!entered)
+        {
+            LoggerService.LogWarning("[キャプチャ] 前の開始・停止処理が 5 秒以内に完了しなかったため、開始しませんでした。");
+            OnCaptureStatusChanged("前の音声キャプチャの開始・停止処理が完了していません。完了後に再開してください。", false);
+            return false;
+        }
+        try
+        {
+            if (_isDisposed || _isStopping) return false;
+            return await StartCaptureWithRetryCoreAsync(processId, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _captureLifecycleGate.Release();
+        }
+    }
 
-        if (_capture != null)
-            StopCapture();
+    private async Task<bool> StartCaptureWithRetryCoreAsync(int processId, CancellationToken cancellationToken)
+    {
+        CleanupCapture();
+        _isCapturing = false;
 
         _targetProcessId = processId;
         _audioBuffer.Clear();
@@ -154,13 +233,24 @@ public class AudioCaptureService : IAudioCaptureService
         LoggerService.LogInfo($"[キャプチャ] 受け取ったプロセスID={processId} で WasapiRecorder を構築します");
         LoggerService.LogDebug($"StartCaptureWithRetryAsync: Starting process capture for PID {processId}");
 
-        while (retryCount < maxRetries && !cancellationToken.IsCancellationRequested)
+        while (retryCount < maxRetries && !cancellationToken.IsCancellationRequested && !_isDisposed && !_isStopping)
         {
             try
             {
-                _capture = await CreateProcessLoopbackRecorderAsync(processId, cancellationToken).ConfigureAwait(false);
+                _capture = await _createRecorder(processId, cancellationToken).ConfigureAwait(false);
+                cancellationToken.ThrowIfCancellationRequested();
+                if (_isDisposed || _isStopping)
+                {
+                    CleanupCapture();
+                    return false;
+                }
                 AttachCaptureEvents();
                 await StartRecorderAsync(_capture, cancellationToken).ConfigureAwait(false);
+                if (_isDisposed || _isStopping)
+                {
+                    CleanupCapture();
+                    return false;
+                }
                 _isCapturing = true;
 
                 OnCaptureStatusChanged("音声キャプチャを開始しました。", false);
@@ -223,19 +313,20 @@ public class AudioCaptureService : IAudioCaptureService
         return false;
     }
 
-    private static Task<WasapiRecorder> CreateProcessLoopbackRecorderAsync(
+    private static async Task<ICaptureRecorder> CreateProcessLoopbackRecorderAsync(
         int processId,
         CancellationToken cancellationToken)
     {
-        return new WasapiRecorderBuilder()
+        var recorder = await new WasapiRecorderBuilder()
             .WithProcessLoopback((uint)processId, ProcessLoopbackMode.IncludeTargetProcessTree)
             .WithFormat(ProcessLoopbackFormat)
             .WithBufferLength(ProcessLoopbackBufferMs)
-            .BuildAsync(cancellationToken);
+            .BuildAsync(cancellationToken).ConfigureAwait(false);
+        return new WasapiCaptureRecorder(recorder);
     }
 
     private static async Task StartRecorderAsync(
-        WasapiRecorder capture,
+        ICaptureRecorder capture,
         CancellationToken cancellationToken)
     {
         capture.StartRecording();
@@ -258,7 +349,7 @@ public class AudioCaptureService : IAudioCaptureService
         }
     }
 
-    private static void StopAndDisposeRecorder(WasapiRecorder capture)
+    private static void StopAndDisposeRecorder(ICaptureRecorder capture)
     {
         if (capture.CaptureState == CaptureState.Starting)
         {
@@ -321,6 +412,7 @@ public class AudioCaptureService : IAudioCaptureService
             _isStopping = true;
         }
 
+        _captureLifecycleGate.Wait();
         try
         {
             if (_capture == null)
@@ -339,6 +431,7 @@ public class AudioCaptureService : IAudioCaptureService
         finally
         {
             lock (_stopLock) { _isStopping = false; }
+            _captureLifecycleGate.Release();
         }
     }
 
