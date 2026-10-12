@@ -149,21 +149,20 @@ public class AudioCaptureSettings
     public string VadPreset { get; set; } = "Balanced";
 
     /// <summary>
-    /// speech probability のしきい値 (0.0-1.0, default: 0.3)。
+    /// speech probability のしきい値 (0.0-1.0, default: 0.6)。
     /// <para>
     /// 下げると小声を拾いやすくなる一方、BGM/SE の誤検出と継続送信が増え、発話の切れ目が
     /// 失われる場合がある。閾値はモデル固有の値なので、音源・送信量・発話境界を一緒に比較する。
     /// </para>
     /// <para>
-    /// FireRed streaming への移行でも既存の Balanced (0.3 / 1000ms / 800ms) と
-    /// Edges (0.2 / 1200ms / 800ms) を維持する。<see cref="VadHangoverMs"/> と
-    /// pre-roll の保護を単独で削らず、アイドル字幕確定との組み合わせを維持する。
-    /// 全プリセットの threshold は Balanced 0.3 / PrioritizeEdges 0.2 / AggressiveSavings 0.5
-    /// (PrioritizeEdges も Balanced と同値では差が preroll だけになるため 0.2 へ連動シフト)。
+    /// FireRed streaming の全プリセットの閾値は Balanced 0.6 / PrioritizeEdges 0.4 / AggressiveSavings 0.8。
+    /// 旧モデルの閾値をそのまま適用せず、低音量・短発話・合成背景音の送信波形を比較して調整する。
+    /// Balanced の pre-roll 1000ms / hangover 800ms、Edges の 1200ms / 800ms は維持する。
+    /// <see cref="VadHangoverMs"/> と pre-roll の保護を単独で削らず、アイドル字幕確定との組み合わせを維持する。
     /// </para>
     /// 遠距離小音量の声拾いは入力プリプロセス DSP (<see cref="AudioPreprocessingSettings"/>) に任せる方針。
     /// </summary>
-    public float VadThreshold { get; set; } = 0.3f;
+    public float VadThreshold { get; set; } = 0.6f;
 
     /// <summary>
     /// 発話冒頭の取りこぼし防止用にリングバッファに保持する直近音声の長さ (ms)。

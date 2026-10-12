@@ -101,24 +101,16 @@ public partial class SettingsViewModel : ObservableObject
         });
         VadPresetOptions = new ReadOnlyCollection<VadPresetOption>(new VadPresetOption[]
         {
-            // ⚠️⚠️ threshold を下げるとき / hangover を削るときは必ずこの経緯を読むこと ⚠️⚠️
-            //
             // 閾値と Hangover は送信量と発話境界に影響する。閾値だけを下げると
             // BGM/SE の誤検出で継続送信が増え、複数発話が連結する場合がある。
-            // FireRed streaming への移行でも既存の組み合わせを維持し、低音量・冒頭・末尾と
-            // 無音送信の実音比較で判断する。モデル間で同じ閾値が同じ判定になるとは限らない。
-            // Balanced: 閾値 0.3 / pre-roll 1000ms / hangover 800ms。
-            new("Balanced",          "ふつう (推奨)",                    0.3f, 1000, 800),
-            // PrioritizeEdges: threshold=0.2 で Balanced (0.3) でも拾えない小声 (「はい」「うん」等) を拾う最終手段。
-            // preroll=1200 / hangover=800 で文の頭・尻尾の音素切れを更に強く抑える。 通話・会議・コマンド発話向け。
-            // v1.0.50 で Balanced が 0.4 → 0.3 に下がったのに合わせて 0.3 → 0.2 へ連動シフトした。
-            // Balanced と同値のままだと preroll 200ms しか差が無く、 プリセットを分ける意味が消えるため
-            // (相対関係「頭尻尾重視 > ふつう > 節約」を維持する設計)。
-            // 3 プリセット中 BGM 誤検出と課金増が最も大きいので、 Balanced で拾えない時だけ選ぶ位置づけ。
-            new("PrioritizeEdges",   "頭と尻尾を取りこぼさない",         0.2f, 1200, 800),
-            // AggressiveSavings: threshold=0.5 で誤検出 (BGM のドラム/拍手等) を抑え、
-            // preroll=700 / hangover=350 で送信秒数を最小化。 長時間視聴で課金を切り詰めたい時向け。
-            new("AggressiveSavings", "ガッツリ節約",                      0.5f, 700, 350),
+            // FireRed streaming は Silero と確率の尺度が異なるため、旧閾値を引き継がない。
+            // 日英の低音量・短発話・頭末尾と合成背景音を実 pipeline で比較し、閾値を調整した。
+            // 冒頭・末尾の保持時間は維持する。合成音源の結果を実ゲームの精度保証とは扱わない。
+            new("Balanced",          "ふつう (推奨)",                    0.6f, 1000, 800),
+            // 標準で拾えない声向け。低い閾値と長い pre-roll で冒頭を保護する。
+            new("PrioritizeEdges",   "頭と尻尾を取りこぼさない",         0.4f, 1200, 800),
+            // 厳しい閾値で誤検出を抑える。pre-roll と hangover は従来の節約設定を維持する。
+            new("AggressiveSavings", "ガッツリ節約",                      0.8f, 700, 350),
             // Custom は下の詳細スライダーで個別調整するモード。 setter で 3 値は上書きしないため、
             // ここの 3 値は実際には参照されない (rere B2-007 対応: 死コード相当だったので 0/0/0 に)。
             new("Custom",            "カスタム (詳細設定)",               0f,   0,   0)
