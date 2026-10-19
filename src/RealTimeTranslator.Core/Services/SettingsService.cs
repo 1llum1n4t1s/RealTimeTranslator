@@ -173,6 +173,7 @@ public class SettingsService : ISettingsService
     {
         Overlay = source.Overlay,
         AudioCapture = source.AudioCapture,
+        VoiceTranslation = source.VoiceTranslation.Clone(),
         OpenAIRealtime = new OpenAIRealtimeSettings
         {
             ApiKey = DpapiHelper.Encrypt(source.OpenAIRealtime.ApiKey),

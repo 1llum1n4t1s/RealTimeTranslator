@@ -23,6 +23,27 @@ RealTimeTranslator は、Windows 上で指定したプロセスの再生音声�
 
 `RealTimeTranslator.Core` は UI 非依存、`RealTimeTranslator.UI` は composition root と表示、`RealTimeTranslator.Tests` は両者の契約検証を担当します。
 
+## ボイス通訳の独立セッション
+
+`VoiceTranslationService` は、字幕用の `TranslationPipelineService` と別の接続・入力キュー・リサンプラ・開始停止状態を所有する。`App` は音声送信用の `OpenAIRealtimeClient` を都度生成し、字幕用 singleton を再利用しない。ボイス通訳の送信先言語は `AppSettings.VoiceTranslation` に保存し、字幕側の provider・言語と独立させる。API キーは既存の OpenAI 設定を使い、保存用 clone の DPAPI 保護を維持する。
+
+```text
+物理マイク（取得形式）
+→ VoiceAudioService（ネイティブ buffer のコピー、mono float 化）
+→ bounded channel（取得時の PTT 許可とルーティング世代を保持）
+→ VoiceTranslationService（24 kHz / PCM16 へリサンプル）
+→ 専用 IRealtimeSpeechTranslator / OpenAI Translation session
+→ session.output_audio.delta（24 kHz / PCM16 / mono）
+→ VoiceAudioService（出力形式変換、2 秒上限のリング、無音補填）
+→ VB-CABLE の再生側 CABLE Input → 録音側 CABLE Output → ゲーム
+```
+
+マイクを native callback からネットワークへ直接送らず、処理 task で変換・送信する。ボイス通訳は独立した PTT ゲートを使用し、字幕用 VAD の状態・プリセットを変更しない。キーを離した後も無音 PCM を送り、翻訳の末尾を出力させる。リサンプラに残った実音もキー閉鎖中は送らない。原音モードは API を経由せず、ミュートは出力しない。モード変更時は一旦ミュートしてキューを消去し、古い接続の遅延出力を破棄する。
+
+機器は ID で明示選択し、入力から VB-CABLE の録音 endpoint を除外、出力は標準 VB-CABLE の再生 endpoint に限定する。利用者が変更できる endpoint 表示名は識別に使わず、adapter 名（`MMDevice.DeviceFriendlyName` / `PKEY_DeviceInterface_FriendlyName`）の `VB-Audio Virtual Cable` または `VB-Audio Point` と、短名（`PKEY_Device_DeviceDesc`）を両方完全一致で確認する。短名は capture が `CABLE Output`、render が `CABLE Input` または公式 Pack45 に含まれる `CABLE In 16 Ch`。列挙時・開始時に同じ判定を使い、不明な値は許可しない。以前の出力 ID が候補にない場合は未選択とし、保存済み ID を保持したまま VB-CABLE の明示的な再選択を求める。既定機器への fallback や Windows 全体の既定変更は行わない。停止は接続待ちもキャンセルでき、音声を消去してから capture/player を解放する。通信・機器・キュー超過はミュートして停止し、原音への自動切替や保留音声付きの自動再接続は行わない。WASAPI へ既に渡した短い再生単位は source キューの消去だけでは回収できない。
+
+`VoiceTranslationViewModel` と `VoiceTranslationView` は専用タブで機器・言語・PTT・モード・メーター・翻訳文を表示し、サービスイベントを UI thread へ dispatch する。終了処理では音声送信を明示停止した後に DI の非同期破棄を行う。VB-CABLE の導入と、ゲーム側の CABLE Output の指定は利用者が行う。
+
 ## 実行時のデータフロー
 
 ```text

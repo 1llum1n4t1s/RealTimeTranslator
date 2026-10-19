@@ -11,7 +11,7 @@ namespace RealTimeTranslator.Core.Services;
 
 // ConnectionState は Core.Models に移動済（Interface→Services 逆方向依存を解消するため）。
 
-public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
+public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeSpeechTranslator
 {
     private static readonly ILog Logger = LogManager.GetLogger<OpenAIRealtimeClient>();
 
@@ -97,6 +97,9 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
     /// <inheritdoc />
     public int InputSampleRate => 24000;
 
+    /// <inheritdoc />
+    public int OutputSampleRate => 24000;
+
     /// <summary>
     /// 送信前にチャネルから DropOldest で破棄された音声チャンクの累計数。
     /// 字幕が抜けた原因が NW 詰まりか API 遅延か判別する診断メトリクス。
@@ -146,6 +149,7 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
 
     public event Action<string>? TranscriptDeltaReceived;
     public event Action<string>? TranscriptCompleted;
+    public event Action<byte[]>? TranslatedAudioReceived;
     public event Action<Exception>? ErrorReceived;
     public event Action<ConnectionState>? StateChanged;
 
@@ -480,18 +484,21 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
         try
         {
             await _ws.ConnectAsync(uri, ct).ConfigureAwait(false);
-            // /rere 第2R #B1-R2-005 (v1.0.29 候補): plain `= 0` を Interlocked.Exchange に統一。
-            // 他 3 箇所 (L130, L829, L847) と書き込みプロトコルを揃えて race を構造的に解消。
-            Interlocked.Exchange(ref _reconnectAttempts, 0);
             SetState(ConnectionState.Connected);
             Logger.Info("OpenAI Realtime WebSocket 接続成功");
-            // 60 分のセッション上限に達する前 (~55 分) にプロアクティブ再接続するタイマーを武装する。
-            _sessionRefreshTimer.Change(SessionRefreshInterval, Timeout.InfiniteTimeSpan);
+            // 再接続が有効な場合だけ、上限前 (~55 分) にセッションを更新する。
+            // 再接続を禁止したボイス通訳では、接続中のセッションを更新で切断しない。
+            var refreshDueTime = _settings.MaxReconnectAttempts > 0
+                ? SessionRefreshInterval
+                : Timeout.InfiniteTimeSpan;
+            _sessionRefreshTimer.Change(refreshDueTime, Timeout.InfiniteTimeSpan);
 
             await SendSessionUpdateAsync(ct).ConfigureAwait(false);
 
             _receiveTask = Task.Run(() => ReceiveLoopAsync(_cts!.Token), _cts!.Token);
             _sendTask = Task.Run(() => SendLoopAsync(_cts!.Token), _cts!.Token);
+            // セッション初期化まで成功したときだけ、次の障害に備えて試行回数を戻す。
+            Interlocked.Exchange(ref _reconnectAttempts, 0);
         }
         catch (WebSocketException ex) when (ex.InnerException is HttpRequestException httpEx)
         {
@@ -665,6 +672,8 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
 
     private async Task ReceiveLoopAsync(CancellationToken ct)
     {
+        var ws = _ws;
+        if (ws is null) return;
         // /opop P1-MEM-C: 旧 `new byte[65536]` を ArrayPool 化 (v1.0.33)。
         // ReceiveLoopAsync は接続あたり 1 回確保だが、 55 分プロアクティブ再接続 + 反応的再接続で
         // 数時間配信時に数 MB の Gen2 候補圧。 ArrayPool 標準バケットに 65536 が入るので再利用可能。
@@ -674,9 +683,11 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
 
         try
         {
-            while (!ct.IsCancellationRequested && _ws is { State: WebSocketState.Open })
+            while (!ct.IsCancellationRequested && ReferenceEquals(ws, _ws) && ws.State == WebSocketState.Open)
             {
-                var result = await _ws.ReceiveAsync(buffer, ct).ConfigureAwait(false);
+                var result = await ws.ReceiveAsync(buffer, ct).ConfigureAwait(false);
+                // 切断・再接続と競合した旧セッションの受信は新しい出力へ流さない。
+                if (ct.IsCancellationRequested || !ReferenceEquals(ws, _ws)) break;
 
                 if (result.MessageType == WebSocketMessageType.Close)
                 {
@@ -760,6 +771,49 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
         }
     }
 
+    // 固定フレーム長は仮定せず、異常に巨大な単一チャンクの確保だけを制限する。
+    private const int MaxTranslatedAudioBytes = 4 * 1024 * 1024;
+
+    private void ProcessTranslatedAudio(JsonElement root)
+    {
+        var handler = TranslatedAudioReceived;
+        // 字幕だけを利用するセッションでは音声をデコード・確保しない。
+        if (handler is null) return;
+
+        byte[] audio;
+        try
+        {
+            if (!root.TryGetProperty("delta", out var delta) || delta.ValueKind != JsonValueKind.String)
+                throw new FormatException("翻訳音声の delta が文字列ではありません。");
+
+            if (root.TryGetProperty("sample_rate", out var sampleRate) &&
+                (sampleRate.ValueKind != JsonValueKind.Number || !sampleRate.TryGetInt32(out var rate) || rate != OutputSampleRate))
+                throw new FormatException("翻訳音声のサンプルレートが 24000 Hz ではありません。");
+            if (root.TryGetProperty("channels", out var channels) &&
+                (channels.ValueKind != JsonValueKind.Number || !channels.TryGetInt32(out var count) || count != 1))
+                throw new FormatException("翻訳音声のチャンネル数が mono ではありません。");
+            if (root.TryGetProperty("format", out var format) &&
+                (format.ValueKind != JsonValueKind.String || format.GetString() != "pcm16"))
+                throw new FormatException("翻訳音声の形式が PCM16 ではありません。");
+
+            var encodedAudio = delta.GetString()!;
+            if (encodedAudio.Length > ((MaxTranslatedAudioBytes + 2) / 3) * 4)
+                throw new FormatException("翻訳音声のチャンクが上限を超えています。");
+            audio = Convert.FromBase64String(encodedAudio);
+            if (audio.Length > MaxTranslatedAudioBytes || audio.Length % sizeof(short) != 0)
+                throw new FormatException("翻訳音声の PCM16 チャンク長が不正です。");
+        }
+        catch (FormatException ex)
+        {
+            Logger.Warn("翻訳音声の受信データが不正です", ex);
+            ErrorReceived?.Invoke(ex);
+            return;
+        }
+
+        // イベント呼び出し中はロックを保持せず、空チャンクで再生キューを起こさない。
+        if (audio.Length > 0) handler(audio);
+    }
+
     private void ProcessMessage(ReadOnlyMemory<byte> json)
     {
         try
@@ -786,6 +840,10 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
 
             switch (type)
             {
+                case "session.output_audio.delta":
+                    ProcessTranslatedAudio(root);
+                    break;
+
                 // 翻訳結果のストリーミング（delta）
                 // ・現行 GPT Realtime API: response.output_audio_transcript.delta / response.output_text.delta
                 // ・Translation 専用エンドポイント: session.output_transcript.delta / output_transcript.delta
@@ -925,7 +983,7 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeTranscriber
     private void OnSessionRefreshTimerElapsed(object? state)
     {
         // 既に切断 / 再接続中 / 停止指示済みなら何もしない (二重起動は _reconnectInFlight でも防がれる)。
-        if (!_shouldReconnect || _state != ConnectionState.Connected) return;
+        if (_settings.MaxReconnectAttempts <= 0 || !_shouldReconnect || _state != ConnectionState.Connected) return;
 
         Logger.Info($"セッションが約 {SessionRefreshInterval.TotalMinutes:F0} 分に到達 — 60 分上限前にプロアクティブ再接続を実行");
         Interlocked.Exchange(ref _reconnectAttempts, 0);

@@ -1,6 +1,7 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:vm="using:RealTimeTranslator.UI.ViewModels"
+        xmlns:views="using:RealTimeTranslator.UI.Views"
         xmlns:models="using:RealTimeTranslator.Core.Models"
         xmlns:converters="using:RealTimeTranslator.UI.Converters"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
@@ -287,6 +288,17 @@
 
                     </StackPanel>
                 </ScrollViewer>
+            </TabItem>
+
+            <TabItem AutomationProperties.AutomationId="VoiceTranslationTab">
+                <TabItem.Header>
+                    <StackPanel Orientation="Horizontal" Spacing="10">
+                        <PathIcon Width="16" Height="16" VerticalAlignment="Center"
+                                  Data="M12,14A3,3 0 0,0 15,11V5A3,3 0 0,0 9,5V11A3,3 0 0,0 12,14M17,11A5,5 0 0,1 7,11H5A7,7 0 0,0 11,17.93V21H13V17.93A7,7 0 0,0 19,11H17Z"/>
+                        <TextBlock Text="ボイス通訳" VerticalAlignment="Center"/>
+                    </StackPanel>
+                </TabItem.Header>
+                <views:VoiceTranslationView DataContext="{Binding Voice}"/>
             </TabItem>
 
             <!-- ═══ Tab 2: API設定 ═══ -->
@@ -818,7 +830,7 @@
                                 <TextBlock Text="検出しきい値 (FireRed VAD speech probability)" FontSize="12" Margin="0,4,0,2"/>
                                 <Slider Minimum="0.1" Maximum="0.9" Value="{Binding VadThreshold, Mode=TwoWay}"
                                         TickFrequency="0.05" IsSnapToTickEnabled="True"/>
-                                <TextBlock Text="{Binding VadThreshold, StringFormat='現在: {0:F2} (本アプリ既定 0.60、 上げるほど判定が厳しくなり送信量減)'}"
+                                <TextBlock Text="{Binding VadThreshold, StringFormat='現在: {0:F2} (本アプリ既定 0.80、 上げるほど判定が厳しくなり送信量減)'}"
                                            FontSize="11" Foreground="{DynamicResource Brush.FG2}" Margin="0,0,0,8"/>
 
                                 <TextBlock Text="プリロール時間 (ms) — 発話冒頭の取りこぼし防止" FontSize="12" Margin="0,4,0,2"/>

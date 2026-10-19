@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.Collections.ObjectModel;
 using System.Globalization;
 using System.Linq;
@@ -104,13 +105,13 @@ public partial class SettingsViewModel : ObservableObject
             // 閾値と Hangover は送信量と発話境界に影響する。閾値だけを下げると
             // BGM/SE の誤検出で継続送信が増え、複数発話が連結する場合がある。
             // FireRed streaming は Silero と確率の尺度が異なるため、旧閾値を引き継がない。
-            // 日英の低音量・短発話・頭末尾と合成背景音を実 pipeline で比較し、閾値を調整した。
+            // 背景音の誤検出を抑えるため、発話と認める閾値を高めにする。
             // 冒頭・末尾の保持時間は維持する。合成音源の結果を実ゲームの精度保証とは扱わない。
-            new("Balanced",          "ふつう (推奨)",                    0.6f, 1000, 800),
+            new("Balanced",          "ふつう (推奨)",                    0.8f, 1000, 800),
             // 標準で拾えない声向け。低い閾値と長い pre-roll で冒頭を保護する。
-            new("PrioritizeEdges",   "頭と尻尾を取りこぼさない",         0.4f, 1200, 800),
+            new("PrioritizeEdges",   "頭と尻尾を取りこぼさない",         0.6f, 1200, 800),
             // 厳しい閾値で誤検出を抑える。pre-roll と hangover は従来の節約設定を維持する。
-            new("AggressiveSavings", "ガッツリ節約",                      0.8f, 700, 350),
+            new("AggressiveSavings", "ガッツリ節約",                      0.9f, 700, 350),
             // Custom は下の詳細スライダーで個別調整するモード。 setter で 3 値は上書きしないため、
             // ここの 3 値は実際には参照されない (rere B2-007 対応: 死コード相当だったので 0/0/0 に)。
             new("Custom",            "カスタム (詳細設定)",               0f,   0,   0)
@@ -175,6 +176,12 @@ public partial class SettingsViewModel : ObservableObject
     }
 
     public AppSettings Settings => _settings;
+
+    public void UpdateVoiceTranslation(VoiceTranslationSettings value)
+    {
+        _settings.VoiceTranslation = value.Clone();
+        ScheduleAutoSave();
+    }
 
     /// <summary>
     /// SanitizeSettings で「ユーザーが視認できる UI 要素」が黙って矯正された場合、 ここに通知文を蓄積する。
@@ -960,7 +967,8 @@ public partial class SettingsViewModel : ObservableObject
     /// </summary>
     internal static readonly TimeSpan ClipHoldDuration = TimeSpan.FromSeconds(1.5);
 
-    private DateTime _clipHoldUntilUtc = DateTime.MinValue;
+    private readonly long _inputLevelClockOrigin = Stopwatch.GetTimestamp();
+    private TimeSpan _clipHoldUntil = TimeSpan.MinValue;
 
     private bool _isInputClipping;
     /// <summary>直近にクリップ (0 dBFS 到達) したか。 メーター右端の赤インジケータ点灯に使う。</summary>
@@ -968,12 +976,12 @@ public partial class SettingsViewModel : ObservableObject
 
     // Called from MainViewModel when a post-gain peak level (dBFS) arrives from the pipeline.
     // Maps -60..0 dBFS to 0..1 for the OBS-like meter and updates the numeric label.
-    public void UpdateInputLevel(double peakDb) => UpdateInputLevel(peakDb, DateTime.UtcNow);
+    public void UpdateInputLevel(double peakDb) => UpdateInputLevel(peakDb, Stopwatch.GetElapsedTime(_inputLevelClockOrigin));
 
     /// <summary>
-    /// <see cref="UpdateInputLevel(double)"/> の時刻注入版 (クリップホールドの経過をテストから制御するため internal)。
+    /// <see cref="UpdateInputLevel(double)"/> の経過時間注入版 (クリップホールドをテストから制御するため internal)。
     /// </summary>
-    internal void UpdateInputLevel(double peakDb, DateTime nowUtc)
+    internal void UpdateInputLevel(double peakDb, TimeSpan elapsed)
     {
         const double floorDb = -60.0;
         double norm = (peakDb - floorDb) / (0.0 - floorDb);
@@ -985,8 +993,8 @@ public partial class SettingsViewModel : ObservableObject
         // クリップ到達で点灯期限を更新し、 期限内かどうかで点灯状態を決める。
         // 専用タイマーを持たないのは、 このメソッド自体が約 50ms 間隔で呼ばれ続けるため
         // (無音時も EmitSilence 経由で来る) 消灯もここで確実に処理できるから。
-        if (peakDb >= ClipThresholdDb) _clipHoldUntilUtc = nowUtc + ClipHoldDuration;
-        IsInputClipping = nowUtc < _clipHoldUntilUtc;
+        if (peakDb >= ClipThresholdDb) _clipHoldUntil = elapsed + ClipHoldDuration;
+        IsInputClipping = elapsed < _clipHoldUntil;
     }
 
     // Reset the meter to silence (called when translation stops).
@@ -996,7 +1004,7 @@ public partial class SettingsViewModel : ObservableObject
         InputLevelPeakDb = -120d;
         InputLevelText = "-∞ dB";
         // 停止後はレベル更新が止まるため、 ホールド中のクリップ点灯が残らないよう明示的に消す。
-        _clipHoldUntilUtc = DateTime.MinValue;
+        _clipHoldUntil = TimeSpan.MinValue;
         IsInputClipping = false;
     }
     /// <summary>

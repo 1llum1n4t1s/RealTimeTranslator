@@ -1,0 +1,183 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:RealTimeTranslator.UI.ViewModels"
+             xmlns:models="using:RealTimeTranslator.Core.Models"
+             x:Class="RealTimeTranslator.UI.Views.VoiceTranslationView"
+             x:DataType="vm:VoiceTranslationViewModel">
+    <UserControl.Styles>
+        <Style Selector="TextBlock.hint">
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="Foreground" Value="{DynamicResource Brush.FG2}"/>
+            <Setter Property="TextWrapping" Value="Wrap"/>
+        </Style>
+        <Style Selector="Ellipse.status-dot">
+            <Setter Property="Fill" Value="{DynamicResource Brush.FG2}"/>
+        </Style>
+        <Style Selector="Ellipse.status-dot.running">
+            <Setter Property="Fill" Value="{DynamicResource Brush.Success}"/>
+        </Style>
+        <Style Selector="Ellipse.status-dot.faulted">
+            <Setter Property="Fill" Value="{DynamicResource Brush.Error}"/>
+        </Style>
+    </UserControl.Styles>
+
+    <Grid RowDefinitions="Auto,*">
+        <!-- メイン画面と同じ共通の見出し・ステータス枠・ボタンを使用する。 -->
+        <StackPanel Grid.Row="0">
+            <StackPanel Margin="0,0,0,12">
+                <TextBlock Text="ボイス通訳" FontSize="20" FontWeight="Bold"/>
+                <TextBlock Classes="hint" Margin="0,4,0,0"
+                           Text="マイク音声を翻訳し、ゲームのボイスチャットへ送信します"/>
+            </StackPanel>
+            <HeaderedContentControl Header="ステータス" Margin="0,0,0,4"
+                                    AutomationProperties.AutomationId="VoiceStatusCard">
+                <StackPanel>
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,0,0,12">
+                        <Button Content="開始" Command="{Binding StartCommand}" Width="140"
+                                AutomationProperties.AutomationId="VoiceStart"/>
+                        <Button Content="停止" Command="{Binding StopCommand}" Width="140" Margin="8,0,0,0"
+                                AutomationProperties.AutomationId="VoiceStop"/>
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal">
+                        <Ellipse Classes="status-dot" Classes.running="{Binding IsRunning}"
+                                 Classes.faulted="{Binding IsFaulted}" Width="10" Height="10"
+                                 Margin="0,0,8,0" VerticalAlignment="Center"/>
+                        <TextBlock Text="{Binding StatusText}" FontSize="14" VerticalAlignment="Center"
+                                   AutomationProperties.AutomationId="VoiceStatus"/>
+                    </StackPanel>
+                    <TextBlock Text="送信モード" FontSize="12" Foreground="{DynamicResource Brush.FG2}"
+                               Margin="0,12,0,6"/>
+                    <ComboBox ItemsSource="{Binding ModeOptions}" SelectedItem="{Binding SelectedMode}"
+                              IsEnabled="{Binding CanChangeMode}" HorizontalAlignment="Stretch"
+                              AutomationProperties.Name="送信モード"
+                              AutomationProperties.AutomationId="VoiceMode">
+                        <ComboBox.ItemTemplate>
+                            <DataTemplate x:DataType="vm:VoiceModeOption">
+                                <TextBlock Text="{Binding Name}" TextTrimming="CharacterEllipsis"/>
+                            </DataTemplate>
+                        </ComboBox.ItemTemplate>
+                    </ComboBox>
+                    <ScrollViewer IsVisible="{Binding HasError}" Margin="0,8,0,0" MaxHeight="96"
+                                  VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
+                                  AutomationProperties.AutomationId="VoiceErrorPanel">
+                        <TextBlock Text="{Binding ErrorText}" TextWrapping="Wrap" FontSize="12"
+                                   Foreground="{DynamicResource Brush.Error}"
+                                   AutomationProperties.AutomationId="VoiceError"/>
+                    </ScrollViewer>
+                </StackPanel>
+            </HeaderedContentControl>
+        </StackPanel>
+
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
+                      AutomationProperties.AutomationId="VoiceSettingsScroll">
+            <StackPanel Margin="0,0,0,16">
+                <HeaderedContentControl Header="音声の接続">
+                    <StackPanel Spacing="10">
+                        <TextBlock Text="入力マイク"/>
+                        <Grid ColumnDefinitions="*,Auto">
+                            <ComboBox ItemsSource="{Binding Microphones}" SelectedItem="{Binding SelectedMicrophone}"
+                                      IsEnabled="{Binding CanEditSettings}" HorizontalAlignment="Stretch"
+                                      PlaceholderText="マイクを選択" AutomationProperties.Name="入力マイク"
+                                      AutomationProperties.AutomationId="VoiceMicrophone">
+                                <ComboBox.ItemTemplate>
+                                    <DataTemplate x:DataType="models:VoiceAudioDevice">
+                                        <TextBlock Text="{Binding Name}" TextTrimming="CharacterEllipsis"/>
+                                    </DataTemplate>
+                                </ComboBox.ItemTemplate>
+                            </ComboBox>
+                            <Button Grid.Column="1" Content="更新" Margin="8,0,0,0"
+                                    Command="{Binding RefreshDevicesCommand}"
+                                    ToolTip.Tip="接続したマイクと VB-CABLE の機器一覧を更新"
+                                    AutomationProperties.Name="機器一覧を更新"
+                                    AutomationProperties.AutomationId="VoiceRefreshDevices"/>
+                        </Grid>
+                        <StackPanel Spacing="6" IsEnabled="{Binding CanEditSettings}">
+                            <TextBlock Text="送信先（VB-CABLE の CABLE Input）"/>
+                            <ComboBox ItemsSource="{Binding Outputs}" SelectedItem="{Binding SelectedOutput}"
+                                      HorizontalAlignment="Stretch" PlaceholderText="CABLE Input を選択"
+                                      AutomationProperties.Name="送信先"
+                                      AutomationProperties.AutomationId="VoiceOutput">
+                                <ComboBox.ItemTemplate>
+                                    <DataTemplate x:DataType="models:VoiceAudioDevice">
+                                        <TextBlock Text="{Binding Name}" TextTrimming="CharacterEllipsis"/>
+                                    </DataTemplate>
+                                </ComboBox.ItemTemplate>
+                            </ComboBox>
+                            <TextBlock Classes="hint" Text="ゲームのマイク入力には CABLE Output を選択します。"/>
+                        </StackPanel>
+                        <TextBlock Classes="hint" Text="{Binding DeviceStatus}"
+                                   AutomationProperties.AutomationId="VoiceDeviceStatus"/>
+                    </StackPanel>
+                </HeaderedContentControl>
+
+                <HeaderedContentControl Header="翻訳と送信">
+                    <StackPanel Spacing="10" IsEnabled="{Binding CanEditSettings}">
+                        <TextBlock Text="相手へ送る言語"/>
+                        <ComboBox ItemsSource="{Binding OutputLanguageOptions}" SelectedItem="{Binding SelectedLanguage}"
+                                  HorizontalAlignment="Stretch" AutomationProperties.Name="相手へ送る言語"
+                                  AutomationProperties.AutomationId="VoiceLanguage">
+                            <ComboBox.ItemTemplate>
+                                <DataTemplate x:DataType="vm:OutputLanguageOption">
+                                    <TextBlock Text="{Binding DisplayName}"/>
+                                </DataTemplate>
+                            </ComboBox.ItemTemplate>
+                        </ComboBox>
+                        <TextBlock Classes="hint" Text="API設定の OpenAI API キーを使用します。字幕側とは別の言語を選べます。"/>
+                        <Grid ColumnDefinitions="*,100">
+                            <CheckBox Content="押している間だけ送信" IsChecked="{Binding PushToTalkEnabled}"
+                                      VerticalAlignment="Center" AutomationProperties.Name="押している間だけ送信（PTT）"
+                                      AutomationProperties.AutomationId="VoicePttEnabled"/>
+                            <ComboBox Grid.Column="1" ItemsSource="{Binding PttKeyOptions}"
+                                      SelectedItem="{Binding SelectedPttKey}" IsEnabled="{Binding PushToTalkEnabled}"
+                                      HorizontalAlignment="Stretch" AutomationProperties.Name="PTTキー"
+                                      AutomationProperties.AutomationId="VoicePttKey">
+                                <ComboBox.ItemTemplate>
+                                    <DataTemplate x:DataType="vm:VoicePttKeyOption">
+                                        <TextBlock Text="{Binding Name}"/>
+                                    </DataTemplate>
+                                </ComboBox.ItemTemplate>
+                            </ComboBox>
+                        </Grid>
+                        <TextBlock Classes="hint" Text="他のアプリと重ならないキーを選んでください。オフにすると、ミュート以外では常時送信します。"/>
+                    </StackPanel>
+                </HeaderedContentControl>
+
+                <HeaderedContentControl Header="音声レベルと訳文">
+                    <StackPanel Spacing="10">
+                        <Grid ColumnDefinitions="*,16,*">
+                            <StackPanel Spacing="8">
+                                <TextBlock Classes="hint" Text="マイク入力"/>
+                                <ProgressBar Minimum="0" Maximum="100" Value="{Binding InputLevel}" Height="6"
+                                             AutomationProperties.Name="マイク入力レベル"
+                                             AutomationProperties.AutomationId="VoiceInputLevel"/>
+                            </StackPanel>
+                            <StackPanel Grid.Column="2" Spacing="8">
+                                <TextBlock Classes="hint" Text="VB-CABLE への送信"/>
+                                <ProgressBar Minimum="0" Maximum="100" Value="{Binding OutputLevel}" Height="6"
+                                             AutomationProperties.Name="送信音声レベル"
+                                             AutomationProperties.AutomationId="VoiceOutputLevel"/>
+                            </StackPanel>
+                        </Grid>
+                        <TextBox Text="{Binding Transcript, Mode=OneWay}" IsReadOnly="True" AcceptsReturn="True"
+                                 TextWrapping="Wrap" MinHeight="100" MaxHeight="180"
+                                 PlaceholderText="通訳を開始すると、翻訳されたテキストが表示されます"
+                                 AutomationProperties.Name="翻訳テキスト"
+                                 AutomationProperties.AutomationId="VoiceTranscript"/>
+                        <TextBlock Classes="hint" Text="字幕翻訳は「メイン」タブから同時に使用できます。"/>
+                    </StackPanel>
+                </HeaderedContentControl>
+
+                <Expander Header="ゲーム側の設定・導入手順" HorizontalAlignment="Stretch"
+                          HorizontalContentAlignment="Stretch"
+                          AutomationProperties.AutomationId="VoiceSetupGuide">
+                    <StackPanel Spacing="10" Margin="0,10,0,0">
+                        <TextBlock Classes="hint" Text="1. README の手順で VB-CABLE をインストールし、機器一覧を更新します。このアプリの送信先に CABLE Input を選択してください。"/>
+                        <TextBlock Classes="hint" Text="2. ゲームのボイスチャット入力に CABLE Output (VB-Audio Virtual Cable) を選択します。"/>
+                        <TextBlock Classes="hint" Text="3. ゲーム側は音声検出またはオープンマイクにします。PTT を離したあとに届く翻訳音声も相手へ送るためです。"/>
+                        <TextBlock Classes="hint" Text="CABLE Input はこのアプリから送る再生デバイス、CABLE Output はゲームが受け取る録音デバイスです。"/>
+                    </StackPanel>
+                </Expander>
+            </StackPanel>
+        </ScrollViewer>
+    </Grid>
+</UserControl>

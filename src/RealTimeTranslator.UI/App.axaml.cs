@@ -177,6 +177,13 @@ public partial class App : Application
         try
         {
             LoggerService.LogInfo("OnExit: アプリケーション終了開始");
+            try
+            {
+                var voice = _serviceProvider?.GetService<IVoiceTranslationService>();
+                if (voice is not null)
+                    await voice.StopAsync().WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
+            }
+            catch (Exception ex) { LoggerService.LogWarning($"OnExit: ボイス通訳停止失敗: {ex.Message}"); }
             _updateCancellation?.Cancel();
             _updateCancellation?.Dispose();
 
@@ -197,14 +204,11 @@ public partial class App : Application
             }
             catch (Exception ex) { LoggerService.LogWarning($"OnExit: AudioCapture 停止失敗: {ex.Message}"); }
 
-            if (_overlayWindow != null)
+            if (_overlayWindow is { } overlayWindow)
             {
-                // /opop N1-001: 旧実装は DataContext as IDisposable で OverlayViewModel.Dispose を明示呼び出ししていたが、
-                // Singleton ライフタイムの責務を ServiceProvider.DisposeAsync に完全委譲するよう変更 (v1.0.33)。
-                // OverlayViewModel.Dispose は _isDisposed (近日 _disposed Interlocked 化予定) で冪等ガード済みのため、
-                // 後段の ServiceProvider.DisposeAsync が 2 秒タイムアウト内で Singleton を Dispose する経路で十分。
-                // タイムアウト時の保険として、 _serviceProvider の最終 fallback (line ~225) + 5 秒後 Process.Kill タイマーで保証。
-                _overlayWindow.Close();
+                // 音声停止・設定保存後は UI スレッドへ戻してから閉じる。
+                // ViewModel の破棄は後続の DI コンテナーに任せる。
+                await Dispatcher.UIThread.InvokeAsync(overlayWindow.Close);
                 _overlayWindow = null;
             }
 
@@ -304,6 +308,10 @@ public partial class App : Application
         });
         services.AddSingleton<IUpdateService, UpdateService>();
         services.AddSingleton<ITranslationPipelineService, TranslationPipelineService>();
+        services.AddSingleton<IVoiceAudioService, VoiceAudioService>();
+        services.AddSingleton<IVoiceTranslationService>(sp => new VoiceTranslationService(
+            sp.GetRequiredService<IVoiceAudioService>(), () => new OpenAIRealtimeClient()));
+        services.AddSingleton<VoiceTranslationViewModel>();
         // 翻訳ログ機能。 Roaming AppData 配下に TSV 形式で永続化 (Velopack 更新で消えない)。
         // IOptionsMonitor で RetentionDays を hot-reload するため Singleton 登録。
         services.AddSingleton<ITranslationLogger, TranslationLogService>();

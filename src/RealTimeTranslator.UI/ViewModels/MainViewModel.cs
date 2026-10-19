@@ -272,6 +272,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
         };
 
     public SettingsViewModel SettingsVM => _settingsViewModel;
+    public VoiceTranslationViewModel? Voice { get; }
 
     /// <summary>翻訳ログタブの ViewModel を MainWindow.axaml から binding 経由でアクセスする用。</summary>
     public TranslationLogViewModel TranslationLogVM => _translationLogViewModel;
@@ -289,8 +290,10 @@ public partial class MainViewModel : ObservableObject, IDisposable
         ISettingsService settingsService,
         TranslationLogViewModel translationLogViewModel,
         IVoiceActivityDetector vad,
-        IAudioLevelMonitor levelMonitor)
+        IAudioLevelMonitor levelMonitor,
+        VoiceTranslationViewModel? voice = null)
     {
+        Voice = voice;
         _pipelineService = pipelineService;
         _audioCaptureService = audioCaptureService;
         _levelMonitor = levelMonitor;
