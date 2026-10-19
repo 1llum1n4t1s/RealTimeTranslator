@@ -63,6 +63,14 @@ rg -n --fixed-strings '"net10.0-windows10.0.20348/win-x64"' src -g packages.lock
 - provider の変更は次の `StartAsync` から有効にし、実行中セッションの client と設定スナップショットを途中で差し替えない。
 - provider を追加・変更するときは `TranscriptionProvider`、設定型、`SettingsViewModel`、DI、`TranslationPipelineService` の解決表、接続テスト、設定 clone、クライアントテストを一組で更新する。
 
+### ボイス通訳
+
+- ボイス通訳は字幕用 client・キュー・リサンプラ・開始停止状態と共有しない。DI の専用 client factory と `AppSettings.VoiceTranslation` の clone を維持する。構造と機器判定は [DESIGN.md の独立セッション](DESIGN.md#ボイス通訳の独立セッション) を参照する。
+- PTT の許可とルーティング世代はマイク取得時に記録する。キー閉鎖中はリサンプラの残留音も含めて送信 PCM を無音にし、訳音声の末尾は受信・出力できるようにする。
+- 機器の列挙と開始で同じ VB-CABLE 判定を使い、表示名や既定機器への fallback で選択制約を緩めない。停止・モード変更時のキュー消去と旧セッション通知の排除を維持する。
+- 字幕側の `DropOldest` をボイス通訳へ一律に適用しない。入力キュー超過・送信 drop・出力バッファ超過は停止させ、`MaxReconnectAttempts = 0` を維持する。原音への自動切替や自動再接続を追加しない。
+- 変更時は字幕との同時実行、PTT 解放後の末尾、停止・モード切替時の残留音、接続待ち中の停止、機器消失・過負荷時の停止を必要範囲で実機確認する。実機確認ができない項目は未検証として報告する。
+
 ### VAD と字幕確定
 
 - FireRed VAD のストリーミング用 ONNX と CMVN を同梱する。外部フレームは 16 kHz / 512 samples を維持し、内部では 25 ms 窓 / 10 ms 刻みの 80 bin Fbank と推論 cache を使う。`StartAsync` ごとに detector の特徴量履歴・cache と両リサンプラをリセットする。前処理は公式 Kaldi の窓・振幅・CMVN と照合する。
@@ -70,7 +78,7 @@ rg -n --fixed-strings '"net10.0-windows10.0.20348/win-x64"' src -g packages.lock
 - `VadPreset` が `Custom` 以外なら、`SettingsViewModel` の preset 定義を正本として threshold / pre-roll / hangover を sanitize 時にも強制同期する。preset 値を変えるときは3値の組み合わせと既存設定の移行挙動をまとめて検証する。
 - VAD の pre-roll は発話冒頭、hangover は発話末尾、silence padding はプロバイダに保留出力を押し出させる役割を持つ。値を単独で削る前に `VadGate.test.cs` と文分割テストで相互作用を確認する。
 - delta の確定順は句読点、`MaxPartialChars`、provider の完了通知、idle finalize。`ResolveIdleFinalizeMs` の不変条件 `idle <= 0` または `idle >= SilencePaddingMs + 1000` を維持する。
-- 字幕更新は `SegmentId` ごとに partial を置換し、final で確定する。イベントハンドラをロック保持中に呼ばない。
+- 字幕更新は `SegmentId` ごとに partial を置換し、final で確定する。通知は生成順にキューへ積み、ロック外で購読者へ渡す。停止時の通知完了待ちと、同期 callback からの Stop / Dispose 再入時に自身を待たない経路を維持する。
 
 ### OpenAI Translation endpoint
 
@@ -93,7 +101,7 @@ rg -n --fixed-strings '"net10.0-windows10.0.20348/win-x64"' src -g packages.lock
 - Avalonia の compiled binding が有効。新規・変更する AXAML には正しい `x:DataType` を設定する。
 - UI collection / property の変更は Avalonia UI thread へ dispatch する。
 - `AudioCaptureService` の WASAPI callback は native buffer のコピー、float / mono 変換、診断、100 ms chunk 化、イベント通知までを担当し、pipeline のイベントハンドラは bounded channel への enqueue だけを行う。DSP、VAD、ネットワーク送信は processing task で行う境界を維持する。
-- bounded channel の `DropOldest`、開始停止の直列化、CancellationToken、`IAsyncDisposable` の所有関係を維持する。Start / Stop / Dispose の競合を変更した場合は adversarial テストを追加する。
+- 字幕経路の bounded channel の `DropOldest`、開始停止の直列化、CancellationToken、`IAsyncDisposable` の所有関係を維持する。Start / Stop / Dispose の競合を変更した場合は adversarial テストを追加する。
 - プレビュー用 `IAudioLevelMonitor` と本番キャプチャを同時に動かさない。翻訳開始前はプレビュー、開始中は本番メーターを使う。
 
 ### 更新と配布

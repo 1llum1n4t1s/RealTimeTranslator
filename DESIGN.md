@@ -2,7 +2,7 @@
 
 ## 目的と範囲
 
-RealTimeTranslator は、Windows 上で指定したプロセスの再生音声だけを取得し、選択したクラウド翻訳プロバイダへリアルタイム送信して、日本語などの字幕をオーバーレイと翻訳ログに表示するデスクトップアプリです。
+RealTimeTranslator は、Windows 上で指定したプロセスの再生音声をクラウド翻訳し、字幕をオーバーレイと翻訳ログに表示するデスクトップアプリです。独立したボイス通訳では、マイク音声を OpenAI で翻訳し、VB-CABLE 経由でゲームなどのマイク入力へ送ります。両セッションは同時に利用できます。
 
 音声認識・翻訳はローカル完結ではありません。ローカル側の責務は、対象音声の分離、音声形式変換、送信量の制御、provider 接続、字幕の安定化、表示・保存です。導入と操作は [README.md](README.md)、変更・検証規則は [AGENTS.md](AGENTS.md) を参照してください。
 
@@ -118,13 +118,15 @@ provider の出力は partial と completed の表現が異なるため、pipeli
 
 idle finalize は無音 padding の処理中に発火させません。実効値は、無効値を除き `max(設定値, SilencePaddingMs + 1000 ms)` とします。padding 中に確定すると、その後に押し出された続きが別 `SegmentId` へ分断されるためです。
 
-字幕イベントは内部 lock の外で通知し、UI やログからの再入による deadlock を避けます。類似する再送は直近履歴で抑制し、provider の再送や累積応答で字幕が重複するのを防ぎます。
+字幕は内部 lock で生成順にキューへ積み、単一の配信担当が lock の外で購読者へ通知します。通知ごとの購読者 snapshot と配信位置を保持するため、同期 callback から停止が再入しても、残りの購読者を後続字幕より先に処理できます。通常の停止は未確定字幕の確定と通知完了を待ちます。callback 内の停止が開始停止の lock を取得できない場合は後続へ引き継ぎ、callback 内の Dispose も破棄完了を待たずに戻ることで、自身の終了待ちによる deadlock を避けます。callback 外からの Dispose は通知終了と破棄完了を待ちます。
+
+類似する再送は直近履歴で抑制し、provider の再送や累積応答で字幕が重複するのを防ぎます。
 
 ## 状態、並行性、ライフサイクル
 
 - Start / Stop は semaphore で直列化し、開始中の停止や素早い再開で capture と client が競合しないようにする。
 - セッション開始時に字幕累積、VAD hidden state、pre-roll、両リサンプラ、統計、無音 buffer を初期化する。
-- raw audio と provider 送信は bounded channel を使い、遅延上限を優先して `DropOldest` とする。
+- 字幕の raw audio と provider 送信は bounded channel を使い、遅延上限を優先して `DropOldest` とする。ボイス通訳の過負荷時停止は独立セッションの節を参照。
 - pipeline からのイベントは UI thread とは限らない。ViewModel が Avalonia dispatcher を使って表示状態へ反映する。
 - preview capture は翻訳開始時に停止し、停止後に再開する。1つの対象プロセスへ preview と本番を重ねない。
 - `Program` のユーザーセッション単位 mutex により単一インスタンスだけを動かし、二重起動時は既存ウィンドウを復元して前面化してから新しいプロセスを終了する。
@@ -152,6 +154,12 @@ overlay 背景色は `BackgroundColorBase` (`#RRGGBB`) と `BackgroundOpacityPer
 
 更新 feed は `https://rtt.kagayoi.com` の `win-x64` channel に固定し、設定ファイルから変更できません。HTTPS、絶対 URI、userinfo なしを検証したうえで Velopack に渡します。自動確認は起動時の1回だけで、周期確認は行いません。check / download / apply は同じ lock で直列化し、起動時確認と手動確認の競合を防ぎます。
 
+## 開発出力の境界
+
+ローカル専用の `Directory.Build.local.props` が作業ルートを指定し、`Directory.Build.props` が作業別ディレクトリへビルド・中間生成物・テスト結果・パッケージキャッシュを振り分けます。製品利用者の AppData 保存先と OS 全体の一時ディレクトリは変更しません。CI と他の checkout ではローカル専用設定なしで従来の出力先を利用できます。
+
+MSBuild の初期 target より前に logger や response file が扱われるため、`scripts/Dev.ps1` が子プロセスの環境と引数を先に検査し、`Directory.Build.targets` が評価後の実効出力先を検査します。両者は `scripts/DevelopmentOutput.ps1` のパス検証を使い、リンク経由の逸脱を拒否します。この checkout では専用設定がなくても既定出力へ戻さず失敗させます。実行コマンドとこの PC の保存先は [AGENTS.md](AGENTS.md#正規の-restorebuildtest) を参照してください。
+
 ## 採用した判断とトレードオフ
 
 | 判断 | 理由 | トレードオフ |
@@ -160,7 +168,7 @@ overlay 背景色は `BackgroundColorBase` (`#RRGGBB`) と `BackgroundOpacityPer
 | Core と UI を分離 | 音声・接続・永続化を Avalonia なしで検証できる | composition root で具体 client をまとめて構築する必要がある |
 | provider client を常駐登録し開始時に選択 | 再起動なしで provider を切り替え、セッション内の一貫性も保てる | 未選択 client も DI singleton として存在する |
 | OpenAI用のVADと送信を48 kHzから並列リサンプル | VAD の16 kHz制約を守りつつOpenAI向け高域を維持する | OpenAIセッションではリサンプラを2つ進めるCPUコストがある |
-| bounded channel + `DropOldest` | メモリと遅延を有限に保つ | 過負荷時は古い音声が欠落する。provider送信側は計測するが、raw-audio側は個別計測しない |
+| 字幕経路の bounded channel + `DropOldest` | メモリと遅延を有限に保つ | 過負荷時は古い音声が欠落する。provider送信側は計測するが、raw-audio側は個別計測しない |
 | VAD失敗時は全送信へフォールバック | VAD asset / native runtime 障害で起動不能にしない | 無音抑制が失われ、送信量が増える |
 | subtitle finalization を多段化 | provider ごとの句読点・完了通知の差に耐える | 分割条件が相互依存するため回帰テストが必要 |
 | API key を DPAPI CurrentUser で保存 | 平文保存を避け、追加サービスを不要にする | 別ユーザー・別PCへ暗号文を移しても復号できない |
