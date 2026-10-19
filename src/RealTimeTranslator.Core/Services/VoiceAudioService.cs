@@ -8,12 +8,9 @@ using RealTimeTranslator.Core.Models;
 
 namespace RealTimeTranslator.Core.Services;
 
-/// <summary>選択した物理マイクと VB-CABLE 出力を、セッションごとに独立して所有する。</summary>
+/// <summary>選択したマイクと Wave Link 出力を、セッションごとに独立して所有する。</summary>
 public sealed class VoiceAudioService : IVoiceAudioService
 {
-    private const string VirtualCableAdapterName = "VB-Audio Virtual Cable";
-    private const string VirtualCableInterfaceName = "VB-Audio Point";
-
     private readonly SemaphoreSlim _lifecycle = new(1, 1);
     private Session? _session;
     private long _sessionId;
@@ -35,33 +32,12 @@ public sealed class VoiceAudioService : IVoiceAudioService
         {
             using (device)
             {
-                var virtualCable = IsVirtualCable(device);
-                if (flow == DataFlow.Render ? virtualCable : !virtualCable)
-                    result.Add(new VoiceAudioDevice(device.ID, device.FriendlyName, virtualCable));
+                var kind = WaveLinkDeviceIdentity.Classify(device);
+                if (flow == DataFlow.Render ? kind == VoiceAudioDeviceKind.WaveLinkOutput : kind == VoiceAudioDeviceKind.Microphone)
+                    result.Add(new VoiceAudioDevice(device.ID, device.FriendlyName, kind == VoiceAudioDeviceKind.WaveLinkOutput));
             }
         }
         return result.OrderBy(device => device.Name, StringComparer.CurrentCultureIgnoreCase).ToArray();
-    }
-
-    private static bool IsVirtualCable(MMDevice device)
-    {
-        // endpoint の FriendlyName は利用者が変更できるため、INF 由来の
-        // interface 名とデバイス説明を方向別に完全一致で確認する。
-        // VB-Audio Point だけでは他の機器を識別できないため、説明も必須とする。
-        // 不明な機器や類似名へは出力せず、既定機器への代替も行わない。
-        var adapter = device.DeviceFriendlyName;
-        if (!string.Equals(adapter, VirtualCableAdapterName, StringComparison.Ordinal)
-            && !string.Equals(adapter, VirtualCableInterfaceName, StringComparison.Ordinal))
-            return false;
-        if (!device.Properties.TryGetValue<string>(PropertyKeys.PKEY_Device_DeviceDesc, out var description))
-            return false;
-
-        return device.DataFlow switch
-        {
-            DataFlow.Capture => description is "CABLE Output",
-            DataFlow.Render => description is "CABLE Input" or "CABLE In 16 Ch",
-            _ => false,
-        };
     }
 
     public async Task StartAsync(string microphoneId, string outputDeviceId, CancellationToken ct = default)
@@ -88,7 +64,7 @@ public sealed class VoiceAudioService : IVoiceAudioService
                     session.Capture.RecordingStopped += (_, args) =>
                         Fault(session, args.Exception ?? new IOException("マイク入力が停止しました。"));
                     session.Player!.PlaybackStopped += (_, args) =>
-                        Fault(session, args.Exception ?? new IOException("VB-CABLE への出力が停止しました。"));
+                        Fault(session, args.Exception ?? new IOException("Wave Link への出力が停止しました。"));
                     Volatile.Write(ref _session, session);
                     session.Player.Play();
                     session.Capture.StartRecording();
@@ -260,11 +236,11 @@ public sealed class VoiceAudioService : IVoiceAudioService
             _microphone = enumerator.GetDevice(MicrophoneId);
             _outputDevice = enumerator.GetDevice(OutputId);
             if (_microphone.State != DeviceState.Active || _microphone.DataFlow != DataFlow.Capture
-                || IsVirtualCable(_microphone))
+                || WaveLinkDeviceIdentity.Classify(_microphone) != VoiceAudioDeviceKind.Microphone)
                 throw new InvalidOperationException("選択したマイクが使用できません。物理マイクを選び直してください。");
             if (_outputDevice.State != DeviceState.Active || _outputDevice.DataFlow != DataFlow.Render
-                || !IsVirtualCable(_outputDevice))
-                throw new InvalidOperationException("選択した出力が使用できません。VB-CABLE の CABLE Input を選んでください。");
+                || WaveLinkDeviceIdentity.Classify(_outputDevice) != VoiceAudioDeviceKind.WaveLinkOutput)
+                throw new InvalidOperationException("選択した出力が使用できません。Wave Link の再生チャンネルを選んでください。");
 
             Capture = new WasapiRecorderBuilder().WithDevice(_microphone).WithSharedMode().WithBufferLength(20).Build();
             CaptureFormat = Capture.WaveFormat;

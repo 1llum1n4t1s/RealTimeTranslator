@@ -71,6 +71,25 @@
         <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
                       AutomationProperties.AutomationId="VoiceSettingsScroll">
             <StackPanel Margin="0,0,0,16">
+                <HeaderedContentControl Header="Wave Link 3 の初回設定"
+                                        IsVisible="{Binding NeedsWaveLinkSetup}"
+                                        AutomationProperties.AutomationId="VoiceWaveLinkSetupCard">
+                    <StackPanel Spacing="10">
+                        <TextBlock Classes="hint" Text="ボイス通訳用の仮想オーディオ機器がまだ見つかりません。Wave Link 3 は Windows 11 向けです。字幕翻訳だけなら導入は不要です。"/>
+                        <WrapPanel>
+                            <Button Content="公式からダウンロード" Command="{Binding DownloadWaveLinkCommand}"
+                                    Margin="0,0,8,8" AutomationProperties.AutomationId="VoiceWaveLinkDownload"/>
+                            <Button Content="公式の説明" Command="{Binding OpenWaveLinkWebsiteCommand}"
+                                    Margin="0,0,0,8" AutomationProperties.AutomationId="VoiceWaveLinkWebsite"/>
+                        </WrapPanel>
+                        <TextBlock Classes="hint" Text="1. 公式ダウンロードで Wave Link 3 を選び、本体と Audio Driver を導入します。権限の確認や再起動を求められた場合は、インストーラーの案内に従ってください。"/>
+                        <TextBlock Classes="hint" Text="2. Wave Link で翻訳音声専用の仮想入力チャンネル（例: Aux 1）を用意します。"/>
+                        <TextBlock Classes="hint" Text="3. ゲームへ送る Chat Mix には翻訳専用チャンネルだけを含め、物理マイク・ゲーム音・ほかの音声を外します。"/>
+                        <TextBlock Classes="hint" Text="4. 機器を再確認し、このアプリの送信先にその Wave Link 再生チャンネル、ゲームのマイク入力に Chat Mix (Elgato Virtual Audio) を選びます。"/>
+                        <Button Content="インストール後に再確認" Command="{Binding RefreshDevicesCommand}"
+                                HorizontalAlignment="Left" AutomationProperties.AutomationId="VoiceWaveLinkRecheck"/>
+                    </StackPanel>
+                </HeaderedContentControl>
                 <HeaderedContentControl Header="音声の接続">
                     <StackPanel Spacing="10">
                         <TextBlock Text="入力マイク"/>
@@ -87,14 +106,14 @@
                             </ComboBox>
                             <Button Grid.Column="1" Content="更新" Margin="8,0,0,0"
                                     Command="{Binding RefreshDevicesCommand}"
-                                    ToolTip.Tip="接続したマイクと VB-CABLE の機器一覧を更新"
+                                    ToolTip.Tip="接続したマイクと Wave Link 3 の機器一覧を更新"
                                     AutomationProperties.Name="機器一覧を更新"
                                     AutomationProperties.AutomationId="VoiceRefreshDevices"/>
                         </Grid>
                         <StackPanel Spacing="6" IsEnabled="{Binding CanEditSettings}">
-                            <TextBlock Text="送信先（VB-CABLE の CABLE Input）"/>
+                            <TextBlock Text="送信先（Wave Link の翻訳専用チャンネル）"/>
                             <ComboBox ItemsSource="{Binding Outputs}" SelectedItem="{Binding SelectedOutput}"
-                                      HorizontalAlignment="Stretch" PlaceholderText="CABLE Input を選択"
+                                      HorizontalAlignment="Stretch" PlaceholderText="Wave Link の再生チャンネルを選択"
                                       AutomationProperties.Name="送信先"
                                       AutomationProperties.AutomationId="VoiceOutput">
                                 <ComboBox.ItemTemplate>
@@ -103,7 +122,7 @@
                                     </DataTemplate>
                                 </ComboBox.ItemTemplate>
                             </ComboBox>
-                            <TextBlock Classes="hint" Text="ゲームのマイク入力には CABLE Output を選択します。"/>
+                            <TextBlock Classes="hint" Text="ゲームのマイク入力には Chat Mix (Elgato Virtual Audio) を選択します。以前の送信先設定は自動変換されないため、Wave Link のチャンネルを選び直してください。"/>
                         </StackPanel>
                         <TextBlock Classes="hint" Text="{Binding DeviceStatus}"
                                    AutomationProperties.AutomationId="VoiceDeviceStatus"/>
@@ -152,7 +171,7 @@
                                              AutomationProperties.AutomationId="VoiceInputLevel"/>
                             </StackPanel>
                             <StackPanel Grid.Column="2" Spacing="8">
-                                <TextBlock Classes="hint" Text="VB-CABLE への送信"/>
+                                <TextBlock Classes="hint" Text="Wave Link 3 への送信"/>
                                 <ProgressBar Minimum="0" Maximum="100" Value="{Binding OutputLevel}" Height="6"
                                              AutomationProperties.Name="送信音声レベル"
                                              AutomationProperties.AutomationId="VoiceOutputLevel"/>
@@ -171,10 +190,10 @@
                           HorizontalContentAlignment="Stretch"
                           AutomationProperties.AutomationId="VoiceSetupGuide">
                     <StackPanel Spacing="10" Margin="0,10,0,0">
-                        <TextBlock Classes="hint" Text="1. README の手順で VB-CABLE をインストールし、機器一覧を更新します。このアプリの送信先に CABLE Input を選択してください。"/>
-                        <TextBlock Classes="hint" Text="2. ゲームのボイスチャット入力に CABLE Output (VB-Audio Virtual Cable) を選択します。"/>
+                        <TextBlock Classes="hint" Text="1. Wave Link 3 本体と Audio Driver を導入し、翻訳音声専用の仮想入力チャンネル（例: Aux 1）を用意します。このアプリの送信先に、その再生チャンネルを選択してください。"/>
+                        <TextBlock Classes="hint" Text="2. Wave Link の Chat Mix に翻訳専用チャンネルだけを含め、物理マイク・ゲーム音・ほかの音声を外します。ゲームのボイスチャット入力には Chat Mix (Elgato Virtual Audio) を選びます。"/>
                         <TextBlock Classes="hint" Text="3. ゲーム側は音声検出またはオープンマイクにします。PTT を離したあとに届く翻訳音声も相手へ送るためです。"/>
-                        <TextBlock Classes="hint" Text="CABLE Input はこのアプリから送る再生デバイス、CABLE Output はゲームが受け取る録音デバイスです。"/>
+                        <TextBlock Classes="hint" Text="このアプリ → Wave Link の翻訳専用チャンネル → Chat Mix → ゲームの順に送ります。字幕翻訳は別経路で同時に使用できます。"/>
                     </StackPanel>
                 </Expander>
             </StackPanel>

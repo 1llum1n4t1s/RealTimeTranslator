@@ -1,5 +1,6 @@
 using System;
 using System.Collections.ObjectModel;
+using System.Diagnostics;
 using System.Linq;
 using System.Threading.Tasks;
 using Avalonia.Threading;
@@ -17,6 +18,8 @@ public partial class VoiceTranslationViewModel : ObservableObject, IDisposable
     private readonly IVoiceAudioService _audio;
     private readonly SettingsViewModel _settingsVm;
     private readonly VoiceTranslationSettings _settings;
+    private readonly Action<Uri> _openExternalUri;
+    private bool _deviceEnumerationSucceeded;
     private bool _initializing = true;
     private bool _disposed;
     private bool _operationPending;
@@ -40,11 +43,16 @@ public partial class VoiceTranslationViewModel : ObservableObject, IDisposable
     [ObservableProperty] private string _deviceStatus = string.Empty;
 
     public VoiceTranslationViewModel(IVoiceTranslationService service, IVoiceAudioService audio,
-        SettingsViewModel settingsVm)
+        SettingsViewModel settingsVm, Action<Uri>? openExternalUri = null)
     {
         _service = service;
         _audio = audio;
         _settingsVm = settingsVm;
+        _openExternalUri = openExternalUri ?? (uri => Process.Start(new ProcessStartInfo
+        {
+            FileName = uri.AbsoluteUri,
+            UseShellExecute = true,
+        })?.Dispose());
         _settings = settingsVm.Settings.VoiceTranslation.Clone();
         OutputLanguageOptions = settingsVm.OutputLanguageOptions;
         SelectedLanguage = OutputLanguageOptions.FirstOrDefault(x => x.Code == _settings.OutputLanguage)
@@ -88,12 +96,26 @@ public partial class VoiceTranslationViewModel : ObservableObject, IDisposable
     public bool IsRunning => _state == VoiceTranslationState.Running;
     public bool IsFaulted => _state == VoiceTranslationState.Faulted;
     public bool HasError => !string.IsNullOrWhiteSpace(ErrorText);
+    public bool NeedsWaveLinkSetup => _deviceEnumerationSucceeded && Outputs.Count == 0;
+
+    [RelayCommand(CanExecute = nameof(CanEditSettings))]
+    private void DownloadWaveLink() => OpenWaveLinkUri("https://www.elgato.com/jp/ja/s/downloads");
+
+    [RelayCommand(CanExecute = nameof(CanEditSettings))]
+    private void OpenWaveLinkWebsite() => OpenWaveLinkUri("https://www.elgato.com/jp/ja/explorer/products/wave/wave-link-3-0-software-overview/");
+
+    private void OpenWaveLinkUri(string url)
+    {
+        try { _openExternalUri(new Uri(url)); }
+        catch (Exception ex) { ErrorText = $"Wave Link 3 の公式サイトを開けませんでした: {ex.Message}"; }
+    }
 
     [RelayCommand(CanExecute = nameof(CanEditSettings))]
     private void RefreshDevices()
     {
         bool wasInitializing = _initializing;
         _initializing = true;
+        _deviceEnumerationSucceeded = false;
         try
         {
             SelectedMicrophone = null;
@@ -101,9 +123,10 @@ public partial class VoiceTranslationViewModel : ObservableObject, IDisposable
             Microphones.Clear();
             Outputs.Clear();
             foreach (var device in _audio.GetMicrophones()) Microphones.Add(device);
-            foreach (var device in _audio.GetOutputs().Where(x => x.IsVirtualCable)) Outputs.Add(device);
+            foreach (var device in _audio.GetOutputs().Where(x => x.IsWaveLink)) Outputs.Add(device);
             SelectedMicrophone = Microphones.FirstOrDefault(x => x.Id == _settings.InputDeviceId);
             SelectedOutput = Outputs.FirstOrDefault(x => x.Id == _settings.OutputDeviceId);
+            _deviceEnumerationSucceeded = true;
             ErrorText = string.Empty;
         }
         catch (Exception ex) { ErrorText = $"音声機器を取得できませんでした: {ex.Message}"; }
@@ -215,10 +238,11 @@ public partial class VoiceTranslationViewModel : ObservableObject, IDisposable
     private void UpdateState()
     {
         _state = _service.State;
-        DeviceStatus = Outputs.Count == 0 ? "VB-CABLE が見つかりません。README の手順で VB-CABLE をインストールし、「機器一覧を更新」を押してください。"
+        DeviceStatus = !_deviceEnumerationSucceeded ? "音声機器を確認できませんでした。エラーを確認し、機器一覧を更新してください。"
+            : Outputs.Count == 0 ? "Wave Link 3 が見つかりません。画面内の「Wave Link 3 の初回設定」から導入できます。"
             : Microphones.Count == 0 ? "利用できるマイクがありません。接続して一覧を更新してください。"
             : SelectedMicrophone is null || SelectedOutput is null
-                ? "使用するマイクと VB-CABLE の CABLE Input を選択してください。以前の送信先は再選択が必要です。"
+                ? "使用するマイクと Wave Link の翻訳専用チャンネルを選択してください。以前の送信先は再選択が必要です。"
                 : "選択した機器へ送信します。";
         StatusText = _stopPending ? "停止処理中…" : _state switch
         {
@@ -236,9 +260,12 @@ public partial class VoiceTranslationViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(CanChangeMode));
         OnPropertyChanged(nameof(IsRunning));
         OnPropertyChanged(nameof(IsFaulted));
+        OnPropertyChanged(nameof(NeedsWaveLinkSetup));
         StartCommand.NotifyCanExecuteChanged();
         StopCommand.NotifyCanExecuteChanged();
         RefreshDevicesCommand.NotifyCanExecuteChanged();
+        DownloadWaveLinkCommand.NotifyCanExecuteChanged();
+        OpenWaveLinkWebsiteCommand.NotifyCanExecuteChanged();
     }
 
     private void Dispatch(Action action) => Dispatcher.UIThread.Post(() => { if (!_disposed) action(); });

@@ -59,7 +59,7 @@ public sealed partial class VoiceTranslationService : IVoiceTranslationService
             ArgumentNullException.ThrowIfNull(openAi);
             if (string.IsNullOrWhiteSpace(settings.InputDeviceId)
                 || string.IsNullOrWhiteSpace(settings.OutputDeviceId))
-                throw new InvalidOperationException("入力マイクと VB-CABLE の CABLE Input を選択してください。");
+                throw new InvalidOperationException("入力マイクと Wave Link の翻訳音声用チャンネルを選択してください。");
             if (!Enum.IsDefined(settings.Mode)) throw new ArgumentException("送信モードが不正です。", nameof(settings));
             if (settings.PushToTalkEnabled && settings.PushToTalkVirtualKey is < 0x75 or > 0x7B)
                 throw new ArgumentException("発話キーは F6〜F12 から選択してください。", nameof(settings));

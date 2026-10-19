@@ -2,7 +2,7 @@ using RealTimeTranslator.Core.Models;
 
 namespace RealTimeTranslator.Core.Interfaces;
 
-/// <summary>物理マイクから VB-CABLE への音声送信セッションを所有する。</summary>
+/// <summary>物理マイクから Wave Link への音声送信セッションを所有する。</summary>
 public interface IVoiceTranslationService : IAsyncDisposable
 {
     VoiceTranslationState State { get; }
