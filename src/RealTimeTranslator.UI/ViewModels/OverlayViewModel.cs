@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Linq;
@@ -229,7 +230,7 @@ public partial class OverlayViewModel : ObservableObject, IDisposable
         {
             lock (_subtitlesLock)
             {
-                var now = DateTime.Now;
+                var now = Stopwatch.GetTimestamp();
                 for (var i = Subtitles.Count - 1; i >= 0; i--)
                 {
                     if (Subtitles[i].ShouldRemove(now))
@@ -373,7 +374,8 @@ public partial class SubtitleDisplayItem : ObservableObject
     [ObservableProperty]
     public partial double Opacity { get; set; } = 1.0;
 
-    private DateTime _displayEndTime;
+    private long _displayUpdatedTimestamp;
+    private double _displayDuration;
     private readonly double _fadeOutDuration;
 
     // rere C2-006 対応: partial/final 用の Brush を 2 個だけキャッシュして使い回す。
@@ -406,15 +408,17 @@ public partial class SubtitleDisplayItem : ObservableObject
         // v1.0.24-26 は partial 連結方式 + 最大寿命 45 秒タイマーの前提で partial を永続表示してたが、
         // v1.0.27 で server gap 対策を「無音 PCM 継続送信」に置換 → partial 連結方式を削除 →
         // partial も次の delta or 句点完結まで数秒以内に置換される前提に戻ったため、 永続表示は不要。
-        _displayEndTime = DateTime.Now.AddSeconds(settings.DisplayDuration);
+        _displayDuration = settings.DisplayDuration;
+        _displayUpdatedTimestamp = Stopwatch.GetTimestamp();
         Opacity = 1.0;
     }
 
-    public bool ShouldRemove(DateTime now)
+    public bool ShouldRemove(long nowTimestamp)
     {
-        if (now < _displayEndTime)
+        var elapsedSeconds = Stopwatch.GetElapsedTime(_displayUpdatedTimestamp, nowTimestamp).TotalSeconds;
+        if (elapsedSeconds < _displayDuration)
             return false;
-        var fadeProgress = (now - _displayEndTime).TotalSeconds / _fadeOutDuration;
+        var fadeProgress = (elapsedSeconds - _displayDuration) / _fadeOutDuration;
         if (fadeProgress < 1.0)
         {
             Opacity = 1.0 - fadeProgress;

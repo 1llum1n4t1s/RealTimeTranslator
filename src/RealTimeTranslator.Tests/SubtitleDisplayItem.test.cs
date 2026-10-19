@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using RealTimeTranslator.Core.Models;
 using RealTimeTranslator.Core.Services;
 using RealTimeTranslator.UI.ViewModels;
@@ -59,17 +60,17 @@ public class SubtitleDisplayItemTests
             var display = new SubtitleDisplayItem(item, settings);
 
             // DisplayDuration 中は残る
-            Assert.IsFalse(display.ShouldRemove(DateTime.Now.AddSeconds(0.5)),
+            Assert.IsFalse(display.ShouldRemove(Stopwatch.GetTimestamp() + Stopwatch.Frequency / 2),
                 $"IsFinal={isFinal}: DisplayDuration 中は残るはず");
 
             // DisplayDuration + FadeOutDuration 経過後は削除対象
-            Assert.IsTrue(display.ShouldRemove(DateTime.Now.AddSeconds(2.0)),
+            Assert.IsTrue(display.ShouldRemove(Stopwatch.GetTimestamp() + Stopwatch.Frequency * 2),
                 $"IsFinal={isFinal}: DisplayDuration + FadeOutDuration 経過で削除されるはず (v1.0.27 旧挙動復活)");
         }
     }
 
     /// <summary>
-    /// partial 連続 Update で _displayEndTime が毎回リセットされ、 同じ字幕が画面に残り続けることを検証。
+    /// partial 連続 Update で _displayUpdatedTimestamp が毎回リセットされ、 同じ字幕が画面に残り続けることを検証。
     /// (短時間で次の delta が来る通常ケース)
     /// </summary>
     [TestMethod]
@@ -78,12 +79,12 @@ public class SubtitleDisplayItemTests
         var settings = BuildSettings(displayDurationSec: 1.0);
         var display = new SubtitleDisplayItem(BuildItem("seg-1", "そ", isFinal: false), settings);
 
-        // 500ms 待機相当で Update → _displayEndTime がリセットされる
+        // 500ms 待機相当で Update → _displayUpdatedTimestamp がリセットされる
         foreach (var text in new[] { "そし", "そして", "そして、血液" })
         {
             display.Update(BuildItem("seg-1", text, isFinal: false), settings);
             // Update 直後は DisplayDuration 中
-            Assert.IsFalse(display.ShouldRemove(DateTime.Now.AddSeconds(0.5)),
+            Assert.IsFalse(display.ShouldRemove(Stopwatch.GetTimestamp() + Stopwatch.Frequency / 2),
                 $"Update 直後 ('{text}') は DisplayDuration 中で残るはず");
         }
     }

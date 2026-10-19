@@ -49,6 +49,31 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     private string _currentSegmentId = Guid.NewGuid().ToString();
     private readonly StringBuilder _accumulatedText = new();
     private readonly System.Threading.Lock _textLock = new();
+    // 状態更新と同じロックで生成順を確定し、購読者への通知だけをロック外で直列化する。
+    private readonly Queue<SubtitleItem> _pendingSubtitleNotifications = new();
+    private SubtitleNotification? _currentSubtitleNotification;
+    private object? _subtitlePublisher;
+    private int _activeSubtitleCallbacks;
+    private TaskCompletionSource? _subtitleNotificationsIdle;
+    private bool _acceptingSubtitles = true;
+    [ThreadStatic]
+    private static SubtitleNotificationScope? s_subtitleNotificationScope;
+
+    private sealed class SubtitleNotification(SubtitleItem subtitle, Delegate[] handlers)
+    {
+        public SubtitleItem Subtitle { get; } = subtitle;
+        public Delegate[] Handlers { get; } = handlers;
+        public int NextHandlerIndex { get; set; }
+    }
+
+    private sealed class SubtitleNotificationScope(TranslationPipelineService owner, SubtitleNotificationScope? previous)
+    {
+        private int _active = 1;
+        public TranslationPipelineService Owner { get; } = owner;
+        public SubtitleNotificationScope? Previous { get; } = previous;
+        public bool IsActive => Volatile.Read(ref _active) != 0;
+        public void Complete() => Volatile.Write(ref _active, 0);
+    }
     private DateTime _lastEmitTime = DateTime.MinValue;
     private bool _hasPendingDelta;
     private readonly Timer _throttleTimer;
@@ -63,8 +88,9 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     // rere B1-006: Dispose / DisposeAsync の二重実行を防ぐ Interlocked 占有マーク。
     // 旧 volatile bool は check + set が非原子で、 並行 Dispose 時に両方が `if (_disposed) return;` を抜け
     // ObjectDisposedException を投げる経路があった。 OpenAIRealtimeClient も同型対策済み。
-    // 0=alive, 1=disposed。
+    // 0=alive, 1=破棄要求済み。callback からの遅延破棄も共通の完了 Task で追跡する。
     private int _disposed;
+    private readonly TaskCompletionSource _disposeCompletion = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private DateTime _lastAudioErrorLogTime = DateTime.MinValue;
 
     // OpenAI Realtime Translation API は transcript.done を「セッション累積の全文」で
@@ -319,12 +345,16 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
 
     public async Task StartAsync(CancellationToken token)
     {
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+        var notificationScope = GetCurrentSubtitleNotificationScope();
         // rere B1-004: Start ↔ Stop の TOCTOU を消すため semaphore で全初期化を直列化。
         // Stop が並行に走った場合は Stop が完了するまでブロック → Start は全部完了済み状態から走り直す。
         await _startStopLock.WaitAsync(token).ConfigureAwait(false);
         try
         {
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
             if (_isRunning) return;
+            await WaitForSubtitleNotificationsAsync(notificationScope).ConfigureAwait(false);
             try
             {
                 await StartCoreAsync(token).ConfigureAwait(false);
@@ -421,6 +451,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         // 新セッションの最初の done で全文が emit されない (or 重複検知される) 不具合になる。
         lock (_textLock)
         {
+            _acceptingSubtitles = true;
             _lastFinalizedTranscript.Clear();
             _accumulatedText.Clear();
             _recentEmittedSentences.Clear();
@@ -520,15 +551,55 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         });
     }
 
-    public async Task StopAsync(CancellationToken cancellationToken = default)
+    public Task StopAsync(CancellationToken cancellationToken = default)
+        => StopFromNotificationAsync(cancellationToken, GetCurrentSubtitleNotificationScope());
+
+    private async Task StopFromNotificationAsync(CancellationToken cancellationToken, SubtitleNotificationScope? notificationScope)
+    {
+        // 破棄要求後の停止は DisposeCoreAsync が所有する。遅い再入で破棄済み semaphore に触れない。
+        // 通常の呼出元は破棄完了も待つが、callback 自身はその待機対象なので即帰還する。
+        if (Volatile.Read(ref _disposed) != 0)
+        {
+            if (notificationScope is null) await _disposeCompletion.Task.ConfigureAwait(false);
+            return;
+        }
+        if (notificationScope is not null)
+        {
+            // 別の開始停止処理がこの購読者の終了を待っている場合、自分から semaphore を待てない。
+            // 停止要求自体は通常経路へ引き継ぎ、進行中の処理が終了してから必ず評価する。
+            if (!_startStopLock.Wait(0, cancellationToken))
+            {
+                _ = ObserveDeferredStopAsync(StopWithLockAsync(cancellationToken, null));
+                return;
+            }
+            await StopWithLockAsync(cancellationToken, notificationScope, lockAcquired: true).ConfigureAwait(false);
+            return;
+        }
+        await StopWithLockAsync(cancellationToken, null).ConfigureAwait(false);
+    }
+
+    private static async Task ObserveDeferredStopAsync(Task stopTask)
+    {
+        try { await stopTask.ConfigureAwait(false); }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { Logger.Error("字幕通知から引き継いだ停止処理で例外", ex); }
+    }
+
+    private async Task StopWithLockAsync(CancellationToken cancellationToken, SubtitleNotificationScope? notificationScope, bool lockAcquired = false)
     {
         // rere B1-004: Start 中の Stop 呼び出し (OnSettingsSaved 経由等) も含めて直列化。
         // Start が走っている最中は完了を待ってから Stop を実行する。
-        await _startStopLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        if (!lockAcquired)
+            await _startStopLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            if (!_isRunning) return;
-            await StopCoreAsync(cancellationToken).ConfigureAwait(false);
+            if (_isRunning)
+                await StopCoreAsync(cancellationToken, notificationScope: notificationScope).ConfigureAwait(false);
+            else
+            {
+                FinalizePendingPartial("停止", stopAcceptingSubtitles: true);
+                await WaitForSubtitleNotificationsAsync(notificationScope).ConfigureAwait(false);
+            }
         }
         finally
         {
@@ -536,7 +607,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         }
     }
 
-    private async Task StopCoreAsync(CancellationToken cancellationToken, bool skipAutoPauseTaskAwait = false)
+    private async Task StopCoreAsync(CancellationToken cancellationToken, bool skipAutoPauseTaskAwait = false, SubtitleNotificationScope? notificationScope = null)
     {
         Logger.Info("翻訳パイプライン停止");
         // 未確定のまま残っている trailing を確定字幕として emit + ログ記録してから停止する
@@ -626,6 +697,11 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         {
             Logger.Warn("WebSocket 切断中の例外", ex);
         }
+
+        // graceful disconnect 中に届いた末尾も確定してから受付を閉じる。
+        // 既に配信中の購読者とキューを待ち、停止後の Clear / 次セッションへ旧字幕を残さない。
+        FinalizePendingPartial("切断後の停止", stopAcceptingSubtitles: true);
+        await WaitForSubtitleNotificationsAsync(notificationScope).ConfigureAwait(false);
 
         // ⭐ rere P2 F-7: セッション統計を確実にログに残し、 NW 詰まり指標を可視化。
         // DroppedAudioChunkCount はキャプチャ → API 送信の Channel<byte[]>(100) で
@@ -753,6 +829,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
 
         lock (_textLock)
         {
+            if (!_acceptingSubtitles) return;
             // O(n²) → O(n) 最適化: 新規追加部分のみを走査する。
             // appendStart = 追加前の累積長。 scanFrom = 走査開始位置 (直前文字がピリオド小数点保護に必要なため -1)。
             int appendStart = _accumulatedText.Length;
@@ -900,24 +977,26 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
             // 未確定文字が残っていれば「この delta を最後の音沙汰」としてアイドル確定を再武装する。
             // 続きの delta が来れば再び貼り直されるので、 生成が続く限り発火しない。
             ScheduleIdleFinalize();
+            if (completedSentences is not null)
+            {
+                foreach (var (segmentId, sentence) in completedSentences)
+                    _pendingSubtitleNotifications.Enqueue(new SubtitleItem
+                    {
+                        SegmentId = segmentId,
+                        OriginalText = string.Empty,
+                        TranslatedText = sentence,
+                        IsFinal = true,
+                    });
+            }
         }
 
-        // ロック外で完結文を emit。
+        // 完結文の診断ログをロック外で記録する。
         if (completedSentences is not null)
         {
             foreach (var (segmentId, sentence) in completedSentences)
             {
                 var n = Interlocked.Increment(ref _completedEmitCount);
                 Logger.Info($"完結文 emit (delta経路) #{n}: SegmentId={ShortSegmentId(segmentId)} 長さ={sentence.Length} 内容='{TruncateForLog(sentence)}'");
-
-                var subtitle = new SubtitleItem
-                {
-                    SegmentId = segmentId,
-                    OriginalText = string.Empty,
-                    TranslatedText = sentence,
-                    IsFinal = true,
-                };
-                SubtitleGenerated?.Invoke(this, subtitle);
             }
         }
 
@@ -925,19 +1004,153 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         {
             lock (_textLock)
             {
-                EmitPartialSubtitle();
+                if (CreatePartialSubtitle() is { } partial)
+                    _pendingSubtitleNotifications.Enqueue(partial);
             }
         }
+        PublishPendingSubtitles();
     }
 
     private void OnThrottleTimerElapsed(object? state)
     {
         lock (_textLock)
         {
-            if (_hasPendingDelta)
-                EmitPartialSubtitle();
+            if (_acceptingSubtitles && _hasPendingDelta && CreatePartialSubtitle() is { } partial)
+                _pendingSubtitleNotifications.Enqueue(partial);
+        }
+        PublishPendingSubtitles();
+    }
+
+    private SubtitleNotificationScope? GetCurrentSubtitleNotificationScope()
+    {
+        for (var scope = s_subtitleNotificationScope; scope is not null; scope = scope.Previous)
+        {
+            if (ReferenceEquals(scope.Owner, this) && scope.IsActive) return scope;
+        }
+        return null;
+    }
+
+    private void CompleteSubtitleNotificationsIfIdle()
+    {
+        // 呼び出し元が _textLock を保持する。例外で配信が中断した場合も待機者を起こし、
+        // 残ったキューを次の producer / 停止処理が引き継げるようにする。
+        if (_subtitlePublisher is not null || _activeSubtitleCallbacks != 0) return;
+        _subtitleNotificationsIdle?.TrySetResult();
+        _subtitleNotificationsIdle = null;
+    }
+
+    private void PublishPendingSubtitles(SubtitleNotificationScope? reentrantScope = null)
+    {
+        object publisher = new();
+        lock (_textLock)
+        {
+            if ((_subtitlePublisher is not null || _activeSubtitleCallbacks != 0)
+                && reentrantScope?.IsActive != true) return;
+            _subtitlePublisher = publisher;
+            _subtitleNotificationsIdle ??= new(TaskCreationOptions.RunContinuationsAsynchronously);
+        }
+
+        bool succeeded = false;
+        try
+        {
+            while (true)
+            {
+                SubtitleNotification notification;
+                EventHandler<SubtitleItem> handler;
+                lock (_textLock)
+                {
+                    // 同期 callback からの停止が配信を引き継いだ場合、古い drainer は再開しない。
+                    if (!ReferenceEquals(_subtitlePublisher, publisher))
+                    {
+                        succeeded = true;
+                        return;
+                    }
+                    if (_currentSubtitleNotification is null
+                        || _currentSubtitleNotification.NextHandlerIndex == _currentSubtitleNotification.Handlers.Length)
+                    {
+                        _currentSubtitleNotification = null;
+                        if (_pendingSubtitleNotifications.Count == 0)
+                        {
+                            succeeded = true;
+                            return;
+                        }
+                        // 一括 Invoke と同じ購読者 snapshot を保持する。再入時もこの通知の残りを先に渡す。
+                        _currentSubtitleNotification = new(_pendingSubtitleNotifications.Dequeue(),
+                            SubtitleGenerated?.GetInvocationList() ?? []);
+                    }
+                    notification = _currentSubtitleNotification;
+                    if (notification.Handlers.Length == 0) continue;
+                    handler = (EventHandler<SubtitleItem>)notification.Handlers[notification.NextHandlerIndex++];
+                    _activeSubtitleCallbacks++;
+                }
+                var previous = s_subtitleNotificationScope;
+                var scope = new SubtitleNotificationScope(this, previous);
+                s_subtitleNotificationScope = scope;
+                try
+                {
+                    handler(this, notification.Subtitle);
+                }
+                catch
+                {
+                    // multicast と同じく、例外が出た通知の残りの購読者は呼ばず、呼出元へ伝播する。
+                    lock (_textLock)
+                    {
+                        if (ReferenceEquals(_currentSubtitleNotification, notification))
+                            _currentSubtitleNotification = null;
+                    }
+                    throw;
+                }
+                finally
+                {
+                    scope.Complete();
+                    s_subtitleNotificationScope = previous;
+                    lock (_textLock)
+                    {
+                        _activeSubtitleCallbacks--;
+                        CompleteSubtitleNotificationsIfIdle();
+                    }
+                }
+            }
+        }
+        finally
+        {
+            bool resume;
+            lock (_textLock)
+            {
+                if (ReferenceEquals(_subtitlePublisher, publisher)) _subtitlePublisher = null;
+                CompleteSubtitleNotificationsIfIdle();
+                resume = succeeded && _subtitlePublisher is null && _activeSubtitleCallbacks == 0
+                    && HasPendingSubtitleNotifications();
+            }
+            if (resume) PublishPendingSubtitles();
         }
     }
+
+    private async Task WaitForSubtitleNotificationsAsync(SubtitleNotificationScope? notificationScope)
+    {
+        List<Exception>? errors = null;
+        while (true)
+        {
+            try { PublishPendingSubtitles(notificationScope); }
+            catch (Exception ex) { (errors ??= []).Add(ex); }
+
+            Task? pending;
+            lock (_textLock)
+            {
+                if (!HasPendingSubtitleNotifications()
+                    && ((_subtitlePublisher is null && _activeSubtitleCallbacks == 0)
+                        || notificationScope?.IsActive == true)) break;
+                pending = notificationScope?.IsActive == true ? null : _subtitleNotificationsIdle?.Task;
+            }
+            if (pending is not null) await pending.ConfigureAwait(false);
+        }
+        if (errors is not null) throw new AggregateException("字幕通知中に例外が発生しました。", errors);
+    }
+
+    private bool HasPendingSubtitleNotifications()
+        => _pendingSubtitleNotifications.Count != 0
+            || (_currentSubtitleNotification is { } notification
+                && notification.NextHandlerIndex < notification.Handlers.Length);
 
     /// <summary>
     /// アイドル確定閾値が <see cref="AudioCaptureSettings"/> の無音 padding より必ず長くなるよう積む余裕 (ms)。
@@ -996,8 +1209,10 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         FinalizePendingPartial($"delta 途絶 {_activeDeltaIdleFinalizeMs}ms");
     }
 
-    private void EmitPartialSubtitle()
+    // 呼び出し元は _textLock 内でスナップショットを作り、通知はロック外で行う。
+    private SubtitleItem? CreatePartialSubtitle()
     {
+        if (!_acceptingSubtitles) return null;
         _lastEmitTime = DateTime.UtcNow;
         _hasPendingDelta = false;
 
@@ -1011,7 +1226,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         // 60 分セッション 60k emit のうち重複分を概ね 1/3 削減見込み。
         if (partialText.Length == _lastEmittedPartialLength && segmentId == _lastEmittedPartialSegmentId)
         {
-            return;
+            return null;
         }
         _lastEmittedPartialLength = partialText.Length;
         _lastEmittedPartialSegmentId = segmentId;
@@ -1024,8 +1239,6 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
             IsFinal = false
         };
 
-        SubtitleGenerated?.Invoke(this, subtitle);
-
         // v1.0.25 デバッグ用ログ密度: 「累積長が伸びた時のみ Info」+「ShouldLogAtCount に該当する節目」も合わせて出力。
         // partial 連結方式の挙動 (「そ → そし → そして → ...」の成長過程) を画面 ↔ ログで突き合わせ可能にする。
         // 同内容の再 emit (throttle で再発火など) はログから除外して爆発を防止。
@@ -1036,6 +1249,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
             Logger.Info($"partial emit #{count}: SegmentId={ShortSegmentId(segmentId)} 累積長={partialText.Length} 内容='{TruncateForLog(partialText)}'");
             _lastLoggedPartialLength = partialText.Length;
         }
+        return subtitle;
     }
 
     /// <summary>
@@ -1043,13 +1257,15 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     /// v1.0.27 から 停止時 (StopCoreAsync) のみから呼ばれる (旧 v1.0.18 アイドル確定 / v1.0.24 最大寿命タイマーは削除済み)。
     /// 空 / 空白のみのときは何もしない。 SegmentId は partial 表示時と同一にして overlay 側の partial を確定表示に置換させる。
     /// </summary>
-    private void FinalizePendingPartial(string reason)
+    private void FinalizePendingPartial(string reason, bool stopAcceptingSubtitles = false)
     {
         string sentence;
         string segmentId;
         bool shouldEmit;
         lock (_textLock)
         {
+            if (!_acceptingSubtitles) return;
+            if (stopAcceptingSubtitles) _acceptingSubtitles = false;
             sentence = _accumulatedText.ToString();
             if (string.IsNullOrWhiteSpace(sentence)) return;
 
@@ -1067,6 +1283,14 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
             _throttleTimer.Change(Timeout.Infinite, Timeout.Infinite);
             // 確定済み (= _accumulatedText 空) なのでアイドル確定タイマーを解除する。
             ScheduleIdleFinalize();
+            if (shouldEmit)
+                _pendingSubtitleNotifications.Enqueue(new SubtitleItem
+                {
+                    SegmentId = segmentId,
+                    OriginalText = string.Empty,
+                    TranslatedText = sentence,
+                    IsFinal = true,
+                });
         }
 
         if (!shouldEmit)
@@ -1077,14 +1301,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
 
         Logger.Info($"未確定文を確定 emit ({reason}): SegmentId={ShortSegmentId(segmentId)} 長さ={sentence.Length} 内容='{TruncateForLog(sentence)}'");
 
-        // ロック外で emit (SubtitleGenerated ハンドラ側の再入によるデッドロックを避ける)。
-        SubtitleGenerated?.Invoke(this, new SubtitleItem
-        {
-            SegmentId = segmentId,
-            OriginalText = string.Empty,
-            TranslatedText = sentence,
-            IsFinal = true,
-        });
+        PublishPendingSubtitles();
     }
 
     private void OnTranscriptCompleted(string transcript)
@@ -1097,6 +1314,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
 
         lock (_textLock)
         {
+            if (!_acceptingSubtitles) return;
             latencyMs = _latencyStopwatch.Elapsed.TotalMilliseconds;
 
             // API から transcript が空で done が来た場合 (response.done fallback 経路など) は
@@ -1225,6 +1443,14 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
             _throttleTimer.Change(Timeout.Infinite, Timeout.Infinite);
             ScheduleIdleFinalize();
             _latencyStopwatch.Reset();
+            foreach (var (segmentId, text, _) in emissions)
+                _pendingSubtitleNotifications.Enqueue(new SubtitleItem
+                {
+                    SegmentId = segmentId,
+                    OriginalText = string.Empty,
+                    TranslatedText = text,
+                    IsFinal = true,
+                });
         }
 
         // 概況ログ: done 経路で何が起きたかをまとめて 1 行で出す。
@@ -1232,7 +1458,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         int trailingCount = emissions.Count(e => !e.isSentenceEnd);
         Logger.Info($"OnTranscriptCompleted: newPortion長={newPortionLength} 完結文={completedCount}件 trailing={trailingCount}件 latency={latencyMs:F0}ms");
 
-        // ロック外で emit。
+        // 完結文の診断ログをロック外で記録する。
         foreach (var (segmentId, text, isSentenceEnd) in emissions)
         {
             if (isSentenceEnd)
@@ -1240,16 +1466,8 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                 var n = Interlocked.Increment(ref _completedEmitCount);
                 Logger.Info($"完結文 emit (done経路) #{n}: SegmentId={ShortSegmentId(segmentId)} 長さ={text.Length} 内容='{TruncateForLog(text)}'");
             }
-
-            var subtitle = new SubtitleItem
-            {
-                SegmentId = segmentId,
-                OriginalText = string.Empty,
-                TranslatedText = text,
-                IsFinal = true,
-            };
-            SubtitleGenerated?.Invoke(this, subtitle);
         }
+        PublishPendingSubtitles();
 
         // 累積フィールド (Tokens/Cost/SessionDuration/SkippedSecondsByVad) を 0 上書きしないよう BuildCurrentStats で埋める。
         var doneStats = BuildCurrentStats($"翻訳完了 ({latencyMs:F0}ms)");
@@ -1439,15 +1657,41 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         StatsUpdated?.Invoke(this, BuildCurrentStats(statusText));
     }
 
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync()
     {
         // rere B1-006: Interlocked で並行 Dispose を排他制御。
-        if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0) return;
+        bool fromNotification = GetCurrentSubtitleNotificationScope() is not null;
+        if (Interlocked.CompareExchange(ref _disposed, 1, 0) == 0)
+        {
+            _ = CompleteDisposalAsync();
+            if (fromNotification) _ = ObserveDeferredDisposeAsync(_disposeCompletion.Task);
+        }
+        // callback 内だけは自身の終了を待てないため、停止と破棄の全体を後続へ引き継ぐ。
+        // callback 外では二重呼び出しも同じ完了を待ち、通知終了と物理的な破棄を保証する。
+        return fromNotification ? ValueTask.CompletedTask : new ValueTask(_disposeCompletion.Task);
+    }
 
+    private async Task CompleteDisposalAsync()
+    {
+        try
+        {
+            await DisposeCoreAsync().ConfigureAwait(false);
+            _disposeCompletion.TrySetResult();
+        }
+        catch (Exception ex)
+        {
+            _disposeCompletion.TrySetException(ex);
+        }
+    }
+
+    private async Task DisposeCoreAsync()
+    {
         try
         {
             // rere B1-011: Core layer の await は ConfigureAwait(false) で統一。
-            await StopAsync().ConfigureAwait(false);
+            // 進行中の通常 Stop が semaphore を解放してから停止を引き継ぐ。
+            // 公開 Stop の callback 再入用の即帰還経路は使わず、破棄が先行するのを防ぐ。
+            await StopWithLockAsync(CancellationToken.None, null).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -1471,27 +1715,22 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     public void Dispose()
     {
         // rere B1-006: Interlocked で並行 Dispose を排他制御。
-        if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0) return;
-
-        // 同期版: UIスレッドでのデッドロックを回避するため Task.Run 経由で呼び出す
-        try
+        bool fromNotification = GetCurrentSubtitleNotificationScope() is not null;
+        if (Interlocked.CompareExchange(ref _disposed, 1, 0) == 0)
         {
-            Task.Run(() => StopAsync()).GetAwaiter().GetResult();
+            // 同期版も停止と破棄を一組で委譲する。callback 自身だけは後続処理を待たずに戻す。
+            _ = Task.Run(CompleteDisposalAsync);
+            if (fromNotification) _ = ObserveDeferredDisposeAsync(_disposeCompletion.Task);
         }
+        if (fromNotification) return;
+        try { _disposeCompletion.Task.GetAwaiter().GetResult(); }
         catch { /* DisposeAsync を推奨 */ }
+    }
 
-        _throttleTimer.Dispose();
-        _idleFinalizeTimer.Dispose();
-        foreach (var client in _distinctClients)
-        {
-            client.TranscriptDeltaReceived -= OnTranscriptDelta;
-            client.TranscriptCompleted -= OnTranscriptCompleted;
-            client.ErrorReceived -= OnClientError;
-            client.StateChanged -= OnConnectionStateChanged;
-        }
-        _audioCaptureService.AudioDataAvailable -= OnAudioDataAvailable;
-        _settingsChangeSubscription?.Dispose();
-        _startStopLock.Dispose();
+    private static async Task ObserveDeferredDisposeAsync(Task disposeTask)
+    {
+        try { await disposeTask.ConfigureAwait(false); }
+        catch (Exception ex) { Logger.Error("字幕通知から引き継いだ破棄処理で例外", ex); }
     }
 
     // TruncateForLog / ShouldLogAtCount は Core/Services/LogFormatting.cs に集約 (rere D1 修正)。

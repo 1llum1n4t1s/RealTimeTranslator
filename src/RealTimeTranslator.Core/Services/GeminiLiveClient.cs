@@ -431,7 +431,6 @@ public sealed class GeminiLiveClient : Interfaces.IRealtimeTranscriber
             var uri = new Uri($"{_settings.Endpoint}?key={Uri.EscapeDataString(_settings.ApiKey)}");
             ValidateEndpoint(uri);
             await _ws.ConnectAsync(uri, ct).ConfigureAwait(false);
-            Interlocked.Exchange(ref _reconnectAttempts, 0);
             Logger.Info("Gemini Live WebSocket 接続成功");
 
             // setupComplete ハンドシェイク待ちを接続ごとに用意 (Connected 確定前に作る)。
@@ -455,6 +454,8 @@ public sealed class GeminiLiveClient : Interfaces.IRealtimeTranscriber
                 throw new InvalidOperationException("Gemini setup 中にサーバーが接続を閉じました (setupComplete 未受信)。");
 
             SetState(ConnectionState.Connected);
+            // WebSocket だけでなく setup の初期化まで成功した場合に戻す。
+            Interlocked.Exchange(ref _reconnectAttempts, 0);
         }
         catch (WebSocketException ex) when (ex.InnerException is HttpRequestException httpEx)
         {

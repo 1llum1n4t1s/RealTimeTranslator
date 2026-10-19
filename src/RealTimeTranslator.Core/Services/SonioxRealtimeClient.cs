@@ -487,7 +487,6 @@ public sealed class SonioxRealtimeClient : Interfaces.IRealtimeTranscriber
             var uri = new Uri(_settings.Endpoint);
             ValidateEndpoint(uri);
             await _ws.ConnectAsync(uri, ct).ConfigureAwait(false);
-            Interlocked.Exchange(ref _reconnectAttempts, 0);
             Logger.Info("Soniox Realtime WebSocket 接続成功");
 
             // 受信・送信ループを起動。 SendAudio は State!=Connected で弾くので config 送信完了まで audio は流れない。
@@ -516,6 +515,8 @@ public sealed class SonioxRealtimeClient : Interfaces.IRealtimeTranscriber
                     "Soniox 接続が config 直後に失敗しました (キー / 言語設定を確認してください)。", "config rejected");
 
             SetState(ConnectionState.Connected);
+            // config 拒否を確認するグレース期間も含め、初期化完了後に戻す。
+            Interlocked.Exchange(ref _reconnectAttempts, 0);
         }
         catch (WebSocketException ex) when (ex.InnerException is HttpRequestException httpEx)
         {

@@ -506,7 +506,6 @@ public sealed class SpeechmaticsRealtimeClient : Interfaces.IRealtimeTranscriber
             var uri = new Uri(_settings.Endpoint);
             ValidateEndpoint(uri);
             await _ws.ConnectAsync(uri, ct).ConfigureAwait(false);
-            Interlocked.Exchange(ref _reconnectAttempts, 0);
             Logger.Info("Speechmatics Realtime WebSocket 接続成功");
 
             var startedTcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -524,6 +523,8 @@ public sealed class SpeechmaticsRealtimeClient : Interfaces.IRealtimeTranscriber
                 throw new InvalidOperationException("Speechmatics StartRecognition 中にサーバーが接続を閉じました。");
 
             SetState(ConnectionState.Connected);
+            // RecognitionStarted と接続の健全性を確認してから試行回数を戻す。
+            Interlocked.Exchange(ref _reconnectAttempts, 0);
         }
         catch (WebSocketException ex) when (ex.InnerException is HttpRequestException httpEx)
         {

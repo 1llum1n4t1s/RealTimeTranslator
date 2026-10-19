@@ -32,7 +32,7 @@ public sealed class InputLevelMeterTests
     public void UpdateInputLevel_FloorAndFullScale_MapToZeroAndOne()
     {
         var vm = CreateViewModel();
-        var t0 = new DateTime(2026, 7, 30, 0, 0, 0, DateTimeKind.Utc);
+        var t0 = TimeSpan.FromSeconds(1000);
 
         vm.UpdateInputLevel(-60.0, t0);
         Assert.AreEqual(0.0, vm.InputLevelNorm, 1e-9, "-60 dBFS はバー 0% のはず");
@@ -48,7 +48,7 @@ public sealed class InputLevelMeterTests
         // ゆろさんの体感「ゲインを上げてもあまり増えない」が仕様であることの回帰テスト。
         // 60 dB フルスケールなので +6 dB = 6/60 = バーの 10% しか動かない。
         var vm = CreateViewModel();
-        var t0 = new DateTime(2026, 7, 30, 0, 0, 0, DateTimeKind.Utc);
+        var t0 = TimeSpan.FromSeconds(1000);
 
         vm.UpdateInputLevel(-30.0, t0);
         double before = vm.InputLevelNorm;
@@ -63,7 +63,7 @@ public sealed class InputLevelMeterTests
     public void UpdateInputLevel_OutOfRange_IsClampedToZeroOne()
     {
         var vm = CreateViewModel();
-        var t0 = new DateTime(2026, 7, 30, 0, 0, 0, DateTimeKind.Utc);
+        var t0 = TimeSpan.FromSeconds(1000);
 
         vm.UpdateInputLevel(-120.0, t0);
         Assert.AreEqual(0.0, vm.InputLevelNorm, 1e-9, "床を下回っても 0 でクランプされるはず");
@@ -80,7 +80,7 @@ public sealed class InputLevelMeterTests
     public void UpdateInputLevel_BelowThreshold_DoesNotLightClip()
     {
         var vm = CreateViewModel();
-        var t0 = new DateTime(2026, 7, 30, 0, 0, 0, DateTimeKind.Utc);
+        var t0 = TimeSpan.FromSeconds(1000);
 
         vm.UpdateInputLevel(-1.0, t0);
 
@@ -92,7 +92,7 @@ public sealed class InputLevelMeterTests
     public void UpdateInputLevel_ReachesZeroDbfs_LightsClip()
     {
         var vm = CreateViewModel();
-        var t0 = new DateTime(2026, 7, 30, 0, 0, 0, DateTimeKind.Utc);
+        var t0 = TimeSpan.FromSeconds(1000);
 
         vm.UpdateInputLevel(0.0, t0);
 
@@ -105,7 +105,7 @@ public sealed class InputLevelMeterTests
     {
         // 1 フレームだけのクリップでも視認できるようホールドし、 期間経過後に自動で消える。
         var vm = CreateViewModel();
-        var t0 = new DateTime(2026, 7, 30, 0, 0, 0, DateTimeKind.Utc);
+        var t0 = TimeSpan.FromSeconds(1000);
         var hold = SettingsViewModel.ClipHoldDuration;
 
         vm.UpdateInputLevel(0.0, t0);
@@ -126,7 +126,7 @@ public sealed class InputLevelMeterTests
     {
         // 連続クリップ中はそのたびに期限が延びるので、 点灯が途切れない。
         var vm = CreateViewModel();
-        var t0 = new DateTime(2026, 7, 30, 0, 0, 0, DateTimeKind.Utc);
+        var t0 = TimeSpan.FromSeconds(1000);
         var hold = SettingsViewModel.ClipHoldDuration;
 
         vm.UpdateInputLevel(0.0, t0);
@@ -143,7 +143,7 @@ public sealed class InputLevelMeterTests
     {
         // 停止後はレベル更新が止まるため、 ホールド中の点灯が残らないよう Reset で即消す。
         var vm = CreateViewModel();
-        var t0 = new DateTime(2026, 7, 30, 0, 0, 0, DateTimeKind.Utc);
+        var t0 = TimeSpan.FromSeconds(1000);
 
         vm.UpdateInputLevel(0.0, t0);
         Assert.IsTrue(vm.IsInputClipping, "前提: 点灯している");
