@@ -42,7 +42,7 @@ RealTimeTranslator は、Windows 上で指定したプロセスの再生音声�
 
 機器は ID で明示選択し、入力から Wave Link の録音ミックスを除外、出力は Wave Link 3 の仮想再生チャンネルに限定する。利用者が変更できる endpoint 表示名や adapter の表示文字列を識別の正本にせず、endpoint の `DeviceTopology.GetConnector(0).ConnectedToDeviceId` で接続先音声アダプターを解決し、その `PKEY_Device_InstanceId` から Windows Configuration Manager で PnP 親を辿る。`USB\VID_0FD9&PID_0096` または `TUSBAUDIO_ENUM\VID_0FD9&PID_0096&KS` の hardware ID を確認し、元の endpoint の方向と `PKEY_Device_DeviceDesc` を使う。render は `System` / `Music` / `Browser` / `Voice Chat` / `SFX` / `Game` / `Aux 1` / `Aux 2` だけを許可し、`Wave Mic 1`〜`4` と録音ミックスを送信先にしない。同じ仮想機器の capture は入力候補から一括で除外する。列挙時・開始時に同じ判定を使い、接続先・親・属性を確認できない機器は許可しない。
 
-識別の根拠は [公式 Audio Driver 3.0.0.466 x64 MSI](https://edge.elgato.com/egc/windows/ewlw/drivers/WaveLinkDriver_3.0.0.466_x64.msi) 内の `ElgatoUsbAudio.inf` / `ElgatoUsbAudioks.inf`（DriverVer `6.0.0.30116`）と仮想機器の `_AddReg_6` 定義。MSI の SHA-256 は `CCFA18BF595B0B307C725B92179E7AB7C378F534267288533F9ED917F8F15977`。MSI と CAT の署名・INF は読み取りで確認しており、実機の endpoint 属性とルーティング動作は別途確認する。
+`WaveLinkDeviceIdentity` がこの識別を集約する。識別値は Audio Driver 3.0.0.466 の `ElgatoUsbAudio.inf` / `ElgatoUsbAudioks.inf` に基づく。表示名の変更や同名の別機器で制約が緩まないよう、ハードウェア ID の完全一致とチャンネル用途を組み合わせ、PnP 親を root まで確認できない場合も候補から除外する。
 
 以前の出力 ID が候補にない場合は未選択とし、保存済み ID を保持したまま Wave Link の明示的な再選択を求める。既定機器への fallback や Windows 全体の既定変更は行わない。停止は接続待ちもキャンセルでき、音声を消去してから capture/player を解放する。通信・機器・キュー超過はミュートして停止し、原音への自動切替や保留音声付きの自動再接続は行わない。WASAPI へ既に渡した短い再生単位は source キューの消去だけでは回収できない。
 
@@ -140,7 +140,7 @@ idle finalize は無音 padding の処理中に発火させません。実効値
 | 翻訳ログ | `%APPDATA%/RealTimeTranslator/logs/translations/` | 確定字幕だけを日別 TSV として保存 |
 | デバッグ音声 | `%APPDATA%/RealTimeTranslator/debug/` | 明示的に有効化したセッションだけ、実送信レートの WAV を保存 |
 
-設定保存では API キーを暗号化した clone を作り、DI と実行中 client が参照する元 object を変更しません。永続化フィールドを追加するときは clone へのコピーも必須です。配布物は `settings.default.json` のみを含み、利用者の `settings.json` を含めません。
+設定保存では API キーを暗号化した clone を作り、DI と実行中 client が参照する元 object を変更しません。保存対象は `AppSettings` のフィールドに限定され、廃止した翻訳プロバイダの選択値や固有設定は保存しません。フィールド追加時の作業規則は [AGENTS.md](AGENTS.md#設定シークレット永続化) を参照してください。配布物は `settings.default.json` のみを含み、利用者の `settings.json` を含めません。
 
 overlay 背景色は `BackgroundColorBase` (`#RRGGBB`) と `BackgroundOpacityPercent` を編集用の正本とし、表示で使う `BackgroundColor` (`#AARRGGBB`) を派生させます。旧設定の `BackgroundColor` だけがある場合は sanitize 時に分解し、以後は setter と保存前 sanitize で3フィールドを同期します。
 

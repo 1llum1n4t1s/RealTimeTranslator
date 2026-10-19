@@ -14,7 +14,7 @@
 
 | パス | 責務 |
 | --- | --- |
-| `src/RealTimeTranslator.Core` | 音声キャプチャ、DSP、VAD、各翻訳クライアント、設定・ログの永続化。UI へ依存しない |
+| `src/RealTimeTranslator.Core` | 音声キャプチャ、DSP、VAD、OpenAI 翻訳クライアント、設定・ログの永続化。UI へ依存しない |
 | `src/RealTimeTranslator.UI` | Avalonia の View / ViewModel、DI、更新 UI、アプリの起動・終了制御 |
 | `src/RealTimeTranslator.Tests` | Core と UI の MSTest。実機依存テストは `Integration` カテゴリ |
 | `scripts/release-local.ps1` | win-x64 の publish、署名、Velopack パッケージ作成・配信 |
