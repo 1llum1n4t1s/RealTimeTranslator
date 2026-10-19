@@ -26,10 +26,10 @@
     <!-- ↑ 削除済み。 絵文字 / Latin fallback で問題があれば復活してください -->
 
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
-    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.12" />
-    <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="10.0.12" />
-    <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="10.0.12" />
-    <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.12" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.13" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="10.0.13" />
+    <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="10.0.13" />
+    <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.13" />
     <!-- ⚠️ Velopack は **直接参照しない** (v1.0.37 設計、 ゆろさん指摘):
          VelopackUpdateDialog.Avalonia の .nuspec が互換 Velopack version を宣言するため、
          transitive 依存だけ残せば NuGet が対応版を自動で resolve する。
