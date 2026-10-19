@@ -7,7 +7,7 @@
 # 前提:
 #   - SimplySign Desktop が接続済み (証明書が CurrentUser\My に見えていること)
 #   - Directory.Build.props の <Version> がリリースしたいバージョンになっていること (/vava 済み)
-#   - C:\Users\IMT\dev\Secret\secrets.json に cloudflare.api_token があること
+#   - D:\Dev\Secret\secrets.json に cloudflare.api_token があること
 #
 # 使い方:
 #   pwsh scripts/release-local.ps1                # フルリリース (build + sign + upload + cleanup)
@@ -25,6 +25,35 @@ param(
     [string]$LedgerDirectory
 )
 
+
+# 検証済みの作業対象だけを標準APIで削除する。
+function Remove-LocalWorkItem {
+    param([string[]]$LiteralPath, [string]$AllowedRoot, [switch]$IgnoreMissing, [switch]$AllowLeafJunction)
+    if ([string]::IsNullOrWhiteSpace($AllowedRoot) -or -not [IO.Path]::IsPathRooted($AllowedRoot)) { throw 'Cleanup root must be absolute.' }
+    $boundary = [IO.Path]::GetFullPath($AllowedRoot).TrimEnd('\','/') + [IO.Path]::DirectorySeparatorChar
+    foreach ($target in $LiteralPath) {
+        if ([string]::IsNullOrWhiteSpace($target) -or -not [IO.Path]::IsPathRooted($target)) { throw 'Cleanup target must be absolute.' }
+        $resolved = [IO.Path]::GetFullPath($target)
+        if (-not $resolved.StartsWith($boundary, [StringComparison]::OrdinalIgnoreCase)) { throw 'Cleanup target is outside the allowed root.' }
+        $ancestor = $resolved
+        while ($ancestor) {
+            if (Test-Path -LiteralPath $ancestor) {
+                $item = Get-Item -LiteralPath $ancestor -Force -ErrorAction Stop
+                if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -and -not ($AllowLeafJunction -and $ancestor -eq $resolved -and $item.LinkType -eq 'Junction')) { throw 'Cleanup path contains a reparse point.' }
+            }
+            $ancestor = Split-Path $ancestor -Parent
+        }
+        if (-not (Test-Path -LiteralPath $resolved)) { if ($IgnoreMissing) { continue }; throw "Cleanup target is missing: $resolved" }
+        $item = Get-Item -LiteralPath $resolved -Force -ErrorAction Stop
+        $leafLink = [bool]($item.Attributes -band [IO.FileAttributes]::ReparsePoint)
+        if ($item.PSIsContainer -and -not $leafLink) {
+            if (@(Get-ChildItem -LiteralPath $resolved -Recurse -Force -ErrorAction Stop | Where-Object { $_.Attributes -band [IO.FileAttributes]::ReparsePoint }).Count) { throw 'Cleanup directory contains a reparse point.' }
+        }
+        Remove-Item -LiteralPath $resolved -Recurse:($item.PSIsContainer -and -not $leafLink) -Force -ErrorAction Stop
+        if (Test-Path -LiteralPath $resolved) { throw "Cleanup target remains: $resolved" }
+    }
+}
+
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $releaseInitialTemp = $env:TEMP
@@ -32,11 +61,11 @@ $releaseInitialTmp = $env:TMP
 
 # ---- 定数 (旧 CI 版 release.yml / velopack.yml と揃える) ----
 # Velopack (vpk) の最新安定版はプリフライト後に解決し、今回専用の tool-path へ入れる。
-$WranglerVersion = '4.149.0'        # サプライチェーン対策でバージョン固定
+$WranglerVersion = '4.151.1'        # サプライチェーン対策でバージョン固定
 $Bucket = 'realtimetranslator-updates'
 $BaseUrl = 'https://rtt.kagayoi.com'
 $AccountId = '10901bfadbf1005164774a7350082985'
-$SecretsPath = 'C:\Users\IMT\dev\Secret\secrets.json'
+$SecretsPath = 'D:\Dev\Secret\secrets.json'
 $CertSubjectName = 'Open Source Developer Yuichiro Shinozaki'
 # /n (Subject 名) で選択: 証明書の年次更新で thumbprint が変わっても動く
 $SignParams = "/n `"$CertSubjectName`" /fd SHA256 /td SHA256 /tr http://time.certum.pl"
@@ -404,13 +433,13 @@ if (-not $toDelete) {
     if ($failed -gt 0 -and $deleted -eq 0) { throw '旧 nupkg の削除がすべて失敗しました。API token の権限を確認してください。' }
 }
 
-# ---- 5. 今回の外部作業先だけをごみ箱経由で清掃 ----
+# ---- 5. 今回の外部作業先だけを清掃 ----
 # SkipUpload と途中失敗は復元・再開用に保持する。再生成 restore は行わない。
 function Remove-ReleaseWorkDirectory {
     param([string]$WorkDir, [string]$LedgerDir)
-    Import-Module (Join-Path $env:USERPROFILE '.codex\scripts\CodexCleanup.psm1') -ErrorAction Stop
+
     # pnpm の専用 store にできた junction はリンク自身を先に清掃する。
-    # 共通ヘルパーは子孫の reparse point を含むフォルダーの再帰削除を拒否する。
+    # 削除処理は子孫の reparse point を含むフォルダーの再帰削除を拒否する。
     $links = @(Get-ChildItem -LiteralPath $WorkDir -Recurse -Directory -Force |
         Where-Object { ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 })
     foreach ($link in $links) {
@@ -420,49 +449,9 @@ function Remove-ReleaseWorkDirectory {
         }
     }
     foreach ($link in $links) {
-        Remove-CodexItem -LiteralPath $link.FullName -AllowedRoot $WorkDir -LedgerRoot $LedgerDir -AllowLeafJunction
+        Remove-LocalWorkItem -LiteralPath $link.FullName -AllowedRoot $WorkDir -AllowLeafJunction
     }
-    # Shell のごみ箱は長い子パスを移せない。今回生成した cache だけを短いパスへ移す。
-    $cacheRoots = @(@($WorkDir) + @(Get-ChildItem -LiteralPath $WorkDir -Directory | ForEach-Object FullName) |
-        ForEach-Object { Join-Path $_ 'cache' } | Where-Object { Test-Path -LiteralPath $_ -PathType Container })
-    if ($cacheRoots.Count -gt 0) {
-        $shortRoot = Assert-ExternalPath (Join-Path ([IO.Path]::GetTempPath()) "Codex\RealTimeTranslator\c-$([Guid]::NewGuid().ToString('N').Substring(0,8))")
-        if (Test-Path -LiteralPath $shortRoot) { throw '短い清掃先が既に存在します。' }
-        if ([IO.Path]::GetPathRoot($shortRoot) -ne [IO.Path]::GetPathRoot($WorkDir)) { throw 'cache の移動は同じ volume 内に限定します。' }
-        New-Item -ItemType Directory -Path $shortRoot | Out-Null
-        New-Item -ItemType Directory -Path $LedgerDir -Force | Out-Null
-        $moveLedger = Join-Path $LedgerDir "cache-moves-$([Guid]::NewGuid().ToString('N')).json"
-        $moves = [System.Collections.Generic.List[object]]::new()
-        $moveCache = {
-            param([string]$Source)
-            $item = Get-Item -LiteralPath $Source -Force
-            if (-not $item.FullName.StartsWith($WorkDir + '\', [StringComparison]::OrdinalIgnoreCase) -or
-                ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw '作業先内の通常 cache directory だけを移動できます。' }
-            $destination = Join-Path $shortRoot $moves.Count.ToString('x')
-            $entry = [PSCustomObject]@{ Source = $item.FullName; Destination = $destination; State = 'planned'; Restore = '清掃前なら Destination を Source へ戻す' }
-            $moves.Add($entry)
-            $moves | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $moveLedger
-            Move-Item -LiteralPath $item.FullName -Destination $destination -ErrorAction Stop
-            $entry.State = 'moved'
-            $moves | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $moveLedger
-        }
-        foreach ($cacheRoot in $cacheRoots) {
-            $packageLinks = Join-Path $cacheRoot 'PNPM_HOME\store\v11\links'
-            if (Test-Path -LiteralPath $packageLinks) {
-                $packages = @(Get-ChildItem -LiteralPath $packageLinks -Recurse -Directory |
-                    Where-Object { $_.Name -match '^[a-f0-9]{64}$' -and (Test-Path -LiteralPath (Join-Path $_.FullName 'node_modules')) })
-                foreach ($package in $packages) { & $moveCache $package.FullName }
-            }
-            foreach ($cacheDirectory in @(Get-ChildItem -LiteralPath $cacheRoot -Directory)) { & $moveCache $cacheDirectory.FullName }
-        }
-        foreach ($cleanupRoot in @($shortRoot, $WorkDir)) {
-            if (@(Get-ChildItem -LiteralPath $cleanupRoot -Recurse -Force | Where-Object { $_.FullName.Length -gt 240 }).Count -gt 0) {
-                throw "ごみ箱へ移せない長いパスが残っています。移動先は台帳で確認できます: $moveLedger"
-            }
-        }
-        Remove-CodexItem -LiteralPath $shortRoot -AllowedRoot (Split-Path -Parent $shortRoot) -LedgerRoot $LedgerDir
-    }
-    Remove-CodexItem -LiteralPath $WorkDir -AllowedRoot (Split-Path -Parent $WorkDir) -LedgerRoot $LedgerDir
+    Remove-LocalWorkItem -LiteralPath $WorkDir -AllowedRoot (Split-Path -Parent $WorkDir)
     if (Test-Path -LiteralPath $WorkDir) { throw "清掃後も作業先が残っています: $WorkDir" }
 }
 if ($SkipCleanup) {

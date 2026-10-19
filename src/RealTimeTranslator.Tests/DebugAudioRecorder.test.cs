@@ -115,7 +115,7 @@ public class DebugAudioRecorderTests
     public void WritePcm16_BeforeStart_IsNoOp()
     {
         // StartSession を呼ばずに WritePcm16 だけ呼んでも例外を投げず、 IsRecording=false のまま。
-        using var recorder = new DebugAudioRecorder();
+        using var recorder = new DebugAudioRecorder(TestOutputEnvironment.DebugDirectory);
         Assert.IsFalse(recorder.IsRecording);
         recorder.WritePcm16(new byte[] { 0x00, 0x01, 0x02 });
         Assert.IsFalse(recorder.IsRecording);
@@ -125,7 +125,7 @@ public class DebugAudioRecorderTests
     public void StopSession_BeforeStart_IsIdempotent()
     {
         // 録音中でない状態で StopSession を呼んでも例外を投げない (idempotent guarantee)。
-        using var recorder = new DebugAudioRecorder();
+        using var recorder = new DebugAudioRecorder(TestOutputEnvironment.DebugDirectory);
         recorder.StopSession();
         recorder.StopSession();
         Assert.IsFalse(recorder.IsRecording);
@@ -134,9 +134,9 @@ public class DebugAudioRecorderTests
     [TestMethod]
     public void StartSession_WritePcm16_StopSession_ProducesValidWavFile()
     {
-        // 実 file system 統合テスト: AppData/RealTimeTranslator/debug 配下に作られたファイルを
-        // 検証して即削除する。 1 セッションだけなので CI 環境でも影響軽微。
-        using var recorder = new DebugAudioRecorder();
+        // 実 file system 統合テスト: このテスト実行専用の Temp に作られたファイルを
+        // 検証して即削除する。
+        using var recorder = new DebugAudioRecorder(TestOutputEnvironment.DebugDirectory);
         // ファイル名衝突を避けるため非 ASCII を含まないユニーク ID を使う
         var testId = $"test{Guid.NewGuid():N}"[..12];
 
@@ -152,7 +152,7 @@ public class DebugAudioRecorderTests
         Assert.IsFalse(recorder.IsRecording);
 
         // 作られたファイルを探す
-        var files = Directory.GetFiles(DebugAudioRecorder.DebugDirectory, $"SentAudio_*_{testId}.wav");
+        var files = Directory.GetFiles(TestOutputEnvironment.DebugDirectory, $"SentAudio_*_{testId}.wav");
         Assert.AreEqual(1, files.Length, "テスト ID に対応する WAV ファイルがちょうど 1 つできる");
 
         try
@@ -180,14 +180,14 @@ public class DebugAudioRecorderTests
     [TestMethod]
     public void StartSession_With16kHz_WritesMatchingWavHeader()
     {
-        using var recorder = new DebugAudioRecorder();
+        using var recorder = new DebugAudioRecorder(TestOutputEnvironment.DebugDirectory);
         var testId = $"test{Guid.NewGuid():N}"[..12];
 
         recorder.StartSession(testId, 16000);
         recorder.WritePcm16(new byte[] { 0x01, 0x02, 0x03, 0x04 });
         recorder.StopSession();
 
-        var files = Directory.GetFiles(DebugAudioRecorder.DebugDirectory, $"SentAudio_*_{testId}.wav");
+        var files = Directory.GetFiles(TestOutputEnvironment.DebugDirectory, $"SentAudio_*_{testId}.wav");
         Assert.AreEqual(1, files.Length);
         try
         {
@@ -207,14 +207,14 @@ public class DebugAudioRecorderTests
     [TestMethod]
     public void StartSession_WithInvalidSampleRate_FallsBackTo24kHz()
     {
-        using var recorder = new DebugAudioRecorder();
+        using var recorder = new DebugAudioRecorder(TestOutputEnvironment.DebugDirectory);
         var testId = $"test{Guid.NewGuid():N}"[..12];
 
         recorder.StartSession(testId, 0);
         recorder.WritePcm16(new byte[] { 0x01, 0x02 });
         recorder.StopSession();
 
-        var files = Directory.GetFiles(DebugAudioRecorder.DebugDirectory, $"SentAudio_*_{testId}.wav");
+        var files = Directory.GetFiles(TestOutputEnvironment.DebugDirectory, $"SentAudio_*_{testId}.wav");
         Assert.AreEqual(1, files.Length);
         try
         {
@@ -231,7 +231,7 @@ public class DebugAudioRecorderTests
     public void StartSession_CalledTwice_FirstSessionIsClosed()
     {
         // Start を 2 回連続で呼ぶと、 1 つ目のセッションは閉じられ 2 つ目だけが残る (idempotent guarantee)。
-        using var recorder = new DebugAudioRecorder();
+        using var recorder = new DebugAudioRecorder(TestOutputEnvironment.DebugDirectory);
         var id1 = $"firstpass{Guid.NewGuid():N}"[..14];
         var id2 = $"secondpas{Guid.NewGuid():N}"[..14];
 
@@ -243,8 +243,8 @@ public class DebugAudioRecorderTests
 
         try
         {
-            var file1 = Directory.GetFiles(DebugAudioRecorder.DebugDirectory, $"SentAudio_*_{id1}.wav");
-            var file2 = Directory.GetFiles(DebugAudioRecorder.DebugDirectory, $"SentAudio_*_{id2}.wav");
+            var file1 = Directory.GetFiles(TestOutputEnvironment.DebugDirectory, $"SentAudio_*_{id1}.wav");
+            var file2 = Directory.GetFiles(TestOutputEnvironment.DebugDirectory, $"SentAudio_*_{id2}.wav");
             Assert.AreEqual(1, file1.Length, "1 つ目のセッションも閉じられて WAV が残る");
             Assert.AreEqual(1, file2.Length, "2 つ目のセッションが新規 WAV として書かれる");
 
@@ -258,8 +258,8 @@ public class DebugAudioRecorderTests
         }
         finally
         {
-            foreach (var f in Directory.GetFiles(DebugAudioRecorder.DebugDirectory, $"SentAudio_*_{id1}.wav")) try { File.Delete(f); } catch { }
-            foreach (var f in Directory.GetFiles(DebugAudioRecorder.DebugDirectory, $"SentAudio_*_{id2}.wav")) try { File.Delete(f); } catch { }
+            foreach (var f in Directory.GetFiles(TestOutputEnvironment.DebugDirectory, $"SentAudio_*_{id1}.wav")) try { File.Delete(f); } catch { }
+            foreach (var f in Directory.GetFiles(TestOutputEnvironment.DebugDirectory, $"SentAudio_*_{id2}.wav")) try { File.Delete(f); } catch { }
         }
     }
 
@@ -268,7 +268,7 @@ public class DebugAudioRecorderTests
     {
         // rere B2-009 対応: 並行書き込み race のテスト。 lock 保護が機能していることを構造的に検証。
         // WritePcm16 と StopSession を多数 Task で並列実行しても、 例外を投げない / IsRecording 状態が一貫する。
-        using var recorder = new DebugAudioRecorder();
+        using var recorder = new DebugAudioRecorder(TestOutputEnvironment.DebugDirectory);
         var testId = $"raceparall{Guid.NewGuid():N}"[..16];
         recorder.StartSession(testId, 24000);
 
@@ -299,7 +299,7 @@ public class DebugAudioRecorderTests
         }
         finally
         {
-            foreach (var f in Directory.GetFiles(DebugAudioRecorder.DebugDirectory, $"SentAudio_*_{testId}.wav")) try { File.Delete(f); } catch { }
+            foreach (var f in Directory.GetFiles(TestOutputEnvironment.DebugDirectory, $"SentAudio_*_{testId}.wav")) try { File.Delete(f); } catch { }
         }
     }
 
@@ -308,7 +308,7 @@ public class DebugAudioRecorderTests
     {
         // rere B2-009 対応: Dispose 後の挙動を検証。 録音中だった場合は StopSession を呼び出して
         // ファイル確定書き込みを行い、 以降の WritePcm16 / StopSession / StartSession は no-op or 無害。
-        var recorder = new DebugAudioRecorder();
+        var recorder = new DebugAudioRecorder(TestOutputEnvironment.DebugDirectory);
         var testId = $"dispose{Guid.NewGuid():N}"[..14];
         recorder.StartSession(testId, 24000);
         recorder.WritePcm16(new byte[] { 0xAA, 0xBB, 0xCC, 0xDD });
@@ -324,7 +324,7 @@ public class DebugAudioRecorderTests
 
         try
         {
-            var files = Directory.GetFiles(DebugAudioRecorder.DebugDirectory, $"SentAudio_*_{testId}.wav");
+            var files = Directory.GetFiles(TestOutputEnvironment.DebugDirectory, $"SentAudio_*_{testId}.wav");
             Assert.AreEqual(1, files.Length, "Dispose で WAV ファイルが残る");
             var bytes = File.ReadAllBytes(files[0]);
             // data subchunk size = 4 (Dispose 直前の WritePcm16 で 4 byte 書き込み)
@@ -332,7 +332,7 @@ public class DebugAudioRecorderTests
         }
         finally
         {
-            foreach (var f in Directory.GetFiles(DebugAudioRecorder.DebugDirectory, $"SentAudio_*_{testId}.wav")) try { File.Delete(f); } catch { }
+            foreach (var f in Directory.GetFiles(TestOutputEnvironment.DebugDirectory, $"SentAudio_*_{testId}.wav")) try { File.Delete(f); } catch { }
         }
     }
 
@@ -341,7 +341,7 @@ public class DebugAudioRecorderTests
     {
         // rere B2-009 / F-005 対応: WriteFailed イベントが正しく subscribe/unsubscribe できる構造を検証。
         // 実際の File I/O 失敗を再現するのは OS 依存で困難なため、 ここでは event の構造的契約だけ確認する。
-        using var recorder = new DebugAudioRecorder();
+        using var recorder = new DebugAudioRecorder(TestOutputEnvironment.DebugDirectory);
         Exception? captured = null;
         Action<Exception> handler = ex => captured = ex;
 

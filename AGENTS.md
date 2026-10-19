@@ -22,25 +22,22 @@
 
 ## 正規の restore・build・test
 
-PowerShell でリポジトリルートから実行する。
+このPCのローカル検証は `D:\Codex\RealTimeTranslator` が正本。`Directory.Build.local.props` はこのcheckoutだけの設定でGit対象外。D不在/使用不可、C出力、祖先reparseは開始前に拒否し、Cへfallbackしない。CI/他利用者にはDを強制しない。OS全体TEMPと製品利用者の保存先は変更しない。
+
+PowerShellでrepo rootから同じ作業別runを指定する。bin/obj、results、fixtures、TEMP/TMP、CLI/NuGet作業cacheは同run配下。ログの出力pathも同runへ明示する。初期targetより前に開くlogger/responseを検査するため正規wrapperを使う。外部props/targets/runsettings差替えは拒否する。
 
 ```powershell
-# 依存更新後、初回、または assets が不足するときだけ実行
-dotnet restore RealTimeTranslator.slnx -r win-x64 --force-evaluate -p:Configuration=Release -p:Platform=x64
-
-# restore 後は暗黙 restore を発生させない
-dotnet build RealTimeTranslator.slnx -c Release -p:Platform=x64 --no-restore
-dotnet test src/RealTimeTranslator.Tests/RealTimeTranslator.Tests.csproj -c Release -p:Platform=x64 --no-restore --no-build --filter "TestCategory!=Integration"
-
-# 実機 WASAPI テストが必要な変更だけ、音声を再生する対象プロセスがある環境で実行
-dotnet test src/RealTimeTranslator.Tests/RealTimeTranslator.Tests.csproj -c Release -p:Platform=x64 --no-restore --no-build --filter "TestCategory=Integration"
-
-# アプリ起動
-dotnet run --project src/RealTimeTranslator.UI -c Release -p:Platform=x64 --no-restore
-
-# 配布物の手動確認。release 自体は scripts/release-local.ps1 を使う
-dotnet publish src/RealTimeTranslator.UI/RealTimeTranslator.UI.csproj -c Release -r win-x64 --self-contained --no-restore
+$work = 'D:\Codex\RealTimeTranslator\run-<一意な作業名>'
+# 初回/依存更新時。lockfileのRIDを保つ。
+& .\scripts\Dev.ps1 -WorkDirectory $work -Tool dotnet -ToolArguments @('restore', 'RealTimeTranslator.slnx', '-r', 'win-x64', '-p:Configuration=Release', '-p:Platform=x64', '--locked-mode')
+& .\scripts\Dev.ps1 -WorkDirectory $work -Tool dotnet -ToolArguments @('build', 'RealTimeTranslator.slnx', '-c', 'Release', '-p:Platform=x64', '--no-restore')
+& .\scripts\Dev.ps1 -WorkDirectory $work -Tool dotnet -ToolArguments @('test', 'src/RealTimeTranslator.Tests/RealTimeTranslator.Tests.csproj', '-c', 'Release', '-p:Platform=x64', '--no-restore', '--no-build', '--filter', 'TestCategory!=Integration')
+# 実機/音声/モデル検証は変更に必要な場合だけ判断する。
+& .\scripts\Dev.ps1 -WorkDirectory $work -Tool dotnet -ToolArguments @('run', '--project', 'src/RealTimeTranslator.UI', '-c', 'Release', '-p:Platform=x64', '--no-restore')
+& .\scripts\Dev.ps1 -WorkDirectory $work -Tool dotnet -ToolArguments @('publish', 'src/RealTimeTranslator.UI/RealTimeTranslator.UI.csproj', '-c', 'Release', '-r', 'win-x64', '--self-contained', '--no-restore')
 ```
+
+CI/他利用者では従来の直接 `dotnet` が使用できる。依存更新時の `--force-evaluate` はlockfile変更を意図した場合だけ使用する。
 
 solution の build / test に `-r win-x64` を付けると `NETSDK1134` になるため、RID は restore とプロジェクト単位の publish にだけ指定する。
 

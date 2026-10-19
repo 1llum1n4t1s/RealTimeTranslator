@@ -1,0 +1,22 @@
+<Project InitialTargets="RttValidateDevelopmentOutput">
+  <Target Name="RttValidateDevelopmentOutput">
+    <XmlPeek Condition="'$(RttWorkRoot)' != ''" XmlInputPath="$(MSBuildThisFileDirectory)Directory.Build.local.props" Query="/Project/PropertyGroup/RttWorkRoot/text()">
+      <Output TaskParameter="Result" PropertyName="_RttCanonicalWorkRoot" />
+    </XmlPeek>
+    <Error Condition="'$(RttWorkRoot)' != '' and '$(RttWorkRoot)' != '$(_RttCanonicalWorkRoot)'" Text="RttWorkRootをローカル正本から上書きできません。" />
+    <!-- このcheckoutだけの設定が消えた場合もCへ戻さない。CIや別利用者には適用しない。 -->
+    <Error Condition="$([MSBuild]::IsOSPlatform('Windows')) and '$(GITHUB_ACTIONS)' != 'true' and '$(TF_BUILD)' != 'true' and '$(CI)' != 'true' and '$(USERPROFILE)' == 'C:\Users\IMT' and '$(MSBuildThisFileDirectory)' == 'D:\Dev\RealTimeTranslator\' and '$(RttWorkRoot)' == ''"
+           Text="Directory.Build.local.props が必要です。scripts/Dev.ps1 を使用してください。Cへのfallbackは禁止です。" />
+    <!-- Exec自身が一時cmdを作る前にTEMP/TMPを検証する。 -->
+    <Error Condition="'$(RttWorkRoot)' != '' and ('$(TEMP)' == '' or '$(TMP)' == '')" Text="TEMP/TMPが未設定です。scripts/Dev.ps1を使用してください。" />
+    <Error Condition="'$(RttWorkRoot)' != '' and (!$([System.IO.Path]::GetFullPath('$(TEMP)').StartsWith('$(RttWorkRoot)\', System.StringComparison.OrdinalIgnoreCase)) or !$([System.IO.Path]::GetFullPath('$(TMP)').StartsWith('$(RttWorkRoot)\', System.StringComparison.OrdinalIgnoreCase)))"
+           Text="TEMP/TMP は開発workroot配下に必要です。scripts/Dev.ps1 を使用してください。" />
+    <Error Condition="'$(RttWorkRoot)' != '' and !Exists('D:\')" Text="Dドライブが使用できません。Cへのfallbackは禁止です。" />
+    <ItemGroup Condition="'$(RttWorkRoot)' != ''">
+      <_RttTempAncestor Include="$(TEMP);$(TEMP)\..;$(TEMP)\..\..;$(TEMP)\..\..\..;$(TEMP)\..\..\..\..;$(TEMP)\..\..\..\..\..;$(TEMP)\..\..\..\..\..\..;$(TEMP)\..\..\..\..\..\..\..;$(TEMP)\..\..\..\..\..\..\..\..;$(TEMP)\..\..\..\..\..\..\..\..\..;$(TEMP)\..\..\..\..\..\..\..\..\..\..;$(TEMP)\..\..\..\..\..\..\..\..\..\..\..;$(TEMP)\..\..\..\..\..\..\..\..\..\..\..\..;$(TEMP)\..\..\..\..\..\..\..\..\..\..\..\..\..;$(TEMP)\..\..\..\..\..\..\..\..\..\..\..\..\..\..;$(TEMP)\..\..\..\..\..\..\..\..\..\..\..\..\..\..\..;$(TEMP)\..\..\..\..\..\..\..\..\..\..\..\..\..\..\..\..;$(TMP);$(TMP)\..;$(TMP)\..\..;$(TMP)\..\..\..;$(TMP)\..\..\..\..;$(TMP)\..\..\..\..\..;$(TMP)\..\..\..\..\..\..;$(TMP)\..\..\..\..\..\..\..;$(TMP)\..\..\..\..\..\..\..\..;$(TMP)\..\..\..\..\..\..\..\..\..;$(TMP)\..\..\..\..\..\..\..\..\..\..;$(TMP)\..\..\..\..\..\..\..\..\..\..\..;$(TMP)\..\..\..\..\..\..\..\..\..\..\..\..;$(TMP)\..\..\..\..\..\..\..\..\..\..\..\..\..;$(TMP)\..\..\..\..\..\..\..\..\..\..\..\..\..\..;$(TMP)\..\..\..\..\..\..\..\..\..\..\..\..\..\..\..;$(TMP)\..\..\..\..\..\..\..\..\..\..\..\..\..\..\..\.." />
+    </ItemGroup>
+    <Error Condition="'$(RttWorkRoot)' != '' and ($([System.Text.RegularExpressions.Regex]::Split('$(TEMP)', '[\\/]').Length) &gt; 17 or $([System.Text.RegularExpressions.Regex]::Split('$(TMP)', '[\\/]').Length) &gt; 17)" Text="TEMP/TMPの階層が深すぎます。scripts/Dev.ps1を使用してください。" />
+    <Error Condition="'$(RttWorkRoot)' != '' and Exists('%(_RttTempAncestor.Identity)') and $([System.IO.File]::GetAttributes('%(_RttTempAncestor.FullPath)').ToString().Contains('ReparsePoint'))" Text="TEMP/TMPの祖先にリンクは使用できません: %(_RttTempAncestor.FullPath)" />
+    <Exec Condition="'$(RttWorkRoot)' != ''" Command="pwsh -NoProfile -File &quot;$(MSBuildThisFileDirectory)scripts/Assert-DevelopmentOutput.ps1&quot; -MSBuildPaths &quot;$(RttRunDirectory)|$(VSTestResultsDirectory)|$(TestResultsDirectory)|$(RestorePackagesPath)|$(RestoreOutputPath)|$(ArtifactsPath)|$(BaseOutputPath)|$(OutputPath)|$(OutDir)|$(BaseIntermediateOutputPath)|$(IntermediateOutputPath)|$(MSBuildProjectExtensionsPath)|$(RestoreOutputPath)|$(PublishDir)|$(PublishUrl)|$(PackageOutputPath)|$(RestorePackagesPath)|$(TargetDir)|$(CompilerGeneratedFilesOutputPath)|$(NativeIntermediateOutputPath)|$(IlcOutputPath)&quot; -MSBuildFiles &quot;$(NuGetLockFilePath)|$(TargetPath)|$(ProjectAssetsFile)|$(GeneratedAssemblyInfoFile)|$(GeneratedGlobalUsingsFile)|$(DocumentationFile)|$(ErrorLog)&quot; -ProjectDirectory &quot;$(MSBuildProjectDirectory)&quot; -ConfiguredRoot &quot;$(RttWorkRoot)&quot;" />
+  </Target>
+</Project>

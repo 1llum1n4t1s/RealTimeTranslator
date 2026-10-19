@@ -1,4 +1,17 @@
 <Project>
+  <Import Project="Directory.Build.local.props" Condition="$([MSBuild]::IsOSPlatform('Windows')) and '$(GITHUB_ACTIONS)' != 'true' and '$(TF_BUILD)' != 'true' and '$(CI)' != 'true' and Exists('$(MSBuildThisFileDirectory)Directory.Build.local.props')" />
+  <PropertyGroup Condition="'$(RttWorkRoot)' != ''">
+    <RttRunDirectory Condition="'$(RttRunDirectory)' == ''">$(RttWorkRoot)\direct</RttRunDirectory>
+    <UseArtifactsOutput>true</UseArtifactsOutput>
+    <ArtifactsPath Condition="'$(ArtifactsPath)' == ''">$(RttRunDirectory)\build</ArtifactsPath>
+    <VSTestResultsDirectory Condition="'$(VSTestResultsDirectory)' == ''">$(RttRunDirectory)\results</VSTestResultsDirectory>
+    <TestResultsDirectory Condition="'$(TestResultsDirectory)' == ''">$(VSTestResultsDirectory)</TestResultsDirectory>
+    <RestorePackagesPath Condition="'$(RestorePackagesPath)' == ''">$(RttRunDirectory)\cache\packages</RestorePackagesPath>
+    <RestoreFallbackFolders Condition="'$(RestoreFallbackFolders)' == '' and Exists('$(USERPROFILE)\.nuget\packages')">$(USERPROFILE)\.nuget\packages</RestoreFallbackFolders>
+    <UseSharedCompilation>false</UseSharedCompilation>
+    <!-- 出力先移動後も既存C bin/objをCompileのglobへ取り込まない。 -->
+    <DefaultItemExcludes>$(DefaultItemExcludes);$(MSBuildProjectDirectory)/bin/**;$(MSBuildProjectDirectory)/obj/**</DefaultItemExcludes>
+  </PropertyGroup>
   <PropertyGroup>
     <Platforms>x64</Platforms>
     <PlatformTarget>x64</PlatformTarget>
@@ -28,13 +41,13 @@
     <ContinuousIntegrationBuild Condition="'$(GITHUB_ACTIONS)' == 'true' or '$(TF_BUILD)' == 'true' or '$(CI)' == 'true'">true</ContinuousIntegrationBuild>
     <RestoreLockedMode Condition="'$(ContinuousIntegrationBuild)' == 'true'">true</RestoreLockedMode>
     <!-- bin/obj を Platform/TargetFramework を含めず 1 か所に統一（単一 TFM のため簡潔化） -->
-    <BaseOutputPath>$(MSBuildProjectDirectory)\bin\</BaseOutputPath>
-    <OutputPath>$(BaseOutputPath)$(Configuration)\</OutputPath>
+    <BaseOutputPath Condition="'$(RttWorkRoot)' == ''">$(MSBuildProjectDirectory)\bin\</BaseOutputPath>
+    <OutputPath Condition="'$(RttWorkRoot)' == ''">$(BaseOutputPath)$(Configuration)\</OutputPath>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
-    <BaseIntermediateOutputPath>$(MSBuildProjectDirectory)\obj\</BaseIntermediateOutputPath>
-    <IntermediateOutputPath>$(BaseIntermediateOutputPath)$(Configuration)\</IntermediateOutputPath>
-    <MSBuildProjectExtensionsPath>$(IntermediateOutputPath)</MSBuildProjectExtensionsPath>
+    <BaseIntermediateOutputPath Condition="'$(RttWorkRoot)' == ''">$(MSBuildProjectDirectory)\obj\</BaseIntermediateOutputPath>
+    <IntermediateOutputPath Condition="'$(RttWorkRoot)' == ''">$(BaseIntermediateOutputPath)$(Configuration)\</IntermediateOutputPath>
+    <MSBuildProjectExtensionsPath Condition="'$(RttWorkRoot)' == ''">$(IntermediateOutputPath)</MSBuildProjectExtensionsPath>
     <!-- 製作者情報。Company は exe のプロパティに載るので屋号で統一する。 -->
     <Authors>Kagayoi</Authors>
     <Company>Kagayoi</Company>
@@ -44,4 +57,7 @@
     <!-- IDE コードスタイル分析をビルド時にも強制する。IDE0005 はドキュメント生成が必須なため対象外。 -->
     <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
   </PropertyGroup>
+  <ItemGroup Condition="'$(MSBuildProjectName)' == 'RealTimeTranslator.Tests' and '$(RttWorkRoot)' != ''">
+    <AssemblyMetadata Include="RealTimeTranslatorDevelopmentWorkRoot" Value="$(RttWorkRoot)" />
+  </ItemGroup>
 </Project>

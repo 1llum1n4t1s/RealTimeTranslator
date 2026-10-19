@@ -6,6 +6,8 @@ namespace RealTimeTranslator.Tests;
 /// <summary>
 /// LoggerService の嫌がらせテスト
 /// </summary>
+// プロセス共通ロガーの終了・再初期化を行うため、他のテストから隔離する。
+[DoNotParallelize]
 [TestClass]
 public sealed class LoggerServiceAdversarialTests
 {
@@ -311,13 +313,15 @@ public sealed class LoggerServiceAdversarialTests
     [TestCategory("Adversarial")]
     public void Initialize_WithInvalidDirectory_ShouldNotCrash()
     {
-        // 存在しないドライブを指定
+        // このテスト専用のファイル直下を指定し、実在するドライブの状態に依存せず失敗させる。
+        var blockingFile = Path.Combine(TestOutputEnvironment.RootDirectory, $"invalid-log-directory-{Guid.NewGuid():N}");
+        File.WriteAllText(blockingFile, "ディレクトリ作成を妨げるテスト用ファイル");
         try
         {
             LoggerService.Shutdown();
             LoggerService.Initialize(new LoggerConfig
             {
-                LogDirectory = @"Z:\nonexistent\path\logs",
+                LogDirectory = Path.Combine(blockingFile, "logs"),
                 FilePrefix = "Test"
             });
         }
@@ -326,6 +330,10 @@ public sealed class LoggerServiceAdversarialTests
             // IOException/DirectoryNotFoundException は許容
             Assert.IsTrue(ex is IOException or UnauthorizedAccessException,
                 $"予期しない例外型: {ex.GetType().Name}");
+        }
+        finally
+        {
+            TestOutputEnvironment.RestoreLoggerDirectory();
         }
     }
 

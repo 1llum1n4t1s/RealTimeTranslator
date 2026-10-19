@@ -41,6 +41,7 @@ public sealed class DebugAudioRecorder : IDebugAudioRecorder, IDisposable
     private static readonly long[] SizeWarningThresholds = { 1_000_000_000L, 2_000_000_000L, 3_000_000_000L };
 
     private readonly object _lock = new();
+    private readonly string _outputDirectory;
     private readonly Timer _checkpointTimer;
     private FileStream? _innerFile;
     private BufferedStream? _file;
@@ -66,8 +67,13 @@ public sealed class DebugAudioRecorder : IDebugAudioRecorder, IDisposable
         "RealTimeTranslator",
         "debug");
 
-    public DebugAudioRecorder()
+    public DebugAudioRecorder() : this(DebugDirectory)
     {
+    }
+
+    internal DebugAudioRecorder(string outputDirectory)
+    {
+        _outputDirectory = outputDirectory;
         _checkpointTimer = new Timer(OnCheckpointTimerElapsed, null, Timeout.Infinite, Timeout.Infinite);
     }
 
@@ -81,13 +87,13 @@ public sealed class DebugAudioRecorder : IDebugAudioRecorder, IDisposable
             {
                 // 不正値 (0 / 負値) は既定 24kHz に倒す (WAV ヘッダの ByteRate=0 で再生不能になるのを防ぐ)。
                 _sampleRate = sampleRate > 0 ? sampleRate : DefaultSampleRate;
-                Directory.CreateDirectory(DebugDirectory);
+                Directory.CreateDirectory(_outputDirectory);
                 // sessionId の path traversal / 無効文字を防御的にサニタイズ (CodeRabbit 指摘対応)。
                 // 現在の呼び出し元 (TranslationPipelineService) は Guid.ToString("N")[..8] で英数字限定だが、
                 // public interface として将来別の呼び出し元が追加されたときの安全性を確保する。
                 var safeSessionId = SanitizeSessionId(sessionId);
                 var fileName = $"SentAudio_{DateTime.Now:yyyyMMdd_HHmmss}_{safeSessionId}.wav";
-                _currentFilePath = Path.Combine(DebugDirectory, fileName);
+                _currentFilePath = Path.Combine(_outputDirectory, fileName);
                 _innerFile = new FileStream(_currentFilePath, FileMode.Create, FileAccess.Write, FileShare.Read);
                 _file = new BufferedStream(_innerFile, BufferSize);
                 WriteWavHeaderPlaceholder(_file, _sampleRate);
