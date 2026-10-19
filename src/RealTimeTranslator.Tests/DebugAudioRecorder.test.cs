@@ -173,9 +173,8 @@ public class DebugAudioRecorderTests
     }
 
     /// <summary>
-    /// 16kHz プロバイダ (Gemini / Soniox / Speechmatics) のセッションでは WAV ヘッダの SampleRate / ByteRate も
-    /// 16k で書かれる。 旧実装は 24000 固定だったため 16k の録音が約 1.5 倍速再生になり、
-    /// 「実際に送った音」の音質確認という本機能の目的が壊れていた (Grok audit 指摘)。
+    /// 録音コンポーネントに指定した16kHzが WAV ヘッダの SampleRate / ByteRate にも反映される。
+    /// OpenAIへの送信は24kHz固定だが、録音コンポーネント自体は指定レートを保持する。
     /// </summary>
     [TestMethod]
     public void StartSession_With16kHz_WritesMatchingWavHeader()

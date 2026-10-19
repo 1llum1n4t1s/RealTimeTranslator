@@ -20,23 +20,8 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     private static readonly TimeSpan DeltaThrottle = TimeSpan.FromMilliseconds(20);
 
     private readonly IAudioCaptureService _audioCaptureService;
-    // プロバイダ N 実装 + 現在 active な参照。 hot-swap: StartCoreAsync で Provider を見て
-    // _activeClient を選び直す (走行中は切り替わらない。 設定変更は次の Start で反映)。
-    // 送信レート分岐は _activeClient.InputSampleRate (OpenAI=24000 / その他=16000) で行う。
-    private readonly IRealtimeTranscriber _openAiClient;
-    private readonly IRealtimeTranscriber _geminiClient;
-    private readonly IRealtimeTranscriber _sonioxClient;
-    private readonly IRealtimeTranscriber _speechmaticsClient;
-    private readonly IRealtimeTranscriber _azureClient;
-    // Provider → client の解決表 (StartCoreAsync で active を引く)。 未知 Provider は OpenAI に倒す。
-    private readonly Dictionary<TranscriptionProvider, IRealtimeTranscriber> _clientsByProvider;
-    private IRealtimeTranscriber _activeClient;
-    // 購読/解除用の重複排除済み client 配列。 テストで openAi==gemini の同一モックを渡されたとき、
-    // 同じインスタンスへ 2 回 += すると delta/done が二重発火する (emit 件数が倍) ため参照で排除する。
-    private readonly IRealtimeTranscriber[] _distinctClients;
-    // active セッションの provider 別設定スナップショット (Start 時に固定)。 走行中の設定変更や
-    // provider 切替に引きずられないよう、 OpenAI/Gemini の同名設定 (D-7 分割閾値 / 無音 padding /
-    // cost 計算用モデル名) をここに確定させる。 active セッションは _activeClient と常に整合する。
+    private readonly IRealtimeTranscriber _client;
+    // 分割閾値・無音 padding・コスト計算用モデル名は Start 時に固定し、走行中の設定変更を反映しない。
     private int _activeMaxPartialChars;
     private int _activeSilencePaddingMs;
     // delta 途絶で未確定 partial を確定するまでの待ち時間 (ms)。 0 以下で無効。
@@ -252,69 +237,16 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     // 走行中のデバッグ録音 ON/OFF 切替を即反映するための設定変更購読。 Dispose で解除する。
     private IDisposable? _settingsChangeSubscription;
 
-    // 本番 DI 用: OpenAI/Gemini/Soniox/Speechmatics/Azure の具象 client を注入する。
     public TranslationPipelineService(
-        IAudioCaptureService audioCaptureService,
-        OpenAIRealtimeClient openAiClient,
-        GeminiLiveClient geminiClient,
-        SonioxRealtimeClient sonioxClient,
-        SpeechmaticsRealtimeClient speechmaticsClient,
-        AzureSpeechTranslationClient azureClient,
-        IOptionsMonitor<AppSettings> settingsMonitor,
-        ISettingsService settingsService,
-        IVoiceActivityDetector vad,
-        IDebugAudioRecorder? debugAudioRecorder = null)
-        : this(audioCaptureService, openAiClient, geminiClient, sonioxClient, speechmaticsClient, azureClient,
-               settingsMonitor, settingsService, vad, debugAudioRecorder, sentinel: default)
-    {
-    }
-
-    // テスト用: 単一の IRealtimeTranscriber モックを全 provider 兼用で受ける
-    // (テストは Provider=OpenAI 既定で active=openAi のため他 provider 固有経路は通らない)。
-    internal TranslationPipelineService(
         IAudioCaptureService audioCaptureService,
         IRealtimeTranscriber transcriber,
         IOptionsMonitor<AppSettings> settingsMonitor,
         ISettingsService settingsService,
         IVoiceActivityDetector vad,
         IDebugAudioRecorder? debugAudioRecorder = null)
-        : this(audioCaptureService, transcriber, transcriber, transcriber, transcriber, transcriber,
-               settingsMonitor, settingsService, vad, debugAudioRecorder, sentinel: default)
-    {
-    }
-
-    // 共通本体 (bool sentinel で上 2 つの ctor とシグネチャを区別する)。
-    private TranslationPipelineService(
-        IAudioCaptureService audioCaptureService,
-        IRealtimeTranscriber openAiClient,
-        IRealtimeTranscriber geminiClient,
-        IRealtimeTranscriber sonioxClient,
-        IRealtimeTranscriber speechmaticsClient,
-        IRealtimeTranscriber azureClient,
-        IOptionsMonitor<AppSettings> settingsMonitor,
-        ISettingsService settingsService,
-        IVoiceActivityDetector vad,
-        IDebugAudioRecorder? debugAudioRecorder,
-        bool sentinel)
     {
         _audioCaptureService = audioCaptureService;
-        _openAiClient = openAiClient;
-        _geminiClient = geminiClient;
-        _sonioxClient = sonioxClient;
-        _speechmaticsClient = speechmaticsClient;
-        _azureClient = azureClient;
-        _activeClient = openAiClient; // 既定 (Start 時に Provider で再選択)
-        _clientsByProvider = new Dictionary<TranscriptionProvider, IRealtimeTranscriber>
-        {
-            [TranscriptionProvider.OpenAI] = openAiClient,
-            [TranscriptionProvider.Gemini] = geminiClient,
-            [TranscriptionProvider.Soniox] = sonioxClient,
-            [TranscriptionProvider.Speechmatics] = speechmaticsClient,
-            [TranscriptionProvider.Azure] = azureClient,
-        };
-        // 購読/解除用の重複排除済み配列。 テストで同一モックを全 provider に渡された場合や、
-        // 同一インスタンスが複数 provider を兼ねる場合に二重購読 (delta/done 二重発火) を防ぐ。
-        _distinctClients = _clientsByProvider.Values.Distinct().ToArray();
+        _client = transcriber;
         _settingsMonitor = settingsMonitor;
         _settingsService = settingsService;
         _vad = vad;
@@ -327,15 +259,10 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         _throttleTimer = new Timer(OnThrottleTimerElapsed, null, Timeout.Infinite, Timeout.Infinite);
         _idleFinalizeTimer = new Timer(OnIdleFinalizeTimerElapsed, null, Timeout.Infinite, Timeout.Infinite);
 
-        // 両 client のイベントを購読する。 非 active client は Connect しないのでイベントを発火しない
-        // (provider 切替は Start を跨ぐため active/非active のイベント混線は起きない)。
-        foreach (var client in _distinctClients)
-        {
-            client.TranscriptDeltaReceived += OnTranscriptDelta;
-            client.TranscriptCompleted += OnTranscriptCompleted;
-            client.ErrorReceived += OnClientError;
-            client.StateChanged += OnConnectionStateChanged;
-        }
+        _client.TranscriptDeltaReceived += OnTranscriptDelta;
+        _client.TranscriptCompleted += OnTranscriptCompleted;
+        _client.ErrorReceived += OnClientError;
+        _client.StateChanged += OnConnectionStateChanged;
 
         // 翻訳開始後にデバッグ録音 (WAV 保存) を ON/OFF しても即反映されるよう設定変更を購読する。
         // 走行中なら SyncDebugRecording が録音セッションを開始/停止する (非走行中は no-op)。
@@ -363,7 +290,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
             {
                 // Connect 成功後、VAD／処理タスク初期化中に失敗した場合も半開きセッションを残さない。
                 // 初回 Connect 自体の失敗は各 client が cleanup 済みなので、資源が残る場合だけ停止する。
-                if (_activeClient.State != ConnectionState.Disconnected
+                if (_client.State != ConnectionState.Disconnected
                     || _audioProcessingTask is not null
                     || _autoPauseTask is not null
                     || _statsTickTask is not null)
@@ -388,63 +315,25 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
 
     private async Task StartCoreAsync(CancellationToken token)
     {
-        // settings.json で変更したばかりの内容 (Provider / OutputLanguage 等) が反映されるよう、
+        // settings.json で変更したばかりの出力言語などが反映されるよう、
         // 起動直前に IOptionsMonitor から最新値を取り直す。 DPAPI 暗号化された API キーも復号して使う。
         _settingsService.DecryptApiKey(_settingsMonitor.CurrentValue);
         var appSettings = _settingsMonitor.CurrentValue;
-        var provider = appSettings.Provider;
-
-        // hot-swap: Provider に応じて active client を選ぶ。 走行中は切り替わらない
-        // (設定変更は次の Start で反映)。 送信レート分岐は _activeClient.InputSampleRate で行う。
-        _activeClient = _clientsByProvider.TryGetValue(provider, out var picked) ? picked : _openAiClient;
-
         var freshSettings = appSettings.OpenAIRealtime;
-        // active provider の設定 (APIキー / 出力言語 / D-7 分割閾値 / 無音 padding / cost モデル名) を
-        // Start 時にスナップショット。 走行中の設定変更や provider 切替で現セッションが引きずられないように
-        // する (CodeRabbit 指摘)。 cost モデル名は CostEstimator のキーワード判定に合わせた文字列
-        // (Speechmatics / Azure は専用 Model フィールドを持たないため合成キーを渡す)。
-        var (apiKey, outputLanguage, modelForCost, maxPartialChars, silencePaddingMs, deltaIdleFinalizeMs, providerLabel) = provider switch
-        {
-            TranscriptionProvider.Gemini => (appSettings.Gemini.ApiKey, appSettings.Gemini.OutputLanguage,
-                appSettings.Gemini.Model, appSettings.Gemini.MaxPartialChars, appSettings.Gemini.SilencePaddingMs,
-                appSettings.Gemini.DeltaIdleFinalizeMs, "Gemini"),
-            TranscriptionProvider.Soniox => (appSettings.Soniox.ApiKey, appSettings.Soniox.OutputLanguage,
-                appSettings.Soniox.Model, appSettings.Soniox.MaxPartialChars, appSettings.Soniox.SilencePaddingMs,
-                appSettings.Soniox.DeltaIdleFinalizeMs, "Soniox"),
-            TranscriptionProvider.Speechmatics => (appSettings.Speechmatics.ApiKey, appSettings.Speechmatics.OutputLanguage,
-                "speechmatics-rt", appSettings.Speechmatics.MaxPartialChars, appSettings.Speechmatics.SilencePaddingMs,
-                appSettings.Speechmatics.DeltaIdleFinalizeMs, "Speechmatics"),
-            TranscriptionProvider.Azure => (appSettings.Azure.ApiKey, appSettings.Azure.OutputLanguage,
-                "azure-translation", appSettings.Azure.MaxPartialChars, appSettings.Azure.SilencePaddingMs,
-                appSettings.Azure.DeltaIdleFinalizeMs, "Azure"),
-            _ => (freshSettings.ApiKey, freshSettings.OutputLanguage,
-                freshSettings.Model, freshSettings.MaxPartialChars, freshSettings.SilencePaddingMs,
-                freshSettings.DeltaIdleFinalizeMs, "OpenAI"),
-        };
-        _activeMaxPartialChars = maxPartialChars;
-        _activeSilencePaddingMs = silencePaddingMs;
+        _activeMaxPartialChars = freshSettings.MaxPartialChars;
+        _activeSilencePaddingMs = freshSettings.SilencePaddingMs;
         // 無音 padding の外側にクランプ (ロケット鉛筆方式の押し出し待ちを潰さない)。
-        _activeDeltaIdleFinalizeMs = ResolveIdleFinalizeMs(deltaIdleFinalizeMs, silencePaddingMs);
-        _activeModelForCost = modelForCost;
+        _activeDeltaIdleFinalizeMs = ResolveIdleFinalizeMs(freshSettings.DeltaIdleFinalizeMs, freshSettings.SilencePaddingMs);
+        _activeModelForCost = freshSettings.Model;
 
-        // API キー検証 (provider 別)。
-        if (string.IsNullOrWhiteSpace(apiKey))
+        if (string.IsNullOrWhiteSpace(freshSettings.ApiKey))
         {
-            var ex = new InvalidOperationException($"{providerLabel} APIキーが設定されていません。設定画面でキーを入力してください。");
+            var ex = new InvalidOperationException("OpenAI APIキーが設定されていません。設定画面でキーを入力してください。");
             ErrorOccurred?.Invoke(this, ex);
             throw ex;
         }
 
-        // Azure は ApiKey に加え Region 必須。 AzureSpeechTranslationClient.ConnectAsync も検証するが、
-        // そこは try/catch で包まれず ErrorOccurred に乗らないため、 他 provider と通知経路を揃えてここで弾く。
-        if (provider == TranscriptionProvider.Azure && string.IsNullOrWhiteSpace(appSettings.Azure.Region))
-        {
-            var ex = new InvalidOperationException("Azure の Region が設定されていません。設定画面で Region を入力してください。");
-            ErrorOccurred?.Invoke(this, ex);
-            throw ex;
-        }
-
-        Logger.Info($"翻訳パイプライン開始 (Provider={provider}, OutputLanguage='{outputLanguage}', Model='{modelForCost}')");
+        Logger.Info($"翻訳パイプライン開始 (OutputLanguage='{freshSettings.OutputLanguage}', Model='{_activeModelForCost}')");
 
         // 前セッションの累積 transcript / SegmentId をリセットしないと、 再 Start 時に
         // 「前回 done で確定したテキストを prefix として保持」した状態から始まり、
@@ -461,28 +350,8 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
             ScheduleIdleFinalize();
         }
 
-        // 接続 (provider 別)。 各 provider は具象 client の固有メソッドで専用 Settings を直接渡す
-        // (OpenAIRealtimeSettings 経由のマッピングだと Endpoint/Model/源言語等が落ちるため)。 テスト時は
-        // モック (具象型ではない) なので default 経路に落ち、 active モックへ OpenAIRealtimeSettings で接続する
-        // (テストは Provider=OpenAI 既定)。 rere B1-011: Core layer 統一で ConfigureAwait(false) 付与。
-        switch (provider)
-        {
-            case TranscriptionProvider.Gemini when _geminiClient is GeminiLiveClient gemini:
-                await gemini.ConnectAsync(appSettings.Gemini, token).ConfigureAwait(false);
-                break;
-            case TranscriptionProvider.Soniox when _sonioxClient is SonioxRealtimeClient soniox:
-                await soniox.ConnectAsync(appSettings.Soniox, token).ConfigureAwait(false);
-                break;
-            case TranscriptionProvider.Speechmatics when _speechmaticsClient is SpeechmaticsRealtimeClient speechmatics:
-                await speechmatics.ConnectAsync(appSettings.Speechmatics, token).ConfigureAwait(false);
-                break;
-            case TranscriptionProvider.Azure when _azureClient is AzureSpeechTranslationClient azure:
-                await azure.ConnectAsync(appSettings.Azure, token).ConfigureAwait(false);
-                break;
-            default:
-                await _activeClient.ConnectAsync(freshSettings, token).ConfigureAwait(false);
-                break;
-        }
+        // クライアントも接続時の設定をコピーし、再接続へ走行中の変更を混ぜない。
+        await _client.ConnectAsync(freshSettings, token).ConfigureAwait(false);
 
         // WASAPI コールバックスレッドで重い変換を行うと audio glitch の原因になるため、
         // Channel に raw float[] を投入だけして変換は専用タスクで行う。
@@ -518,8 +387,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         _frameAccumulatorLen = 0;
         _frameAccumulator24k = null;
         _frameAccumulator24kLen = 0;
-        // provider 切替で送信フレーム長 (16k=1024B / 24k=1536B) が変わるため、 無音 padding バッファの
-        // キャッシュを破棄して次フレームで正しいサイズに作り直させる (Plan 検証リスク 1)。
+        // 次セッションの無音 padding バッファは最初のフレームで作り直す。
         _silencePaddingPcm16 = null;
         _skippedSecondsByVad = 0;
         _sessionStartUtc = DateTime.UtcNow;
@@ -685,7 +553,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         // WebSocket 切断も外部待機を入れて UI スレッドに戻る前に確実に完了させる
         try
         {
-            await _activeClient.DisconnectAsync()
+            await _client.DisconnectAsync()
                   .WaitAsync(TimeSpan.FromSeconds(3))
                   .ConfigureAwait(false);
         }
@@ -707,7 +575,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         // DroppedAudioChunkCount はキャプチャ → API 送信の Channel<byte[]>(100) で
         // BoundedChannelFullMode.DropOldest によって捨てられた音声チャンク累計。
         // 「字幕が抜ける」報告時に「ローカル NW 詰まりか OpenAI 側遅延か」を切り分ける。
-        Logger.Info($"セッション統計: DroppedAudioChunks={_activeClient.DroppedAudioChunkCount} 完結文emit={Interlocked.Read(ref _completedEmitCount)} partial emit={Interlocked.Read(ref _partialEmitCount)}");
+        Logger.Info($"セッション統計: DroppedAudioChunks={_client.DroppedAudioChunkCount} 完結文emit={Interlocked.Read(ref _completedEmitCount)} partial emit={Interlocked.Read(ref _partialEmitCount)}");
 
         // デバッグ録音セッションを必ず閉じる: ここでは _isRunning は既に false なので SyncDebugRecording が
         // StopSession (WAV ヘッダのサイズ確定書き換え) + WriteFailed 購読解除を行う (idempotent、 未開始なら no-op)。
@@ -748,11 +616,8 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                     // 送信用リサンプラは素通し中も進むので、filter state の連続性を保つ。
                     if (audioCaptureSettings.EnableVad != _lastEnableVad)
                     {
-                        // OpenAI は VAD 無効パスで _vadResampler を回さない (送信は _sendResampler) ため、
-                        // 有効へ戻したとき filter state が古い → Reset する。 Gemini は VAD 有効/無効
-                        // どちらも _vadResampler を送信に使うので Reset 不要 (連続性を保つ)。
-                        if (_activeClient.InputSampleRate != 16000)
-                            _vadResampler.Reset();
+                        // VAD 無効パスで進まない判定用リサンプラの古い履歴をリセットする。
+                        _vadResampler.Reset();
                         _vad.Reset();
                         _preRollBuffer.Clear();
                         _vadState = VadState.Silence;
@@ -777,16 +642,12 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
 
                     if (!audioCaptureSettings.EnableVad)
                     {
-                        // VAD 無効 素通し送信。 provider 別の送信レート:
-                        //   OpenAI: 48k → 24k 直 (_sendResampler、 Nyquist 12kHz)
-                        //   Gemini: 48k → 16k (_vadResampler、 Gemini 入力 16kHz 固定)
-                        var resampledSend = _activeClient.InputSampleRate == 16000
-                            ? _vadResampler.Resample(audioData)
-                            : _sendResampler.Resample(audioData);
+                        // VAD 無効時も 48k → 24k で直接リサンプルして送信する。
+                        var resampledSend = _sendResampler.Resample(audioData);
                         if (resampledSend.Length > 0)
                         {
                             var pcm16 = AudioFormatConverter.Float32ToPcm16(resampledSend);
-                            _activeClient.SendAudio(pcm16);
+                            _client.SendAudio(pcm16);
                         }
                     }
                     else
@@ -1320,8 +1181,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
             // API から transcript が空で done が来た場合 (response.done fallback 経路など) は
             // 直前まで delta で蓄積してきた _accumulatedText を確定字幕として使う。
             // transcript が空でなければ「セッション累積の全文」が来ている前提で扱う。
-            // transcript が空 = プロバイダが「この発話/応答は確定」と通知する hard finalize 境界
-            // (Soniox <end> / Speechmatics AddTranslation / Azure Recognized / OpenAI response.done fallback)。
+            // transcript が空 = response.done fallback が発話/応答の確定を通知する hard finalize 境界。
             // 句読点なしの trailing も確定させる必要があるかの判定に使う (下記 trailing 処理参照)。
             bool hardFinalize = string.IsNullOrEmpty(transcript);
 
@@ -1528,11 +1388,10 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                 try
                 {
                     // StartSession は silent-fail 設計だが、 将来別実装が例外を投げても翻訳本体を止めないようガード。
-                    // WAV ヘッダのレートは実際に送信するレート (OpenAI=24000 / その他=16000) を渡す。
-                    // 固定 24000 だと 16k プロバイダの録音が約 1.5 倍速再生になり音質確認に使えない。
+                    // WAV ヘッダは OpenAI へ送信する 24kHz に合わせる。
                     _debugAudioRecorder.StartSession(
                         Guid.NewGuid().ToString("N")[..8],
-                        _activeClient.InputSampleRate);
+                        24000);
                     _debugRecordingActive = true;
                 }
                 catch (Exception ex)
@@ -1700,13 +1559,10 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
 
         _throttleTimer.Dispose();
         _idleFinalizeTimer.Dispose();
-        foreach (var client in _distinctClients)
-        {
-            client.TranscriptDeltaReceived -= OnTranscriptDelta;
-            client.TranscriptCompleted -= OnTranscriptCompleted;
-            client.ErrorReceived -= OnClientError;
-            client.StateChanged -= OnConnectionStateChanged;
-        }
+        _client.TranscriptDeltaReceived -= OnTranscriptDelta;
+        _client.TranscriptCompleted -= OnTranscriptCompleted;
+        _client.ErrorReceived -= OnClientError;
+        _client.StateChanged -= OnConnectionStateChanged;
         _audioCaptureService.AudioDataAvailable -= OnAudioDataAvailable;
         _settingsChangeSubscription?.Dispose();
         _startStopLock.Dispose();
@@ -1949,40 +1805,10 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     /// </summary>
     internal void ProcessAudioWithVadGate(float[] audio48kHz, AudioCaptureSettings settings)
     {
-        // 送信レート分岐 (provider 依存):
-        //   OpenAI (InputSampleRate=24000): VAD 判定 16k + 送信 24k の並列 2 系統 (v1.0.36 設計)。
-        //   Gemini (InputSampleRate=16000): Gemini 入力は 16kHz 固定なので VAD 判定フレーム = 送信フレーム。
-        //     24k 系統 (_sendResampler) は回さず、 16k フレーム 1 本を判定にも送信にも使う。
-        bool sendAt16k = _activeClient.InputSampleRate == 16000;
         var resampled16k = _vadResampler.Resample(audio48kHz);
 
         int frameSize16k = _vad.RequiredFrameSize; // FireRed アダプター仕様: 512 sample @ 16kHz (32ms)
         _frameAccumulator ??= new float[frameSize16k];
-
-        if (sendAt16k)
-        {
-            // Gemini: 16k フレームが揃うたびに (VAD 判定フレーム = 送信フレーム = 同一参照) で処理。
-            // ProcessVadFrame は送信フレームを PreRoll に Array.Copy で積むので参照共有でも安全。
-            int offG = 0;
-            while (true)
-            {
-                int copy = Math.Min(frameSize16k - _frameAccumulatorLen, resampled16k.Length - offG);
-                if (copy > 0)
-                {
-                    Array.Copy(resampled16k, offG, _frameAccumulator, _frameAccumulatorLen, copy);
-                    _frameAccumulatorLen += copy;
-                    offG += copy;
-                }
-                if (_frameAccumulatorLen == frameSize16k)
-                {
-                    ProcessVadFrame(_frameAccumulator, _frameAccumulator, settings);
-                    _frameAccumulatorLen = 0;
-                    continue;
-                }
-                if (copy == 0) break;
-            }
-            return;
-        }
 
         // OpenAI: 48k → 24k 直リサンプル (16k 中継を挟まない = Nyquist 12kHz 確保)。
         // 両リサンプラは LatencyMargin を時間ベース (4ms) に揃えてあるので出力は時間同期し、
@@ -2058,7 +1884,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
             case VadState.Silence:
                 if (isSpeech)
                 {
-                    // PreRoll と現在フレームを一括送信し、provider の bounded queue を
+                    // PreRoll と現在フレームを一括送信し、クライアントの bounded queue を
                     // 同期的な連続 enqueue で溢れさせて発話冒頭を捨てないようにする。
                     if (_preRollBuffer.Count == 0)
                     {
@@ -2105,7 +1931,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                             // 無音 PCM を送信 (ゼロ埋め PCM16、 24kHz/768 sample = 1536 bytes)。
                             // バイト配列を 1 度だけ確保して使い回す (中身ゼロのまま不変)。
                             _silencePaddingPcm16 ??= new byte[frameForSend.Length * 2];
-                            _activeClient.SendAudio(_silencePaddingPcm16);
+                            _client.SendAudio(_silencePaddingPcm16);
                             // 旧 _skippedSecondsByVad は加算しない (実際には送信してるため UI 表示も「送信中」のまま)
                             sentSilencePadding = true;
                         }
@@ -2165,13 +1991,12 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         }
     }
 
-    /// <summary>VAD ゲート通過分のフレームを PCM16 に変換して active client へ送信。</summary>
+    /// <summary>VAD ゲート通過分の 24kHz フレームを PCM16 に変換して送信。</summary>
     private void SendFrameToClient(float[] frameForSend)
     {
-        // フレームは既に provider の送信レート (OpenAI=24k / Gemini=16k) でリサンプル済みなので、
-        // ここでは float→PCM16 変換だけ行う。
+        // フレームは既に 24kHz にリサンプル済みなので、ここでは float→PCM16 変換だけ行う。
         var pcm16 = AudioFormatConverter.Float32ToPcm16(frameForSend);
-        _activeClient.SendAudio(pcm16);
+        _client.SendAudio(pcm16);
     }
 
     /// <summary>
@@ -2260,7 +2085,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                 tickCount++;
                 if (tickCount % 60 == 0)
                 {
-                    Logger.Info($"リサンプラ同期状態: VADacc={_frameAccumulatorLen}/{_vad.RequiredFrameSize}, 送信24kacc={_frameAccumulator24kLen} (Provider={_settingsMonitor.CurrentValue.Provider}; 値が << フレームサイズなら正常。 Gemini は 24kacc 未使用)");
+                    Logger.Info($"リサンプラ同期状態: VADacc={_frameAccumulatorLen}/{_vad.RequiredFrameSize}, 送信24kacc={_frameAccumulator24kLen} (値が << フレームサイズなら正常)");
                 }
             }
             catch (OperationCanceledException)
@@ -2303,17 +2128,16 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     /// </summary>
     private long ComputeCurrentTokens()
     {
-        var serverTokens = _activeClient.ServerReportedAudioInputTokens;
+        var serverTokens = _client.ServerReportedAudioInputTokens;
         if (serverTokens > 0) return serverTokens;
         return CostEstimator.EstimateTokensFromSamples(
-            _activeClient.TotalAudioInputSamples24kHz, 24000);
+            _client.TotalAudioInputSamples24kHz, 24000);
     }
 
-    /// <summary>現時点の推定コスト (USD)。 モデル名は Start 時にスナップショットした active provider の値。</summary>
+    /// <summary>現時点の推定コスト (USD)。 モデル名は Start 時のスナップショット。</summary>
     private decimal ComputeCurrentCostUsd()
     {
-        // active セッションの model スナップショット (_activeModelForCost) を使う。 走行中の
-        // provider/model 変更に引きずられず、 実際に動いている _activeClient と整合する (CodeRabbit 指摘)。
+        // 走行中のモデル設定変更をコスト計算へ混ぜない。
         return CostEstimator.EstimateUsd(_activeModelForCost, ComputeCurrentTokens());
     }
 }

@@ -1,8 +1,7 @@
 namespace RealTimeTranslator.Core.Interfaces;
 
 /// <summary>
-/// 翻訳プロバイダに送信される PCM16 音声 (Mono、 レートは provider 依存: OpenAI=24kHz /
-/// Gemini・Soniox・Speechmatics=16kHz) を WAV ファイルに記録するデバッグ用録音インターフェース。
+/// OpenAI に送信される PCM16 音声 (Mono、24kHz) を WAV ファイルに記録するデバッグ用録音インターフェース。
 /// VAD ゲート通過後の音声 + サイレンス padding を、 <see cref="IRealtimeTranscriber.SendAudio"/> の入口で
 /// フックして記録する。 ⚠️ DropOldest による「送信前破棄」もこの時点では未発火のため、 厳密には
 /// 「送信を試みたバイト列」(= Channel 投入直前) を記録するスーパーセット。
@@ -29,7 +28,7 @@ public interface IDebugAudioRecorder
     /// <param name="sessionId">ファイル名に埋め込む短い ID (空なら "session")。</param>
     /// <param name="sampleRate">
     /// 記録する PCM16 のサンプリングレート (Hz)。 WAV ヘッダに書かれるので、 実際に
-    /// <see cref="WritePcm16"/> へ渡すデータのレート (= <see cref="IRealtimeTranscriber.InputSampleRate"/>) と
+    /// <see cref="WritePcm16"/> へ渡すデータのレート (字幕経路では 24000) と
     /// 一致させること。 不一致だと録音が早送り/遅回しで再生される。 0 以下は 24000 に矯正される。
     /// </param>
     /// <remarks>

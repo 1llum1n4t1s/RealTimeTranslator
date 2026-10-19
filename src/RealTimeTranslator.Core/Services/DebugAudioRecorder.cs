@@ -5,8 +5,7 @@ using SuperLightLogger;
 namespace RealTimeTranslator.Core.Services;
 
 /// <summary>
-/// 翻訳プロバイダに送信される PCM16 (Mono、 レートは <see cref="StartSession"/> 引数で受ける:
-/// OpenAI=24kHz / Gemini・Soniox・Speechmatics=16kHz) を %APPDATA%/RealTimeTranslator/debug/ 配下に
+/// OpenAI に送信される PCM16 (Mono、24kHz) を %APPDATA%/RealTimeTranslator/debug/ 配下に
 /// WAV ファイルとして書き出すデバッグ録音実装。
 /// </summary>
 /// <remarks>
@@ -46,9 +45,7 @@ public sealed class DebugAudioRecorder : IDebugAudioRecorder, IDisposable
     private FileStream? _innerFile;
     private BufferedStream? _file;
     private long _dataBytesWritten;
-    // セッションごとの送信レート (OpenAI=24000 / Gemini・Soniox・Speechmatics=16000)。
-    // WAV ヘッダに実レートを書かないと、 16k で送っているプロバイダの録音が約 1.5 倍速再生になり
-    // 「実際に送った音」の確認という本機能の目的が成立しない。
+    // WAV ヘッダは StartSession に指定された PCM の実レートを記録する。字幕経路は 24000Hz。
     private int _sampleRate = DefaultSampleRate;
     private string? _currentFilePath;
     private int _nextSizeWarningIndex;

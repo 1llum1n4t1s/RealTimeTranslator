@@ -166,7 +166,7 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeSpeechTranslator
 
             // セッション開始時のスナップショットを保持する。 SettingsViewModel が in-place 編集する
             // AppSettings.OpenAIRealtime をそのまま握ると、走行中のキー／言語変更が再接続へ混ざり、
-            // 「設定変更は次の Start で反映」という provider 共通契約を破るためコピーで断つ。
+            // OpenAI 設定は次の Start で反映する契約を守るため、コピーで現セッションから切り離す。
             _settings = new OpenAIRealtimeSettings
             {
                 ApiKey = settings.ApiKey,

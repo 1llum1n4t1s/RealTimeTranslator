@@ -45,7 +45,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
     // 翻訳ログ用のセッション ID (Start 押下ごとに発行される短縮 Guid)。
     // 「どのセッションの翻訳か」を ADV ログで判別できるようにするため。
     private string _currentSessionId = string.Empty;
-    // 走行中セッションの再起動要否を判定するための、 選択中 provider の実効設定スナップショット。
+    // 走行中セッションの再開要否を判定するための OpenAI 実効設定スナップショット。
     private string _lastActiveConfigSignature;
     private readonly IDisposable? _settingsChangeSubscription;
     private readonly Queue<string> _logLines = new();
@@ -220,56 +220,17 @@ public partial class MainViewModel : ObservableObject, IDisposable
     /// </summary>
     public bool CanStart => SelectedProcess != null && !IsRunning && !IsLoading && IsApiKeyConfigured;
 
-    /// <summary>
-    /// 選択中プロバイダの API キーが設定済みかを判定する。 Provider に応じて対応する設定の ApiKey を見る。
-    /// これで選択中 provider のキーだけで Start が有効になり、 逆に別 provider のキーがあっても選択中
-    /// provider が未設定なら Start が無効化される (Codex 指摘 P1: Start ゲートの provider 連動)。
-    /// </summary>
-    // 選択中 provider の API キーを返す (Start 有効化判定 / 再起動判定で共通に使う)。
-    private static string GetActiveApiKey(AppSettings settings) =>
-        settings.Provider switch
-        {
-            TranscriptionProvider.Gemini => settings.Gemini.ApiKey,
-            TranscriptionProvider.Soniox => settings.Soniox.ApiKey,
-            TranscriptionProvider.Speechmatics => settings.Speechmatics.ApiKey,
-            TranscriptionProvider.Azure => settings.Azure.ApiKey,
-            _ => settings.OpenAIRealtime.ApiKey,
-        } ?? string.Empty;
+    /// <summary>OpenAI API キーが設定済みかを判定する。</summary>
+    private static bool ComputeApiKeyConfigured(AppSettings settings) =>
+        !string.IsNullOrWhiteSpace(settings.OpenAIRealtime.ApiKey);
 
-    private static bool ComputeApiKeyConfigured(AppSettings settings)
-    {
-        var hasKey = !string.IsNullOrWhiteSpace(GetActiveApiKey(settings));
-        // Azure は ApiKey に加え Region も必須 (未入力だと開始後に SDK 側で失敗するため Start を有効化しない)。
-        if (settings.Provider == TranscriptionProvider.Azure)
-            return hasKey && !string.IsNullOrWhiteSpace(settings.Azure.Region);
-        return hasKey;
-    }
-
-    // 選択中 provider の出力言語を返す (翻訳ログの Language 列 / ログ文言で共通に使う)。
-    // UI (SettingsViewModel.SelectedOutputLanguage) は全 provider の OutputLanguage を同期するため通常は同値だが、
-    // settings.json を手編集して provider ごとに別値にした場合、 OpenAI 固定参照では実際の翻訳先と食い違う。
+    // 翻訳ログと表示には字幕用 OpenAI セッションの翻訳先を使う。
     private static string GetActiveOutputLanguage(AppSettings settings) =>
-        settings.Provider switch
-        {
-            TranscriptionProvider.Gemini => settings.Gemini.OutputLanguage,
-            TranscriptionProvider.Soniox => settings.Soniox.OutputLanguage,
-            TranscriptionProvider.Speechmatics => settings.Speechmatics.OutputLanguage,
-            TranscriptionProvider.Azure => settings.Azure.OutputLanguage,
-            _ => settings.OpenAIRealtime.OutputLanguage,
-        } ?? string.Empty;
+        settings.OpenAIRealtime.OutputLanguage ?? string.Empty;
 
-    // 走行中セッションの再起動要否判定に使う「実効設定シグネチャ」。 provider 切替・キー・出力言語に加え、
-    // Speechmatics/Azure の源言語、 Azure の Region も含める (これらは各 client の ConnectAsync 時に
-    // スナップショットされ走行中は反映されないため、 変われば再起動が必要。 Codex 指摘)。
-    private static string GetActiveProviderSignature(AppSettings s) =>
-        s.Provider switch
-        {
-            TranscriptionProvider.Gemini => $"Gemini|{s.Gemini.ApiKey}|{s.Gemini.OutputLanguage}",
-            TranscriptionProvider.Soniox => $"Soniox|{s.Soniox.ApiKey}|{s.Soniox.OutputLanguage}",
-            TranscriptionProvider.Speechmatics => $"Speechmatics|{s.Speechmatics.ApiKey}|{s.Speechmatics.OutputLanguage}|{s.Speechmatics.SourceLanguage}",
-            TranscriptionProvider.Azure => $"Azure|{s.Azure.ApiKey}|{s.Azure.OutputLanguage}|{s.Azure.SourceLanguage}|{s.Azure.Region}",
-            _ => $"OpenAI|{s.OpenAIRealtime.ApiKey}|{s.OpenAIRealtime.OutputLanguage}",
-        };
+    // 接続開始時に固定される API キーと翻訳先の変更で再開を要求する。
+    private static string GetActiveConfigSignature(AppSettings settings) =>
+        $"OpenAI|{settings.OpenAIRealtime.ApiKey}|{settings.OpenAIRealtime.OutputLanguage}";
 
     public SettingsViewModel SettingsVM => _settingsViewModel;
     public VoiceTranslationViewModel? Voice { get; }
@@ -301,7 +262,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
         _settingsService = settingsService;
         _translationLogViewModel = translationLogViewModel;
         _settings = optionsMonitor.CurrentValue;
-        _lastActiveConfigSignature = GetActiveProviderSignature(_settings);
+        _lastActiveConfigSignature = GetActiveConfigSignature(_settings);
         IsApiKeyConfigured = ComputeApiKeyConfigured(_settings);
 
         // 設定変更のイベントを購読。settings.json は DPAPI 暗号化済み API キーで保存されているため、
@@ -646,9 +607,8 @@ public partial class MainViewModel : ObservableObject, IDisposable
             // API設定が変更されたかを、前回保存した値と比較して判定
             // （SettingsViewModel が同一 AppSettings インスタンスを編集するため、
             //   e.Settings と _settings は同一参照になる。別途保持した前回値と比較する）
-            // 選択中 provider の実効設定 (キー / 出力言語 / 源言語 / Region) のシグネチャで比較する。
-            // OpenAI 固定キー比較だと他 provider のキーや源言語 / Region 変更を取りこぼし、 旧設定のまま継続する。
-            var newSignature = GetActiveProviderSignature(e.Settings);
+            // OpenAI の API キーと翻訳先言語を前回の接続設定と比較する。
+            var newSignature = GetActiveConfigSignature(e.Settings);
             var newOutputLang = GetActiveOutputLanguage(e.Settings);
             var apiSettingsChanged = _lastActiveConfigSignature != newSignature;
 

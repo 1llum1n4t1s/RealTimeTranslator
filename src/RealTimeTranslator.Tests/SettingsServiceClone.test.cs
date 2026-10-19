@@ -17,47 +17,26 @@ namespace RealTimeTranslator.Tests;
 [TestClass]
 public sealed class SettingsServiceCloneTests
 {
-    /// <summary>全 provider の非 default 値を詰めた AppSettings を作る。</summary>
+    /// <summary>OpenAI の非 default 値を詰めた AppSettings を作る。</summary>
     private static AppSettings BuildNonDefaultSettings() => new()
     {
-        Provider = TranscriptionProvider.Gemini,
         OpenAIRealtime = new OpenAIRealtimeSettings
         {
             OutputLanguage = "en", SilencePaddingMs = 7000, MaxPartialChars = 120, DeltaIdleFinalizeMs = 9000,
         },
-        Gemini = new GeminiLiveSettings
-        {
-            OutputLanguage = "en", SilencePaddingMs = 7100, MaxPartialChars = 121, DeltaIdleFinalizeMs = 9100,
-        },
-        Soniox = new SonioxSettings
-        {
-            OutputLanguage = "en", SilencePaddingMs = 7200, MaxPartialChars = 122, DeltaIdleFinalizeMs = 9200,
-        },
-        Speechmatics = new SpeechmaticsSettings
-        {
-            OutputLanguage = "en", SilencePaddingMs = 7300, MaxPartialChars = 123, DeltaIdleFinalizeMs = 9300,
-        },
-        Azure = new AzureSpeechSettings
-        {
-            OutputLanguage = "en", SilencePaddingMs = 7400, MaxPartialChars = 124, DeltaIdleFinalizeMs = 9400,
-        },
     };
 
     /// <summary>
-    /// DeltaIdleFinalizeMs が全 provider でクローンに引き継がれる (= 保存しても default 6000 に戻らない)。
+    /// DeltaIdleFinalizeMs がクローンに引き継がれる (= 保存しても default 6000 に戻らない)。
     /// </summary>
     [TestMethod]
-    public void CloneWithEncryptedSecrets_PreservesDeltaIdleFinalizeMs_ForAllProviders()
+    public void CloneWithEncryptedSecrets_PreservesDeltaIdleFinalizeMs()
     {
         var source = BuildNonDefaultSettings();
 
         var clone = SettingsService.CloneWithEncryptedSecrets(source);
 
         Assert.AreEqual(9000, clone.OpenAIRealtime.DeltaIdleFinalizeMs, "OpenAI の DeltaIdleFinalizeMs が失われている");
-        Assert.AreEqual(9100, clone.Gemini.DeltaIdleFinalizeMs, "Gemini の DeltaIdleFinalizeMs が失われている");
-        Assert.AreEqual(9200, clone.Soniox.DeltaIdleFinalizeMs, "Soniox の DeltaIdleFinalizeMs が失われている");
-        Assert.AreEqual(9300, clone.Speechmatics.DeltaIdleFinalizeMs, "Speechmatics の DeltaIdleFinalizeMs が失われている");
-        Assert.AreEqual(9400, clone.Azure.DeltaIdleFinalizeMs, "Azure の DeltaIdleFinalizeMs が失われている");
     }
 
     /// <summary>DeltaIdleFinalizeMs=0 (アイドル確定を無効化する設定) も 0 のまま保たれる。</summary>
@@ -83,21 +62,5 @@ public sealed class SettingsServiceCloneTests
 
         Assert.AreEqual(7000, clone.OpenAIRealtime.SilencePaddingMs);
         Assert.AreEqual(120, clone.OpenAIRealtime.MaxPartialChars);
-        Assert.AreEqual(7100, clone.Gemini.SilencePaddingMs);
-        Assert.AreEqual(121, clone.Gemini.MaxPartialChars);
-        Assert.AreEqual(7200, clone.Soniox.SilencePaddingMs);
-        Assert.AreEqual(7300, clone.Speechmatics.SilencePaddingMs);
-        Assert.AreEqual(7400, clone.Azure.SilencePaddingMs);
-    }
-
-    /// <summary>Provider 選択自体もクローンで維持される (漏らすと autosave のたびに OpenAI へ戻る)。</summary>
-    [TestMethod]
-    public void CloneWithEncryptedSecrets_PreservesProviderSelection()
-    {
-        var source = BuildNonDefaultSettings();
-
-        var clone = SettingsService.CloneWithEncryptedSecrets(source);
-
-        Assert.AreEqual(TranscriptionProvider.Gemini, clone.Provider);
     }
 }

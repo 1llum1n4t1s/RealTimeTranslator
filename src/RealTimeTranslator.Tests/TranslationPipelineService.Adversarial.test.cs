@@ -537,7 +537,7 @@ public sealed class TranslationPipelineServiceAdversarialTests
     [TestCategory("SentenceSplitBoundary")]
     public void OnTranscriptCompleted_HardFinalizePunctuationlessTrailing_DistinctSegmentIds()
     {
-        // Speechmatics AddTranslation / Soniox <end> / Azure Recognized パターン: 句読点なしの確定セグメントを
+        // OpenAI の空の完了通知を受けたときも、句読点なしの確定セグメントを
         // 空 done (hard finalize) で確定させる。 trailing を確定 + SegmentId 回転しないと、 連続する短い確定
         // ("Yes"→"No") が同一 SegmentId を再利用し overlay 上で上書きされる (Codex 指摘の回帰防止)。
         var (pipeline, transcriber, emitted) = CreatePipeline();

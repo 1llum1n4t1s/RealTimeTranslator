@@ -9,24 +9,6 @@ public class AppSettings
     public OpenAIRealtimeSettings OpenAIRealtime { get; set; } = new();
     public VoiceTranslationSettings VoiceTranslation { get; set; } = new();
 
-    /// <summary>
-    /// 翻訳に使う Realtime プロバイダ。 OpenAI Realtime API か Google Gemini Live Translate を選ぶ。
-    /// 切替は再起動不要 (hot-swap): 次の翻訳開始 (StartAsync) 時に反映される。 既定は OpenAI。
-    /// </summary>
-    public TranscriptionProvider Provider { get; set; } = TranscriptionProvider.OpenAI;
-
-    /// <summary>Gemini Live Translate プロバイダの設定 (<see cref="Provider"/> が Gemini のとき使用)。</summary>
-    public GeminiLiveSettings Gemini { get; set; } = new();
-
-    /// <summary>Soniox Realtime STT+Translation プロバイダの設定 (<see cref="Provider"/> が Soniox のとき使用)。</summary>
-    public SonioxSettings Soniox { get; set; } = new();
-
-    /// <summary>Speechmatics Realtime プロバイダの設定 (<see cref="Provider"/> が Speechmatics のとき使用)。</summary>
-    public SpeechmaticsSettings Speechmatics { get; set; } = new();
-
-    /// <summary>Azure AI Speech 翻訳プロバイダの設定 (<see cref="Provider"/> が Azure のとき使用)。</summary>
-    public AzureSpeechSettings Azure { get; set; } = new();
-
     public string LastSelectedProcessName { get; set; } = string.Empty;
     public int LastSelectedProcessId { get; set; }
     public UpdateSettings Update { get; set; } = new();
@@ -226,7 +208,7 @@ public class AudioCaptureSettings
 /// <code>
 /// WASAPI 48kHz mono float32
 ///   → [InputGainStage]
-///   → 48k→16k リサンプル (VAD 判定、16kHz provider への送信)
+///   → 48k→16k リサンプル (VAD 判定)
 ///   → 同じ 48kHz 入力から並列に 48k→24k リサンプル (OpenAI への送信)
 /// </code>
 ///
@@ -341,162 +323,6 @@ public class OpenAIRealtimeSettings
     //   実測の発話間ギャップは最小 9.2 秒なので、 6 秒でも全境界を捕捉できる。
     //
     // 値が 0 以下なら機能を無効化する (= v1.0.48 以前と同じ、 句点 / 文字数 / done 待ちのみ)。
-    public int DeltaIdleFinalizeMs { get; set; } = 6000;
-}
-
-/// <summary>翻訳に使う Realtime プロバイダの種別。</summary>
-public enum TranscriptionProvider
-{
-    /// <summary>OpenAI Realtime Translate API (既定、 24kHz 送信、 per-token 課金)。</summary>
-    OpenAI = 0,
-    /// <summary>Google Gemini Live Translate API (gemini-3.5-live-translate-preview、 16kHz 送信、 per-minute 課金)。</summary>
-    Gemini = 1,
-    /// <summary>Soniox Realtime STT + Translation (stt-rt-v5、 16kHz 送信、 単一 WebSocket で源言語自動判定 + mid-sentence 翻訳。 最安 ~$0.12/時間)。</summary>
-    Soniox = 2,
-    /// <summary>Speechmatics Realtime (16kHz 送信、 transcription_config.language で源言語指定 → translation_config.target_languages へ翻訳)。</summary>
-    Speechmatics = 3,
-    /// <summary>Azure AI Speech 翻訳 (Speech SDK 経由、 16kHz 送信、 源言語指定 → 翻訳。 SDK が接続管理)。</summary>
-    Azure = 4,
-}
-
-/// <summary>
-/// Google Gemini Live Translate API (gemini-3.5-live-translate-preview) の設定。
-/// WebSocket BidiGenerateContent エンドポイントに接続し、 speech-to-speech 翻訳モデルの
-/// outputAudioTranscription を字幕テキストとして使う (出力音声 modality は破棄)。
-///
-/// 入力音声は 16kHz/PCM16/mono 固定 (OpenAI の 24kHz と異なる)。 TranslationPipelineService が
-/// <see cref="OpenAIRealtimeSettings"/> と同じパイプライン挙動 (無音 padding / 文字数 fallback 分割) を
-/// 適用できるよう、 後半フィールドは OpenAI 側と同名で揃えてある。
-/// </summary>
-public class GeminiLiveSettings
-{
-    public string ApiKey { get; set; } = string.Empty;
-    public string OutputLanguage { get; set; } = "ja";
-    public string Model { get; set; } = "models/gemini-3.5-live-translate-preview";
-    public string Endpoint { get; set; } =
-        "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent";
-
-    /// <summary>
-    /// translationConfig.echoTargetLanguage。 入力が既にターゲット言語のとき、 そのまま echo するか。
-    /// 字幕用途では true (例: 日本語ゲームで日本語をそのまま字幕化したい) が自然。
-    /// </summary>
-    public bool EchoTargetLanguage { get; set; } = true;
-
-    public int ReconnectDelayMs { get; set; } = 3000;
-    public int MaxReconnectAttempts { get; set; } = 30;
-
-    /// <summary>VAD Silence 中の無音 PCM 継続送信の最大時間 (ms)。 OpenAI 側と同義 (保留 delta flush)。</summary>
-    public int SilencePaddingMs { get; set; } = 5000;
-
-    /// <summary>句点なし partial の最大累積文字数 (D-7 fallback)。 OpenAI 側と同義。</summary>
-    public int MaxPartialChars { get; set; } = 50;
-
-    /// <summary>
-    /// delta 途絶からこの時間 (ms) で未確定 partial を確定する。 OpenAI 側と同義 (発話ごとの分割)。
-    /// 実効値は SilencePaddingMs の外側にクランプされる (ロケット鉛筆方式の押し出し待ちを潰さないため)。
-    /// </summary>
-    public int DeltaIdleFinalizeMs { get; set; } = 6000;
-}
-
-/// <summary>
-/// Soniox Realtime Speech-to-Text + Translation の設定。
-/// 単一 WebSocket (<c>wss://stt-rt.soniox.com/transcribe-websocket</c>) に接続し、 接続後に
-/// JSON config メッセージ (api_key / model / audio_format / sample_rate / translation) を 1 度送ってから
-/// PCM16 を binary フレームで流す。 源言語は自動判定 (language_hints は任意)、 翻訳トークンは
-/// <c>translation_status == "translation"</c> で識別する。 入力音声は 16kHz/PCM16/mono 固定。
-///
-/// 後半フィールド (SilencePaddingMs / MaxPartialChars) は OpenAI/Gemini と同名で揃えてあり、
-/// TranslationPipelineService が同じ字幕分割挙動を適用できるようにしている。
-/// </summary>
-public class SonioxSettings
-{
-    public string ApiKey { get; set; } = string.Empty;
-    public string OutputLanguage { get; set; } = "ja";
-    /// <summary>Soniox のリアルタイムモデル名。 翻訳対応は stt-rt-v5 系。</summary>
-    public string Model { get; set; } = "stt-rt-v5";
-    public string Endpoint { get; set; } = "wss://stt-rt.soniox.com/transcribe-websocket";
-
-    public int ReconnectDelayMs { get; set; } = 3000;
-    public int MaxReconnectAttempts { get; set; } = 30;
-
-    /// <summary>VAD Silence 中の無音 PCM 継続送信の最大時間 (ms)。 OpenAI 側と同義 (保留 delta flush)。</summary>
-    public int SilencePaddingMs { get; set; } = 5000;
-
-    /// <summary>句点なし partial の最大累積文字数 (D-7 fallback)。 OpenAI 側と同義。</summary>
-    public int MaxPartialChars { get; set; } = 50;
-
-    /// <summary>
-    /// delta 途絶からこの時間 (ms) で未確定 partial を確定する。 OpenAI 側と同義 (発話ごとの分割)。
-    /// 実効値は SilencePaddingMs の外側にクランプされる (ロケット鉛筆方式の押し出し待ちを潰さないため)。
-    /// </summary>
-    public int DeltaIdleFinalizeMs { get; set; } = 6000;
-}
-
-/// <summary>
-/// Speechmatics Realtime の設定。 <c>wss://eu2.rt.speechmatics.com/v2</c> に接続し、 接続後に
-/// <c>StartRecognition</c> メッセージ (audio_format / transcription_config.language / translation_config.target_languages)
-/// を送ってから PCM16 を binary フレームで流す。 <c>AddTranslation</c> (確定) の results[].content を字幕にする。
-/// 入力音声は 16kHz/PCM16/mono。
-///
-/// ⚠️ Speechmatics は OpenAI/Gemini/Soniox と違い <b>源言語を自動判定しない</b> (transcription_config.language で
-/// 明示する必要がある)。 ゲーム音声は英語が多いため既定は "en"。 翻訳ペアは公式の対応言語に限られる。
-/// </summary>
-public class SpeechmaticsSettings
-{
-    public string ApiKey { get; set; } = string.Empty;
-    public string OutputLanguage { get; set; } = "ja";
-    /// <summary>認識する源言語 (ISO コード)。 Speechmatics は translation の起点としてこれを使う。 既定は英語。</summary>
-    public string SourceLanguage { get; set; } = "en";
-    public string Endpoint { get; set; } = "wss://eu2.rt.speechmatics.com/v2";
-
-    public int ReconnectDelayMs { get; set; } = 3000;
-    public int MaxReconnectAttempts { get; set; } = 30;
-
-    /// <summary>VAD Silence 中の無音 PCM 継続送信の最大時間 (ms)。 OpenAI 側と同義。</summary>
-    public int SilencePaddingMs { get; set; } = 5000;
-
-    /// <summary>句点なし partial の最大累積文字数 (D-7 fallback)。 OpenAI 側と同義。</summary>
-    public int MaxPartialChars { get; set; } = 50;
-
-    /// <summary>
-    /// delta 途絶からこの時間 (ms) で未確定 partial を確定する。 OpenAI 側と同義 (発話ごとの分割)。
-    /// 実効値は SilencePaddingMs の外側にクランプされる (ロケット鉛筆方式の押し出し待ちを潰さないため)。
-    /// </summary>
-    public int DeltaIdleFinalizeMs { get; set; } = 6000;
-}
-
-/// <summary>
-/// Azure AI Speech 翻訳の設定。 他プロバイダと違い生 WebSocket ではなく公式 Speech SDK
-/// (<c>Microsoft.CognitiveServices.Speech</c>) 経由で <c>TranslationRecognizer</c> + PushAudioInputStream を使う。
-/// 入力音声は 16kHz/PCM16/mono。 SDK が接続/再接続を内部管理する。
-///
-/// ⚠️ Speechmatics 同様 <b>源言語を明示指定</b> する (Azure の SpeechRecognitionLanguage はロケール付き、 例 "en-US")。
-/// API キーは Azure ポータルの Speech リソースの「キーとエンドポイント」から取得、 Region はリソースのリージョン
-/// (例 "japaneast" / "eastus")。
-/// </summary>
-public class AzureSpeechSettings
-{
-    /// <summary>Azure Speech リソースのサブスクリプションキー。</summary>
-    public string ApiKey { get; set; } = string.Empty;
-    /// <summary>Azure リージョン識別子 (例 "japaneast", "eastus")。 Speech SDK の FromSubscription に渡す。</summary>
-    public string Region { get; set; } = "japaneast";
-    public string OutputLanguage { get; set; } = "ja";
-    /// <summary>認識する源言語ロケール (例 "en-US")。 Azure は BCP-47 ロケールを要求する。</summary>
-    public string SourceLanguage { get; set; } = "en-US";
-
-    public int ReconnectDelayMs { get; set; } = 3000;
-    public int MaxReconnectAttempts { get; set; } = 30;
-
-    /// <summary>VAD Silence 中の無音 PCM 継続送信の最大時間 (ms)。 OpenAI 側と同義。</summary>
-    public int SilencePaddingMs { get; set; } = 5000;
-
-    /// <summary>句点なし partial の最大累積文字数 (D-7 fallback)。 OpenAI 側と同義。</summary>
-    public int MaxPartialChars { get; set; } = 50;
-
-    /// <summary>
-    /// delta 途絶からこの時間 (ms) で未確定 partial を確定する。 OpenAI 側と同義 (発話ごとの分割)。
-    /// 実効値は SilencePaddingMs の外側にクランプされる (ロケット鉛筆方式の押し出し待ちを潰さないため)。
-    /// </summary>
     public int DeltaIdleFinalizeMs { get; set; } = 6000;
 }
 

@@ -193,59 +193,6 @@ public class SettingsService : ISettingsService
             // (autosave のたびに default 6000 へ戻り、 settings.json で 0=無効化 / 8000 等にした値が消えていた)。
             DeltaIdleFinalizeMs = source.OpenAIRealtime.DeltaIdleFinalizeMs,
         },
-        // ⚠️ Provider / Gemini を必ずコピーする (上の C2-001 と同じ罠: 漏らすと autosave のたびに
-        // Provider が OpenAI に、 Gemini 設定が default に静かにリセットされる)。
-        Provider = source.Provider,
-        Gemini = new GeminiLiveSettings
-        {
-            ApiKey = DpapiHelper.Encrypt(source.Gemini.ApiKey),
-            OutputLanguage = source.Gemini.OutputLanguage,
-            Model = source.Gemini.Model,
-            Endpoint = source.Gemini.Endpoint,
-            EchoTargetLanguage = source.Gemini.EchoTargetLanguage,
-            ReconnectDelayMs = source.Gemini.ReconnectDelayMs,
-            MaxReconnectAttempts = source.Gemini.MaxReconnectAttempts,
-            SilencePaddingMs = source.Gemini.SilencePaddingMs,
-            MaxPartialChars = source.Gemini.MaxPartialChars,
-            DeltaIdleFinalizeMs = source.Gemini.DeltaIdleFinalizeMs,
-        },
-        // ⚠️ 追加 provider も必ずコピー (漏らすと autosave のたびに default にリセットされる — 上の C2-001 と同じ罠)。
-        Soniox = new SonioxSettings
-        {
-            ApiKey = DpapiHelper.Encrypt(source.Soniox.ApiKey),
-            OutputLanguage = source.Soniox.OutputLanguage,
-            Model = source.Soniox.Model,
-            Endpoint = source.Soniox.Endpoint,
-            ReconnectDelayMs = source.Soniox.ReconnectDelayMs,
-            MaxReconnectAttempts = source.Soniox.MaxReconnectAttempts,
-            SilencePaddingMs = source.Soniox.SilencePaddingMs,
-            MaxPartialChars = source.Soniox.MaxPartialChars,
-            DeltaIdleFinalizeMs = source.Soniox.DeltaIdleFinalizeMs,
-        },
-        Speechmatics = new SpeechmaticsSettings
-        {
-            ApiKey = DpapiHelper.Encrypt(source.Speechmatics.ApiKey),
-            OutputLanguage = source.Speechmatics.OutputLanguage,
-            SourceLanguage = source.Speechmatics.SourceLanguage,
-            Endpoint = source.Speechmatics.Endpoint,
-            ReconnectDelayMs = source.Speechmatics.ReconnectDelayMs,
-            MaxReconnectAttempts = source.Speechmatics.MaxReconnectAttempts,
-            SilencePaddingMs = source.Speechmatics.SilencePaddingMs,
-            MaxPartialChars = source.Speechmatics.MaxPartialChars,
-            DeltaIdleFinalizeMs = source.Speechmatics.DeltaIdleFinalizeMs,
-        },
-        Azure = new AzureSpeechSettings
-        {
-            ApiKey = DpapiHelper.Encrypt(source.Azure.ApiKey),
-            Region = source.Azure.Region,
-            OutputLanguage = source.Azure.OutputLanguage,
-            SourceLanguage = source.Azure.SourceLanguage,
-            ReconnectDelayMs = source.Azure.ReconnectDelayMs,
-            MaxReconnectAttempts = source.Azure.MaxReconnectAttempts,
-            SilencePaddingMs = source.Azure.SilencePaddingMs,
-            MaxPartialChars = source.Azure.MaxPartialChars,
-            DeltaIdleFinalizeMs = source.Azure.DeltaIdleFinalizeMs,
-        },
         LastSelectedProcessName = source.LastSelectedProcessName,
         LastSelectedProcessId = source.LastSelectedProcessId,
         Update = source.Update,

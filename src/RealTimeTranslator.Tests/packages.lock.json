@@ -212,16 +212,6 @@
           "Avalonia.Skia": "12.1.4"
         }
       },
-      "Azure.Core": {
-        "type": "Transitive",
-        "resolved": "1.44.1",
-        "contentHash": "YyznXLQZCregzHvioip07/BkzjuWNXogJEVz9T5W6TwjNr17ax41YGzYMptlo2G10oLCuVPoyva62y0SIRDixg==",
-        "dependencies": {
-          "Microsoft.Bcl.AsyncInterfaces": "6.0.0",
-          "System.ClientModel": "1.1.0",
-          "System.Memory.Data": "6.0.0"
-        }
-      },
       "CommunityToolkit.Mvvm": {
         "type": "Transitive",
         "resolved": "8.4.2",
@@ -260,23 +250,10 @@
         "resolved": "2.23.0",
         "contentHash": "nWArUZTdU7iqZLycLKWe0TDms48KKGE6pONH2terYNa8REXiqixrMOkf1sk5DHGMaUTqONU2YkS4SAXBhLStgw=="
       },
-      "Microsoft.Bcl.AsyncInterfaces": {
-        "type": "Transitive",
-        "resolved": "6.0.0",
-        "contentHash": "UcSjPsst+DfAdJGVDsu346FX0ci0ah+lw3WRtn18NUwEqRt70HaOQ7lI72vy3+1LxtqI3T5GWwV39rQSrCzAeg=="
-      },
       "Microsoft.CodeCoverage": {
         "type": "Transitive",
         "resolved": "18.11.0",
         "contentHash": "MhN9wpvL1Es4hfIYslrsVgIsUdDFxuOBTbAl9mGIMvFo8PP5CLf4DrGdNrfwWSyn0lqi6sssm+I/qkkLL3MU+g=="
-      },
-      "Microsoft.CognitiveServices.Speech": {
-        "type": "Transitive",
-        "resolved": "1.52.0",
-        "contentHash": "7DeNULGitPuo0Kxosj2ug9oS3MA0kM0o7Bj+rTqer2LrWdGDouvYFHyXVPIBzV5UESx+QHFlgFeHF0q7aGcbJg==",
-        "dependencies": {
-          "Azure.Core": "1.44.1"
-        }
       },
       "Microsoft.DiaSymReader": {
         "type": "Transitive",
@@ -559,19 +536,6 @@
           "Microsoft.Extensions.Logging.Abstractions": "10.0.12"
         }
       },
-      "System.ClientModel": {
-        "type": "Transitive",
-        "resolved": "1.1.0",
-        "contentHash": "UocOlCkxLZrG2CKMAAImPcldJTxeesHnHGHwhJ0pNlZEvEXcWKuQvVOER2/NiOkJGRJk978SNdw3j6/7O9H1lg==",
-        "dependencies": {
-          "System.Memory.Data": "1.0.2"
-        }
-      },
-      "System.Memory.Data": {
-        "type": "Transitive",
-        "resolved": "6.0.0",
-        "contentHash": "ntFHArH3I4Lpjf5m4DCXQHJuGwWPNVJPaAvM95Jy/u+2Yzt2ryiyIN04LAogkjP9DeRcEOiviAjQotfmPq/FrQ=="
-      },
       "System.Numerics.Tensors": {
         "type": "Transitive",
         "resolved": "10.0.13",
@@ -606,7 +570,6 @@
         "type": "Project",
         "dependencies": {
           "1llum1n4t1s.NAudio": "[4.0.8, )",
-          "Microsoft.CognitiveServices.Speech": "[1.52.0, )",
           "Microsoft.ML.OnnxRuntime": "[1.31.0, )",
           "SuperLightLogger": "[1.0.17, )",
           "System.Security.Cryptography.ProtectedData": "[10.0.13, )"
@@ -623,7 +586,7 @@
           "Microsoft.Extensions.DependencyInjection": "[10.0.13, )",
           "Microsoft.Extensions.Options": "[10.0.13, )",
           "Microsoft.Extensions.Options.ConfigurationExtensions": "[10.0.13, )",
-          "RealTimeTranslator.Core": "[1.0.57, )",
+          "RealTimeTranslator.Core": "[1.0.58, )",
           "VelopackUpdateDialog.Avalonia": "[1.0.19, )"
         }
       }
@@ -651,14 +614,6 @@
         "type": "Transitive",
         "resolved": "8.3.1.3",
         "contentHash": "bx8CE8Js+XGX8PUxAHCBDEORt5aaBYtMN4Hr9QFs57Xithh6yjUyYqksizH6eRDhJkwsGI+SXWmPmMm8lZC9Pw=="
-      },
-      "Microsoft.CognitiveServices.Speech": {
-        "type": "Transitive",
-        "resolved": "1.52.0",
-        "contentHash": "7DeNULGitPuo0Kxosj2ug9oS3MA0kM0o7Bj+rTqer2LrWdGDouvYFHyXVPIBzV5UESx+QHFlgFeHF0q7aGcbJg==",
-        "dependencies": {
-          "Azure.Core": "1.44.1"
-        }
       },
       "Microsoft.ML.OnnxRuntime": {
         "type": "Transitive",

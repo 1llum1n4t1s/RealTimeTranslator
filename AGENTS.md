@@ -55,29 +55,28 @@ rg -n --fixed-strings '"net10.0-windows10.0.20348/win-x64"' src -g packages.lock
 
 ## 変更時に守る境界
 
-### 音声と翻訳プロバイダ
+### 音声と OpenAI 翻訳
 
 - `AudioCaptureService` はプロセス loopback を 48 kHz / stereo で取得し、mono float へ変換する。リサンプルは `TranslationPipelineService` に集約する。
-- OpenAI セッションでは、入力ゲイン後の同じ 48 kHz 信号から FireRed VAD 用16 kHzと送信用24 kHzを並列生成する。16 kHz provider では16 kHz経路だけを判定と送信に共用し、24 kHz経路を回さない。16 kHzを経由して24 kHzを作らない。
-- 選択中の `IRealtimeTranscriber.InputSampleRate` に従い、OpenAI は24 kHz、Gemini / Soniox / Speechmatics / Azure は16 kHzを送る。
-- provider の変更は次の `StartAsync` から有効にし、実行中セッションの client と設定スナップショットを途中で差し替えない。
-- provider を追加・変更するときは `TranscriptionProvider`、設定型、`SettingsViewModel`、DI、`TranslationPipelineService` の解決表、接続テスト、設定 clone、クライアントテストを一組で更新する。
+- OpenAI セッションでは、入力ゲイン後の同じ 48 kHz 信号から FireRed VAD 用16 kHzと送信用24 kHzを並列生成する。16 kHzを経由して24 kHzを作らない。
+- `IRealtimeTranscriber.InputSampleRate` は OpenAI 字幕音声の24 kHz / mono / PCM16 契約を表す。
+- OpenAI 設定の変更は次の `StartAsync` から有効にし、実行中セッションの client と設定スナップショットを途中で差し替えない。
 
 ### ボイス通訳
 
 - ボイス通訳は字幕用 client・キュー・リサンプラ・開始停止状態と共有しない。DI の専用 client factory と `AppSettings.VoiceTranslation` の clone を維持する。構造と機器判定は [DESIGN.md の独立セッション](DESIGN.md#ボイス通訳の独立セッション) を参照する。
 - PTT の許可とルーティング世代はマイク取得時に記録する。キー閉鎖中はリサンプラの残留音も含めて送信 PCM を無音にし、訳音声の末尾は受信・出力できるようにする。
-- 機器の列挙と開始で同じ VB-CABLE 判定を使い、表示名や既定機器への fallback で選択制約を緩めない。停止・モード変更時のキュー消去と旧セッション通知の排除を維持する。
+- 機器の列挙と開始で同じ Wave Link 判定を使い、表示名や既定機器への fallback で選択制約を緩めない。録音側のミックスを入力マイクとして再取り込みせず、翻訳専用の再生チャンネルだけを送話用ミックスへ含める案内を維持する。停止・モード変更時のキュー消去と旧セッション通知の排除を維持する。
 - 字幕側の `DropOldest` をボイス通訳へ一律に適用しない。入力キュー超過・送信 drop・出力バッファ超過は停止させ、`MaxReconnectAttempts = 0` を維持する。原音への自動切替や自動再接続を追加しない。
 - 変更時は字幕との同時実行、PTT 解放後の末尾、停止・モード切替時の残留音、接続待ち中の停止、機器消失・過負荷時の停止を必要範囲で実機確認する。実機確認ができない項目は未検証として報告する。
 
 ### VAD と字幕確定
 
 - FireRed VAD のストリーミング用 ONNX と CMVN を同梱する。外部フレームは 16 kHz / 512 samples を維持し、内部では 25 ms 窓 / 10 ms 刻みの 80 bin Fbank と推論 cache を使う。`StartAsync` ごとに detector の特徴量履歴・cache と両リサンプラをリセットする。前処理は公式 Kaldi の窓・振幅・CMVN と照合する。
-- 無音 PCM の padding 送信中も実音を pre-roll へ保持し、次の発話検出時に現在フレームと一つの PCM バッチで復元する。ゼロ PCM 送信と実音保存を両立させ、provider の bounded queue への連続 enqueue で復元した冒頭を押し出さない。
+- 無音 PCM の padding 送信中も実音を pre-roll へ保持し、次の発話検出時に現在フレームと一つの PCM バッチで復元する。ゼロ PCM 送信と実音保存を両立させ、OpenAI client の bounded queue への連続 enqueue で復元した冒頭を押し出さない。
 - `VadPreset` が `Custom` 以外なら、`SettingsViewModel` の preset 定義を正本として threshold / pre-roll / hangover を sanitize 時にも強制同期する。preset 値を変えるときは3値の組み合わせと既存設定の移行挙動をまとめて検証する。
-- VAD の pre-roll は発話冒頭、hangover は発話末尾、silence padding はプロバイダに保留出力を押し出させる役割を持つ。値を単独で削る前に `VadGate.test.cs` と文分割テストで相互作用を確認する。
-- delta の確定順は句読点、`MaxPartialChars`、provider の完了通知、idle finalize。`ResolveIdleFinalizeMs` の不変条件 `idle <= 0` または `idle >= SilencePaddingMs + 1000` を維持する。
+- VAD の pre-roll は発話冒頭、hangover は発話末尾、silence padding はOpenAI に保留出力を押し出させる役割を持つ。値を単独で削る前に `VadGate.test.cs` と文分割テストで相互作用を確認する。
+- delta の確定順は句読点、`MaxPartialChars`、OpenAI の完了通知、idle finalize。`ResolveIdleFinalizeMs` の不変条件 `idle <= 0` または `idle >= SilencePaddingMs + 1000` を維持する。
 - 字幕更新は `SegmentId` ごとに partial を置換し、final で確定する。通知は生成順にキューへ積み、ロック外で購読者へ渡す。停止時の通知完了待ちと、同期 callback からの Stop / Dispose 再入時に自身を待たない経路を維持する。
 
 ### OpenAI Translation endpoint
@@ -92,9 +91,9 @@ rg -n --fixed-strings '"net10.0-windows10.0.20348/win-x64"' src -g packages.lock
 - `AppSettings` に永続化フィールドを追加したら `SettingsService.CloneWithEncryptedSecrets` にも追加し、`SettingsServiceClone.test.cs` で保存時の欠落と secret 暗号化を検証する。
 - overlay 背景の編集用正本は `BackgroundColorBase` + `BackgroundOpacityPercent`、`BackgroundColor` は表示・旧設定互換用の派生 `#AARRGGBB`。sanitize と各 setter の compose / split 同期を維持し、`BackgroundColorRoundTrip.test.cs` で検証する。
 - 配布物には `settings.default.json` だけを含める。`settings.json` を publish へ含めない。
-- OpenAI / Gemini / Soniox / Speechmatics の endpoint は、credential を送る前に `wss`、userinfo なし、provider ごとの許可 host を検証する。endpoint の既定値や接続処理を変えるときは allowlist と adversarial テストも更新する。Azure は公式 SDK と region を使う。
+- OpenAI の endpoint は、credential を送る前に `wss`、userinfo なし、許可 host を検証する。endpoint の既定値や接続処理を変えるときは allowlist と adversarial テストも更新する。
 - 翻訳ログの書き込み・保持期限処理は `TranslationLogService` の単一 channel worker を通す。並行 append / clear の順序を崩さない。
-- デバッグ WAV のヘッダーは active provider の `InputSampleRate` を使う。24 kHz 固定にしない。
+- デバッグ WAV のヘッダーは OpenAI へ送る24 kHz / mono / PCM16 と一致させる。
 
 ### UI、非同期、終了処理
 
@@ -114,7 +113,7 @@ rg -n --fixed-strings '"net10.0-windows10.0.20348/win-x64"' src -g packages.lock
 
 - 文書のみ: 記載したパス・コマンド・設定名を `rg` と現行コードで照合し、対象文書の diff と ignore 状態を確認する。
 - Core / UI の通常変更: Release/x64 build と非 Integration テストを実行する。
-- 音声形式・VAD・provider・字幕分割: 対応する個別テストに加え、`TranslationPipelineService.Happy.test.cs` と `.Adversarial.test.cs` を確認する。
+- 音声形式・VAD・OpenAI client・字幕分割: 対応する個別テストに加え、`TranslationPipelineService.Happy.test.cs` と `.Adversarial.test.cs` を確認する。
 - WASAPI の構築・停止・実音取得: `ProcessLoopbackCaptureTests.cs` を確認し、実機検証が可能な場合だけ Integration テストを実行する。
 - 設定・API キー・更新・ログ: clone / round-trip / URI 防御 / 並行順序の該当テストを実行する。
 - 変更終了時は `git diff -- <対象>` と `git status --short -- <対象>` で、意図したファイルだけが変わったことを確認する。
