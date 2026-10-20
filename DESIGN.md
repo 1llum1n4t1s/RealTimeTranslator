@@ -42,7 +42,7 @@ RealTimeTranslator は、Windows 上で指定したプロセスの再生音声�
 
 訳音声の任意のライブ試聴は `IVoicePlaybackService` / `VoicePlaybackService` の独立した WASAPI 再生を使い、訳音声の同じ PCM16 をゲーム送話と試聴へ渡す。試聴先 ID だけを設定へ保存し、オン状態は永続化しない。試聴は利用可能な Windows の再生機器を対象とし、hardware ID で確認できた Wave Link 関連機器と、送話先と同じ ID を除外する。列挙・開始で同じ条件を使い、既定機器には fallback しない。RDP や仮想ヘッドホンを物理 bus がない理由だけで拒否しない。送話側の厳密な Wave Link 判定は変更しない。試聴用バッファは最大2秒とし、機器消失・過負荷は試聴のみ停止させる。世代付きエラーを確認し、通訳停止・モード変更時は試聴の残留音も消去する。試聴だけの停止や失敗で送話・字幕の client を停止しない。
 
-ボイス通訳の入力・出力ゲインは `VoiceTranslationSettings` の独立した2フィールドに保存し、clone に含める。範囲は各−24～+24 dB、既定0 dBとし、非有限値は0 dBへ正規化する。入力ゲインは処理 task の48 kHz mono floatへリサンプル前に適用する。PTT閉鎖中はリサンプラの残留も含めて無音化し、ゲインで送信許可を変えない。出力ゲインは受信元配列を変更せずPCM16へ適用し、同じ調整済みPCMを送話・試聴へ渡す。原音モードにも両ゲインを適用する。ゲイン変更は実行中に反映し、clientの再接続や字幕設定の変更を伴わない。UIは適用後ピークのdBFSメーター、1.5秒保持のclip表示、各0 dBリセットを備える。
+ボイス通訳の入力・出力ゲインは `VoiceTranslationSettings` の独立した2フィールドに保存し、clone に含める。範囲は各−24～+24 dB、既定0 dBとし、非有限値は0 dBへ正規化する。入力ゲインは処理 task でマイクの取得レートの mono float へ適用し、その後24 kHzへリサンプルする。PTT閉鎖中はリサンプラの残留も含めて無音化し、ゲインで送信許可を変えない。出力ゲインは受信元配列を変更せずPCM16へ適用し、同じ調整済みPCMを送話・試聴へ渡す。原音モードにも両ゲインを適用する。ゲイン変更は実行中に反映し、clientの再接続や字幕設定の変更を伴わない。UIは適用後ピークのdBFSメーター、1.5秒保持のclip表示、各0 dBリセットを備える。
 
 機器は ID で明示選択し、入力から Wave Link の録音ミックスを除外、出力は Wave Link 3 の仮想再生チャンネルに限定する。利用者が変更できる endpoint 表示名や adapter の表示文字列を識別の正本にせず、endpoint の `DeviceTopology.GetConnector(0).ConnectedToDeviceId` で接続先音声アダプターを解決し、その `PKEY_Device_InstanceId` から Windows Configuration Manager で PnP 親を辿る。`USB\VID_0FD9&PID_0096` または `TUSBAUDIO_ENUM\VID_0FD9&PID_0096&KS` の hardware ID を確認し、元の endpoint の方向と `PKEY_Device_DeviceDesc` を使う。render は `System` / `Music` / `Browser` / `Voice Chat` / `SFX` / `Game` / `Aux 1` / `Aux 2` だけを許可し、`Wave Mic 1`〜`4` と録音ミックスを送信先にしない。同じ仮想機器の capture は入力候補から一括で除外する。列挙時・開始時に同じ判定を使い、接続先・親・属性を確認できない機器は許可しない。
 
@@ -87,13 +87,15 @@ API key を送る前に endpoint の `wss` scheme、userinfo が空であるこ�
 
 OpenAI の `/v1/realtime/translations` は標準 Realtime endpoint と wire contract が異なります。session update では server 既定の VAD を使い、音声は `session.input_audio_buffer.append` として送ります。複数世代の transcript event を受理しつつ、同一 response の text / audio-transcript 二重通知は client で抑制します。
 
+字幕用接続は約55分でセッションを更新し、60分の上限による切断を避けます。予定更新の初回は待機せず、失敗後は通常の backoff を使います。再接続を無効化したボイス通訳では予定更新も行いません。
+
 ## 音声処理と VAD
 
 入力ゲインはリサンプル前の mono float に一度だけ適用し、VAD と送信の双方が同じ信号を見るようにします。自動 limiter は置かず、ゲイン後ピークと clip 表示を見てユーザーが調整します。
 
 OpenAI セッションでは VAD と送信用のリサンプラを48 kHz入力から並列に処理します。16 kHz を経由して24 kHzを作ると8 kHzより上の帯域を復元できず、OpenAIへ送る情報量を減らすためです。
 
-VADの閾値・pre-roll・hangoverは独立したドロップダウンで編集し、一括プリセットによる上書きを廃止する。既定は0.8 / 50 ms / 200 ms。時間はFireRed VAD公式ストリーミング設定の pad_start_frame=5 / min_silence_frame=20（10 ms単位）に合わせるが、本アプリの最大確率判定・32 msゲートは公式の平滑化・最短発話判定とは異なる。pre-rollは不足しないようフレーム数を切り上げ、50 msで2フレーム=64 msを保持する。hangoverは既存の最初の無音フレーム＋追加フレームの計数を維持し、200 ms設定では合計224 ms相当となる。旧 `VadPreset` は読込時の移行専用nullableフィールドとし、Custom以外では閾値を維持して時間を新既定値へ一度だけ移行する。Customは3値を維持し、移行後はnullを保存から省略して個別選択を尊重する。既存の独自値も選択肢へ含める。
+VADの閾値・pre-roll・hangoverは独立したドロップダウンで編集し、一括プリセットによる上書きを廃止する。既定は0.8 / 50 ms / 200 ms。時間は[FireRed VAD公式ストリーミング設定](https://github.com/FireRedTeam/FireRedVAD/blob/c30ec49e8cc69642b0ee65362eba11b9d11c6e54/fireredvad/stream_vad.py#L20-L29)の pad_start_frame=5 / min_silence_frame=20（10 ms単位）に合わせるが、本アプリの最大確率判定・32 msゲートは公式の平滑化・最短発話判定とは異なる。pre-rollは不足しないようフレーム数を切り上げ、50 msで2フレーム=64 msを保持する。hangoverは既存の最初の無音フレーム＋追加フレームの計数を維持し、200 ms設定では合計224 ms相当となる。旧 `VadPreset` は読込時の移行専用nullableフィールドとし、Custom以外では閾値を維持して時間を新既定値へ一度だけ移行する。Customは3値を維持し、移行後はnullを保存から省略して個別選択を尊重する。既存の独自値も選択肢へ含める。
 
 VAD gate は次の情報を組み合わせます。
 
@@ -115,8 +117,8 @@ OpenAI の partial と completed の出力を、pipeline で以下へ正規化�
 1. delta を現在の `SegmentId` の partial として蓄積し、短い間隔で表示更新する。
 2. `。！？.!?` などの文境界を検出したら、文ごとに final を通知して新しい `SegmentId` へ進む。
 3. 句点が来ない長文は `MaxPartialChars` で読点、空白、固定位置の順に分割する。
-4. OpenAI の completed 通知では、累積 transcript なら既確定 prefix を除いた新規部分を、hard finalize 境界なら現在の未確定部分を確定する。
-5. completed 通知も文境界も来ない場合は、delta が途絶えた後の idle finalize で残りを確定する。
+4. OpenAI の completed 通知では、累積 transcript から既確定 prefix を除き、文境界までを確定する。未完の末尾は同じ `SegmentId` の partial として保持し、後続 delta・idle・停止時の確定へ引き継ぐ。hard finalize 境界なら現在の未確定部分を確定する。
+5. 文境界や hard finalize 境界が来ない場合は、出力が途絶えた後の idle finalize で残りを確定する。
 
 idle finalize は無音 padding の処理中に発火させません。実効値は、無効値を除き `max(設定値, SilencePaddingMs + 1000 ms)` とします。padding 中に確定すると、その後に押し出された続きが別 `SegmentId` へ分断されるためです。
 
