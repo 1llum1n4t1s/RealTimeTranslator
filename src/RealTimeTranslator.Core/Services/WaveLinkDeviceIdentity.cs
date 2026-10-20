@@ -45,6 +45,40 @@ internal static partial class WaveLinkDeviceIdentity
         }
     }
 
+    /// <summary>試聴先から除外する、確認できた Wave Link アダプターだけを検出する。</summary>
+    internal static bool IsWaveLinkAdapter(MMDevice device)
+    {
+        try
+        {
+            var instanceId = GetConnectedAdapterInstanceId(device);
+            if (instanceId is null
+                || LocateDeviceNode(out var adapterNode, instanceId, 0) != CrSuccess
+                || LocateDeviceNode(out var rootNode, null, 0) != CrSuccess)
+                return false;
+
+            var visited = new HashSet<uint>();
+            uint? currentNode = adapterNode;
+            for (var depth = 0; depth < MaxDeviceNodes && currentNode is { } current; depth++)
+            {
+                if (!visited.Add(current) || ReadNode(current, rootNode) is not { } node)
+                    return false;
+                // チャンネル名を問わず、Wave Mic など同じアダプターの出力も除外する。
+                if (node.HardwareIds.Any(id =>
+                    string.Equals(id, @"USB\VID_0FD9&PID_0096", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(id, @"TUSBAUDIO_ENUM\VID_0FD9&PID_0096&KS", StringComparison.OrdinalIgnoreCase)))
+                    return true;
+                currentNode = node.Parent;
+            }
+            return false;
+        }
+        catch (Exception exception) when (exception is COMException or InvalidOperationException or NotSupportedException)
+        {
+            // 試聴は明示選択した通常 Render を許可する。RDP など topology を
+            // 取得できない機器を、未確認の Wave Link と見なして拒否しない。
+            return false;
+        }
+    }
+
     /// <summary>endpoint 自体の PnP ID ではなく、接続先音声アダプターの PnP ID を取得する。</summary>
     internal static string? GetConnectedAdapterInstanceId(MMDevice endpoint)
     {

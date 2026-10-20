@@ -2,8 +2,19 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:vm="using:RealTimeTranslator.UI.ViewModels"
              xmlns:models="using:RealTimeTranslator.Core.Models"
+             xmlns:converters="using:RealTimeTranslator.UI.Converters"
              x:Class="RealTimeTranslator.UI.Views.VoiceTranslationView"
              x:DataType="vm:VoiceTranslationViewModel">
+    <UserControl.Resources>
+        <converters:LevelMeterMaskWidthConverter x:Key="VoiceLevelMaskWidthConverter"/>
+        <LinearGradientBrush x:Key="VoiceLevelGradient" StartPoint="0%,0%" EndPoint="100%,0%">
+            <GradientStop Offset="0.0" Color="#2ECC40"/>
+            <GradientStop Offset="0.65" Color="#2ECC40"/>
+            <GradientStop Offset="0.80" Color="#FFDC00"/>
+            <GradientStop Offset="0.90" Color="#FF851B"/>
+            <GradientStop Offset="1.0" Color="#FF4136"/>
+        </LinearGradientBrush>
+    </UserControl.Resources>
     <UserControl.Styles>
         <Style Selector="TextBlock.hint">
             <Setter Property="FontSize" Value="12"/>
@@ -142,41 +153,108 @@
                             </ComboBox.ItemTemplate>
                         </ComboBox>
                         <TextBlock Classes="hint" Text="API設定の OpenAI API キーを使用します。字幕側とは別の言語を選べます。"/>
-                        <Grid ColumnDefinitions="*,100">
+                        <StackPanel Spacing="6">
                             <CheckBox Content="押している間だけ送信" IsChecked="{Binding PushToTalkEnabled}"
                                       VerticalAlignment="Center" AutomationProperties.Name="押している間だけ送信（PTT）"
                                       AutomationProperties.AutomationId="VoicePttEnabled"/>
-                            <ComboBox Grid.Column="1" ItemsSource="{Binding PttKeyOptions}"
-                                      SelectedItem="{Binding SelectedPttKey}" IsEnabled="{Binding PushToTalkEnabled}"
-                                      HorizontalAlignment="Stretch" AutomationProperties.Name="PTTキー"
-                                      AutomationProperties.AutomationId="VoicePttKey">
-                                <ComboBox.ItemTemplate>
-                                    <DataTemplate x:DataType="vm:VoicePttKeyOption">
-                                        <TextBlock Text="{Binding Name}"/>
-                                    </DataTemplate>
-                                </ComboBox.ItemTemplate>
-                            </ComboBox>
-                        </Grid>
-                        <TextBlock Classes="hint" Text="他のアプリと重ならないキーを選んでください。オフにすると、ミュート以外では常時送信します。"/>
+                            <Button Content="{Binding PttCaptureButtonText}" IsEnabled="{Binding CanCapturePttKey}"
+                                    Click="BeginCapture" LostFocus="OnCaptureLostFocus" HorizontalAlignment="Stretch"
+                                    AutomationProperties.Name="発話キーを登録" AutomationProperties.AutomationId="VoicePttKey"/>
+                        </StackPanel>
+                        <TextBlock Classes="hint" Text="キーのボタンを押して、登録したいキーや Ctrl・Shift・Alt・Win との組み合わせを押し、離してください。Esc でキャンセルします。「押している間だけ送信」をオフにすると、ミュート以外では常時送信します。"/>
                     </StackPanel>
                 </HeaderedContentControl>
 
-                <HeaderedContentControl Header="音声レベルと訳文">
+                <HeaderedContentControl Header="訳音声の試聴" AutomationProperties.AutomationId="VoiceMonitorCard">
                     <StackPanel Spacing="10">
-                        <Grid ColumnDefinitions="*,16,*">
-                            <StackPanel Spacing="8">
-                                <TextBlock Classes="hint" Text="マイク入力"/>
-                                <ProgressBar Minimum="0" Maximum="100" Value="{Binding InputLevel}" Height="6"
-                                             AutomationProperties.Name="マイク入力レベル"
-                                             AutomationProperties.AutomationId="VoiceInputLevel"/>
-                            </StackPanel>
-                            <StackPanel Grid.Column="2" Spacing="8">
-                                <TextBlock Classes="hint" Text="Wave Link 3 への送信"/>
-                                <ProgressBar Minimum="0" Maximum="100" Value="{Binding OutputLevel}" Height="6"
-                                             AutomationProperties.Name="送信音声レベル"
-                                             AutomationProperties.AutomationId="VoiceOutputLevel"/>
-                            </StackPanel>
-                        </Grid>
+                        <TextBlock Text="試聴するヘッドホン・スピーカー"/>
+                        <ComboBox ItemsSource="{Binding MonitorOutputs}" SelectedItem="{Binding SelectedMonitorOutput}"
+                                  IsEnabled="{Binding CanEditMonitorOutput}" HorizontalAlignment="Stretch"
+                                  AutomationProperties.Name="試聴先" AutomationProperties.AutomationId="VoiceMonitorOutput">
+                            <ComboBox.ItemTemplate>
+                                <DataTemplate x:DataType="models:VoiceAudioDevice">
+                                    <TextBlock Text="{Binding Name}" TextTrimming="CharacterEllipsis"/>
+                                </DataTemplate>
+                            </ComboBox.ItemTemplate>
+                        </ComboBox>
+                        <Button Content="{Binding MonitorButtonText}" Command="{Binding ToggleMonitoringCommand}"
+                                AutomationProperties.AutomationId="VoiceMonitorToggle"/>
+                        <TextBlock Classes="hint" Text="{Binding MonitorStatusText}" AutomationProperties.AutomationId="VoiceMonitorStatus"/>
+                        <TextBlock Classes="hint" Text="「翻訳音声を送信」で開始したあとに試聴できます。ヘッドホンを推奨します。スピーカーの音がマイクに戻らないようにしてください。"/>
+                    </StackPanel>
+                </HeaderedContentControl>
+
+                <HeaderedContentControl Header="音量と訳文" AutomationProperties.AutomationId="VoiceGainCard">
+                    <StackPanel Spacing="10">
+                        <StackPanel Spacing="6">
+                            <TextBlock Text="マイク入力ゲイン"/>
+                            <Grid ColumnDefinitions="*,Auto">
+                                <Border Height="14" CornerRadius="3" ClipToBounds="True" Background="{StaticResource VoiceLevelGradient}"
+                                        AutomationProperties.Name="マイク入力レベル（ゲイン適用後）" AutomationProperties.AutomationId="VoiceInputLevel">
+                                    <Border HorizontalAlignment="Right" Background="#D00F1419">
+                                        <Border.Width>
+                                            <MultiBinding Converter="{StaticResource VoiceLevelMaskWidthConverter}">
+                                                <Binding Path="InputLevelNorm"/>
+                                                <Binding Path="Bounds.Width" RelativeSource="{RelativeSource AncestorType=Border}"/>
+                                            </MultiBinding>
+                                        </Border.Width>
+                                    </Border>
+                                </Border>
+                                <Border Grid.Column="1" Width="10" Height="14" CornerRadius="2" Margin="4,0,0,0" Background="#33FF4136"
+                                        ToolTip.Tip="入力クリップ。音が潰れる場合は入力ゲインを下げてください。">
+                                    <Border Background="#FF4136" CornerRadius="2" IsVisible="{Binding IsInputClipping}"
+                                            AutomationProperties.AutomationId="VoiceInputClipping"/>
+                                </Border>
+                            </Grid>
+                            <Grid ColumnDefinitions="*,Auto">
+                                <TextBlock Classes="hint" Text="レベル（ゲイン適用後）"/>
+                                <TextBlock Grid.Column="1" Classes="hint" Text="{Binding InputLevelText}" AutomationProperties.AutomationId="VoiceInputLevelText"/>
+                            </Grid>
+                            <Grid ColumnDefinitions="*,Auto">
+                                <Slider Minimum="-24" Maximum="24" Value="{Binding InputGainDb, Mode=TwoWay}"
+                                        TickFrequency="6" TickPlacement="BottomRight" VerticalAlignment="Center"
+                                        AutomationProperties.Name="ボイス通訳の入力ゲイン" AutomationProperties.AutomationId="VoiceInputGain"/>
+                                <Button Grid.Column="1" Content="0 dB" Command="{Binding ResetInputGainCommand}" Margin="8,0,0,0"
+                                        AutomationProperties.Name="マイク入力ゲインを 0 dB に戻す"
+                                        AutomationProperties.AutomationId="VoiceResetInputGain"/>
+                            </Grid>
+                            <TextBlock Text="{Binding InputGainDb, StringFormat='{}{0:+0.0;-0.0;0.0} dB'}" HorizontalAlignment="Center"/>
+                        </StackPanel>
+                        <StackPanel Spacing="6">
+                            <TextBlock Text="送信・試聴の出力ゲイン"/>
+                            <Grid ColumnDefinitions="*,Auto">
+                                <Border Height="14" CornerRadius="3" ClipToBounds="True" Background="{StaticResource VoiceLevelGradient}"
+                                        AutomationProperties.Name="送信音声レベル（ゲイン適用後）" AutomationProperties.AutomationId="VoiceOutputLevel">
+                                    <Border HorizontalAlignment="Right" Background="#D00F1419">
+                                        <Border.Width>
+                                            <MultiBinding Converter="{StaticResource VoiceLevelMaskWidthConverter}">
+                                                <Binding Path="OutputLevelNorm"/>
+                                                <Binding Path="Bounds.Width" RelativeSource="{RelativeSource AncestorType=Border}"/>
+                                            </MultiBinding>
+                                        </Border.Width>
+                                    </Border>
+                                </Border>
+                                <Border Grid.Column="1" Width="10" Height="14" CornerRadius="2" Margin="4,0,0,0" Background="#33FF4136"
+                                        ToolTip.Tip="出力クリップ。音が潰れる場合は出力ゲインを下げてください。">
+                                    <Border Background="#FF4136" CornerRadius="2" IsVisible="{Binding IsOutputClipping}"
+                                            AutomationProperties.AutomationId="VoiceOutputClipping"/>
+                                </Border>
+                            </Grid>
+                            <Grid ColumnDefinitions="*,Auto">
+                                <TextBlock Classes="hint" Text="レベル（ゲイン適用後）"/>
+                                <TextBlock Grid.Column="1" Classes="hint" Text="{Binding OutputLevelText}" AutomationProperties.AutomationId="VoiceOutputLevelText"/>
+                            </Grid>
+                            <Grid ColumnDefinitions="*,Auto">
+                                <Slider Minimum="-24" Maximum="24" Value="{Binding OutputGainDb, Mode=TwoWay}"
+                                        TickFrequency="6" TickPlacement="BottomRight" VerticalAlignment="Center"
+                                        AutomationProperties.Name="ボイス通訳の出力ゲイン" AutomationProperties.AutomationId="VoiceOutputGain"/>
+                                <Button Grid.Column="1" Content="0 dB" Command="{Binding ResetOutputGainCommand}" Margin="8,0,0,0"
+                                        AutomationProperties.Name="送信・試聴の出力ゲインを 0 dB に戻す"
+                                        AutomationProperties.AutomationId="VoiceResetOutputGain"/>
+                            </Grid>
+                            <TextBlock Text="{Binding OutputGainDb, StringFormat='{}{0:+0.0;-0.0;0.0} dB'}" HorizontalAlignment="Center"/>
+                        </StackPanel>
+                        <TextBlock Classes="hint" Text="左へ動かすと小さく、右へ動かすと大きくなります（-24〜+24 dB）。開始後にメーターを確認し、赤いクリップ表示が点いたら下げてください。出力ゲインは Wave Link と試聴に共通で、原音モードにも適用します。"/>
                         <TextBox Text="{Binding Transcript, Mode=OneWay}" IsReadOnly="True" AcceptsReturn="True"
                                  TextWrapping="Wrap" MinHeight="100" MaxHeight="180"
                                  PlaceholderText="通訳を開始すると、翻訳されたテキストが表示されます"

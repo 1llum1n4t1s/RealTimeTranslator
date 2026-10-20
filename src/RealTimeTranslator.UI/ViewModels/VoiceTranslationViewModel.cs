@@ -31,19 +31,22 @@ public partial class VoiceTranslationViewModel : ObservableObject, IDisposable
     [ObservableProperty] private VoiceAudioDevice? _selectedOutput;
     [ObservableProperty] private OutputLanguageOption? _selectedLanguage;
     [ObservableProperty] private VoiceModeOption? _selectedMode;
-    [ObservableProperty] private VoicePttKeyOption? _selectedPttKey;
     [ObservableProperty] private bool _pushToTalkEnabled;
     [ObservableProperty] private string _statusText = "停止中";
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(HasError))]
     private string _errorText = string.Empty;
     [ObservableProperty] private string _transcript = string.Empty;
-    [ObservableProperty] private double _inputLevel;
-    [ObservableProperty] private double _outputLevel;
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(InputLevelNorm), nameof(InputLevelText))]
+    private double _inputLevel;
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(OutputLevelNorm), nameof(OutputLevelText))]
+    private double _outputLevel;
     [ObservableProperty] private string _deviceStatus = string.Empty;
 
     public VoiceTranslationViewModel(IVoiceTranslationService service, IVoiceAudioService audio,
-        SettingsViewModel settingsVm, Action<Uri>? openExternalUri = null)
+        SettingsViewModel settingsVm, Action<Uri>? openExternalUri = null, IVoicePlaybackService? playback = null)
     {
         _service = service;
         _audio = audio;
@@ -58,12 +61,11 @@ public partial class VoiceTranslationViewModel : ObservableObject, IDisposable
         SelectedLanguage = OutputLanguageOptions.FirstOrDefault(x => x.Code == _settings.OutputLanguage)
             ?? OutputLanguageOptions.First(x => x.Code == "en");
         SelectedMode = ModeOptions.FirstOrDefault(x => x.Value == _settings.Mode) ?? ModeOptions[1];
-        SelectedPttKey = PttKeyOptions.FirstOrDefault(x => x.VirtualKey == _settings.PushToTalkVirtualKey)
-            ?? PttKeyOptions[2];
         _settings.OutputLanguage = SelectedLanguage.Code;
         _settings.Mode = SelectedMode.Value;
-        _settings.PushToTalkVirtualKey = SelectedPttKey.VirtualKey;
         PushToTalkEnabled = _settings.PushToTalkEnabled;
+        InitializeControls(playback);
+        InitializeGains();
         _service.StateChanged += OnStateChanged;
         _service.TranscriptReceived += OnTranscriptReceived;
         _service.LevelsChanged += OnLevelsChanged;
@@ -83,12 +85,10 @@ public partial class VoiceTranslationViewModel : ObservableObject, IDisposable
         new(VoiceSendMode.Translated, "翻訳音声を送信"),
         new(VoiceSendMode.Muted, "ミュート")
     });
-    public ReadOnlyCollection<VoicePttKeyOption> PttKeyOptions { get; } = new(
-        Enumerable.Range(6, 7).Select(x => new VoicePttKeyOption(0x6F + x, $"F{x}")).ToArray());
 
     public bool CanEditSettings => !_operationPending && !_stopPending &&
         _state is VoiceTranslationState.Stopped or VoiceTranslationState.Faulted;
-    public bool CanStart => CanEditSettings && SelectedMicrophone is not null && SelectedOutput is not null;
+    public bool CanStart => CanEditSettings && !IsCapturingPttKey && SelectedMicrophone is not null && SelectedOutput is not null;
     public bool CanStop => !_stopPending &&
         _state is VoiceTranslationState.Starting or VoiceTranslationState.Running;
     public bool CanChangeMode => !_operationPending && !_stopPending &&
@@ -124,6 +124,7 @@ public partial class VoiceTranslationViewModel : ObservableObject, IDisposable
             Outputs.Clear();
             foreach (var device in _audio.GetMicrophones()) Microphones.Add(device);
             foreach (var device in _audio.GetOutputs().Where(x => x.IsWaveLink)) Outputs.Add(device);
+            RefreshMonitorOutputs();
             SelectedMicrophone = Microphones.FirstOrDefault(x => x.Id == _settings.InputDeviceId);
             SelectedOutput = Outputs.FirstOrDefault(x => x.Id == _settings.OutputDeviceId);
             _deviceEnumerationSucceeded = true;
@@ -186,18 +187,13 @@ public partial class VoiceTranslationViewModel : ObservableObject, IDisposable
         SaveSettings();
     }
 
-    partial void OnSelectedPttKeyChanged(VoicePttKeyOption? value)
-    {
-        if (value is null || _initializing) return;
-        _settings.PushToTalkVirtualKey = value.VirtualKey;
-        SaveSettings();
-    }
-
     partial void OnPushToTalkEnabledChanged(bool value)
     {
         if (_initializing) return;
         _settings.PushToTalkEnabled = value;
+        if (!value) CancelPttCapture();
         SaveSettings();
+        UpdateControlState();
     }
 
     partial void OnSelectedModeChanged(VoiceModeOption? value)
@@ -253,7 +249,11 @@ public partial class VoiceTranslationViewModel : ObservableObject, IDisposable
             _ => "停止中"
         };
         if (_state is VoiceTranslationState.Stopped or VoiceTranslationState.Faulted)
+        {
             InputLevel = OutputLevel = 0;
+            IsInputClipping = IsOutputClipping = false;
+            _inputClipUntil = _outputClipUntil = 0;
+        }
         OnPropertyChanged(nameof(CanEditSettings));
         OnPropertyChanged(nameof(CanStart));
         OnPropertyChanged(nameof(CanStop));
@@ -266,6 +266,7 @@ public partial class VoiceTranslationViewModel : ObservableObject, IDisposable
         RefreshDevicesCommand.NotifyCanExecuteChanged();
         DownloadWaveLinkCommand.NotifyCanExecuteChanged();
         OpenWaveLinkWebsiteCommand.NotifyCanExecuteChanged();
+        UpdateControlState();
     }
 
     private void Dispatch(Action action) => Dispatcher.UIThread.Post(() => { if (!_disposed) action(); });
@@ -276,6 +277,7 @@ public partial class VoiceTranslationViewModel : ObservableObject, IDisposable
     {
         InputLevel = Math.Clamp(input * 100, 0, 100);
         OutputLevel = Math.Clamp(output * 100, 0, 100);
+        UpdateClippingIndicators();
     });
     private void OnErrorReceived(Exception error) => Dispatch(() => ErrorText = error.Message);
 
@@ -287,9 +289,10 @@ public partial class VoiceTranslationViewModel : ObservableObject, IDisposable
         _service.TranscriptReceived -= OnTranscriptReceived;
         _service.LevelsChanged -= OnLevelsChanged;
         _service.ErrorReceived -= OnErrorReceived;
+        _service.MonitoringChanged -= OnMonitoringChanged;
+        _service.MonitoringErrorReceived -= OnMonitoringError;
         GC.SuppressFinalize(this);
     }
 }
 
 public sealed record VoiceModeOption(VoiceSendMode Value, string Name);
-public sealed record VoicePttKeyOption(int VirtualKey, string Name);

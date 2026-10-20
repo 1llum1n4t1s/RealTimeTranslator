@@ -12,6 +12,12 @@ public sealed partial class VoiceTranslationService : IVoiceTranslationService
     private readonly IVoiceAudioService _audio;
     private readonly Func<IRealtimeSpeechTranslator> _createClient;
     private readonly Func<int, bool> _isKeyDown;
+    private readonly IVoicePlaybackService? _playback;
+    private int _monitoring;
+    private long _monitorSessionId;
+    private bool _monitorStarting;
+    private long _monitorStartBaseline;
+    private Exception? _monitorStartError;
     private readonly SemaphoreSlim _lifecycle = new(1, 1);
     private readonly Lock _routing = new();
     private readonly StringBuilder _transcript = new();
@@ -30,21 +36,27 @@ public sealed partial class VoiceTranslationService : IVoiceTranslationService
     private float _outputLevel;
 
     public VoiceTranslationService(IVoiceAudioService audio,
-        Func<IRealtimeSpeechTranslator> createClient, Func<int, bool>? isKeyDown = null)
+        Func<IRealtimeSpeechTranslator> createClient, Func<int, bool>? isKeyDown = null,
+        IVoicePlaybackService? playback = null)
     {
         _audio = audio;
         _createClient = createClient;
         _isKeyDown = isKeyDown ?? (key => (GetAsyncKeyState(key) & 0x8000) != 0);
+        _playback = playback;
+        if (_playback is not null) _playback.ErrorReceived += OnMonitoringError;
         _audio.MicrophoneFrame += OnMicrophoneFrame;
         _audio.ErrorReceived += OnAudioError;
     }
 
     public VoiceTranslationState State => (VoiceTranslationState)Volatile.Read(ref _state);
     public VoiceSendMode Mode => (VoiceSendMode)Volatile.Read(ref _mode);
+    public bool IsMonitoring => Volatile.Read(ref _monitoring) != 0;
     public event Action<VoiceTranslationState>? StateChanged;
     public event Action<string>? TranscriptReceived;
     public event Action<float, float>? LevelsChanged;
     public event Action<Exception>? ErrorReceived;
+    public event Action<bool>? MonitoringChanged;
+    public event Action<Exception>? MonitoringErrorReceived;
 
     public async Task StartAsync(VoiceTranslationSettings settings, OpenAIRealtimeSettings openAi,
         CancellationToken ct = default)
@@ -61,10 +73,12 @@ public sealed partial class VoiceTranslationService : IVoiceTranslationService
                 || string.IsNullOrWhiteSpace(settings.OutputDeviceId))
                 throw new InvalidOperationException("入力マイクと Wave Link の翻訳音声用チャンネルを選択してください。");
             if (!Enum.IsDefined(settings.Mode)) throw new ArgumentException("送信モードが不正です。", nameof(settings));
-            if (settings.PushToTalkEnabled && settings.PushToTalkVirtualKey is < 0x75 or > 0x7B)
-                throw new ArgumentException("発話キーは F6〜F12 から選択してください。", nameof(settings));
+            if (settings.PushToTalkEnabled && (!VoicePushToTalkShortcut.IsSupportedKey(settings.PushToTalkVirtualKey)
+                || !VoicePushToTalkShortcut.IsSupportedModifiers(settings.PushToTalkModifiers)))
+                throw new ArgumentException("発話キーを登録し直してください。", nameof(settings));
 
             _settings = settings.Clone();
+            SetGains(_settings.InputGainDb, _settings.OutputGainDb);
             _connectionSettings = new OpenAIRealtimeSettings
             {
                 ApiKey = openAi.ApiKey,
@@ -111,12 +125,15 @@ public sealed partial class VoiceTranslationService : IVoiceTranslationService
     {
         if (!Enum.IsDefined(mode)) throw new ArgumentOutOfRangeException(nameof(mode));
         await _lifecycle.WaitAsync(ct).ConfigureAwait(false);
+        CancellationTokenSource? session = null;
         try
         {
             ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
             if (State != VoiceTranslationState.Running) return;
             if (Mode == mode) return;
+            session = _sessionCancellation;
             var oldClient = MuteRouting();
+            await StopMonitoringCoreAsync().ConfigureAwait(false);
             if (oldClient is not null) await oldClient.DisposeAsync().ConfigureAwait(false);
             _transcript.Clear();
             TranscriptReceived?.Invoke(string.Empty);
@@ -132,10 +149,18 @@ public sealed partial class VoiceTranslationService : IVoiceTranslationService
                 _epoch++;
             }
         }
-        catch
+        catch (Exception ex)
         {
-            var failedClient = MuteRouting();
-            if (failedClient is not null) await failedClient.DisposeAsync().ConfigureAwait(false);
+            try
+            {
+                var failedClient = MuteRouting();
+                if (failedClient is not null) await failedClient.DisposeAsync().ConfigureAwait(false);
+            }
+            finally
+            {
+                // 停止操作のキャンセルは正常終了に任せ、切替失敗は通知の有無によらず停止する。
+                if (session is not null && !session.IsCancellationRequested) ScheduleFault(ex, session);
+            }
             throw;
         }
         finally { _lifecycle.Release(); }
@@ -181,8 +206,14 @@ public sealed partial class VoiceTranslationService : IVoiceTranslationService
         }
         catch
         {
-            lock (_routing) { if (ReferenceEquals(_client, client)) _client = null; }
-            await client.DisposeAsync().ConfigureAwait(false);
+            bool ownsClient;
+            lock (_routing)
+            {
+                ownsClient = ReferenceEquals(_client, client);
+                if (ownsClient) _client = null;
+            }
+            // 接続待ちを止めた StopAsync が取得済みなら、その呼出元が破棄する。
+            if (ownsClient) await client.DisposeAsync().ConfigureAwait(false);
             throw;
         }
     }
@@ -195,7 +226,7 @@ public sealed partial class VoiceTranslationService : IVoiceTranslationService
         {
             // 処理待ちの間にキーやモードが変わっても、取得時の送信許可を保つ。
             var epoch = Volatile.Read(ref _epoch);
-            var keyOpen = !_settings.PushToTalkEnabled || _isKeyDown(_settings.PushToTalkVirtualKey);
+            var keyOpen = !_settings.PushToTalkEnabled || IsPushToTalkDown();
             if (!channel.Writer.TryWrite(new QueuedMicrophoneFrame(frame, keyOpen, epoch)))
                 ScheduleFault(new IOException("マイクの処理が追いつかないため、音声送信を停止しました。"));
         }
@@ -209,6 +240,7 @@ public sealed partial class VoiceTranslationService : IVoiceTranslationService
         var previousEpoch = -1;
         var previousKeyOpen = false;
         var lastMeter = Environment.TickCount64;
+        float inputMeterPeak = 0;
         try
         {
             await foreach (var queued in reader.ReadAllAsync(ct).ConfigureAwait(false))
@@ -224,9 +256,15 @@ public sealed partial class VoiceTranslationService : IVoiceTranslationService
                     resampler = new StreamingResampler(inputRate, 24000);
                     previousEpoch = epoch;
                 }
-                var inputLevel = Peak(frame.Samples);
+                var inputGain = Volatile.Read(ref _inputGain);
+                inputMeterPeak = Math.Max(inputMeterPeak, Math.Min(Peak(frame.Samples) * inputGain, 1f));
                 var keyOpen = queued.KeyOpen;
                 var input = keyOpen ? frame.Samples : new float[frame.Samples.Length];
+                if (keyOpen && inputGain != 1f)
+                {
+                    input = (float[])frame.Samples.Clone();
+                    for (var i = 0; i < input.Length; i++) input[i] *= inputGain;
+                }
                 var samples = resampler!.Resample(input);
                 var pcm = AudioFormatConverter.Float32ToPcm16(samples);
                 // リサンプラの先読み履歴にも実音が残るので、閉鎖中の送信は厳密に無音にする。
@@ -237,8 +275,9 @@ public sealed partial class VoiceTranslationService : IVoiceTranslationService
                     if (Mode == VoiceSendMode.Original)
                     {
                         if (!keyOpen && previousKeyOpen) _audio.ClearOutput();
-                        _audio.WriteOutput(pcm, 24000);
-                        _outputLevel = keyOpen ? Peak(samples) : 0;
+                        var output = ApplyOutputGain(pcm);
+                        _audio.WriteOutput(output, 24000);
+                        _outputLevel = Math.Max(_outputLevel, PcmPeak(output));
                     }
                     else if (Mode == VoiceSendMode.Translated)
                     {
@@ -252,8 +291,8 @@ public sealed partial class VoiceTranslationService : IVoiceTranslationService
                 if (Environment.TickCount64 - lastMeter >= 100)
                 {
                     lastMeter = Environment.TickCount64;
-                    LevelsChanged?.Invoke(inputLevel, Volatile.Read(ref _outputLevel));
-                    Volatile.Write(ref _outputLevel, 0);
+                    LevelsChanged?.Invoke(inputMeterPeak, Interlocked.Exchange(ref _outputLevel, 0));
+                    inputMeterPeak = 0;
                 }
             }
         }
@@ -269,8 +308,15 @@ public sealed partial class VoiceTranslationService : IVoiceTranslationService
             {
                 if (!ReferenceEquals(_client, client) || Mode != VoiceSendMode.Translated
                     || State != VoiceTranslationState.Running) return;
-                _audio.WriteOutput(pcm, client.OutputSampleRate);
-                _outputLevel = Math.Max(_outputLevel, PcmPeak(pcm));
+                var output = ApplyOutputGain(pcm);
+                _audio.WriteOutput(output, client.OutputSampleRate);
+                if (IsMonitoring && _playback is not null)
+                {
+                    // 試聴の失敗を、ゲームへの送信や字幕の停止へ波及させない。
+                    try { _playback.Write(output, client.OutputSampleRate); }
+                    catch (Exception ex) { OnMonitoringError(_monitorSessionId, ex); }
+                }
+                _outputLevel = Math.Max(_outputLevel, PcmPeak(output));
             }
         }
         catch (Exception ex) { ScheduleFault(ex); }
@@ -346,6 +392,8 @@ public sealed partial class VoiceTranslationService : IVoiceTranslationService
             _epoch++;
             _outputLevel = 0;
             _audio.ClearOutput();
+            _playback?.Clear();
+            if (Interlocked.Exchange(ref _monitoring, 0) != 0) MonitoringChanged?.Invoke(false);
             while (_frames?.Reader.TryRead(out _) == true) { }
             var client = _client;
             _client = null;
@@ -365,7 +413,11 @@ public sealed partial class VoiceTranslationService : IVoiceTranslationService
         CancelSession();
         var channel = Interlocked.Exchange(ref _frames, null);
         channel?.Writer.TryComplete();
-        try { await _audio.StopAsync().ConfigureAwait(false); }
+        try
+        {
+            await StopMonitoringCoreAsync().ConfigureAwait(false);
+            await _audio.StopAsync().ConfigureAwait(false);
+        }
         finally
         {
             if (_processing is not null) await _processing.ConfigureAwait(false);
@@ -388,7 +440,7 @@ public sealed partial class VoiceTranslationService : IVoiceTranslationService
     {
         float peak = 0;
         foreach (var sample in samples) if (float.IsFinite(sample)) peak = Math.Max(peak, Math.Abs(sample));
-        return Math.Min(peak, 1);
+        return peak;
     }
 
     private static float PcmPeak(byte[] pcm)
@@ -410,5 +462,6 @@ public sealed partial class VoiceTranslationService : IVoiceTranslationService
         await StopAsync().ConfigureAwait(false);
         _audio.MicrophoneFrame -= OnMicrophoneFrame;
         _audio.ErrorReceived -= OnAudioError;
+        if (_playback is not null) _playback.ErrorReceived -= OnMonitoringError;
     }
 }

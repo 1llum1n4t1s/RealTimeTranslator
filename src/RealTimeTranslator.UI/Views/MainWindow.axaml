@@ -567,8 +567,8 @@
                                 <TextBlock TextWrapping="Wrap" FontSize="11" LineHeight="16" Margin="0,8,0,0"
                                            Foreground="{DynamicResource Brush.FG2}">
                                     <Run Text="さらに節約したいときは "/>
-                                    <Run Text="「音声処理」タブの VAD プリセット" FontStyle="Italic"/>
-                                    <Run Text=" で無音時間を削るのが効果的🌸"/>
+                                    <Run Text="「音声処理」タブの VAD 設定" FontStyle="Italic"/>
+                                    <Run Text=" で、不要な音声を検出していないか確認してください。"/>
                                 </TextBlock>
                                 <TextBlock TextWrapping="Wrap" FontSize="11" LineHeight="16" Margin="0,10,0,4"
                                            Foreground="{DynamicResource Brush.FG2}">
@@ -614,48 +614,47 @@
                                       Content="人の声と判定された区間だけ OpenAI に送る (推奨)"/>
                         </HeaderedContentControl>
 
-                        <HeaderedContentControl Header="感度プリセット" Margin="0,16,0,0">
+                        <HeaderedContentControl Header="検出しきい値" Margin="0,16,0,0">
                             <StackPanel>
-                                <ComboBox ItemsSource="{Binding VadPresetOptions}"
-                                          SelectedItem="{Binding SelectedVadPreset, Mode=TwoWay}"
-                                          HorizontalAlignment="Stretch">
+                                <ComboBox ItemsSource="{Binding VadThresholdOptions}"
+                                          SelectedItem="{Binding SelectedVadThreshold, Mode=TwoWay}"
+                                          HorizontalAlignment="Stretch" AutomationProperties.Name="VAD の検出しきい値">
                                     <ComboBox.ItemTemplate>
-                                        <DataTemplate x:DataType="vm:VadPresetOption">
+                                        <DataTemplate x:DataType="vm:VadThresholdOption">
                                             <TextBlock Text="{Binding Name}"/>
                                         </DataTemplate>
                                     </ComboBox.ItemTemplate>
                                 </ComboBox>
-                                <TextBlock Text="「ふつう」で OK。 短い発話を取りこぼすなら「頭と尻尾を取りこぼさない」、 ゲーム配信を長時間流すなら「ガッツリ節約」を選んでね。"
-                                           FontSize="11" Foreground="{DynamicResource Brush.FG2}"
-                                           TextWrapping="Wrap" Margin="0,4,0,0"/>
+                                <TextBlock Text="上げるほど判定が厳しくなります。低い値では BGM・効果音も拾う場合があります。"
+                                           FontSize="11" Foreground="{DynamicResource Brush.FG2}" TextWrapping="Wrap" Margin="0,4,0,0"/>
                             </StackPanel>
                         </HeaderedContentControl>
 
-                        <!-- カスタム選択時のみ表示する詳細スライダー (上級者向け) -->
-                        <Border IsVisible="{Binding IsVadPresetCustom}"
-                                Margin="0,12,0,0" Padding="12"
-                                Background="{DynamicResource Brush.Container}"
-                                BorderBrush="{DynamicResource Brush.Border}"
-                                BorderThickness="1" CornerRadius="8">
-                            <StackPanel>
-                                <TextBlock Text="🛠 カスタム詳細" FontWeight="Bold" Margin="0,0,0,8"/>
+                        <HeaderedContentControl Header="冒頭の保持時間" Margin="0,12,0,0">
+                            <ComboBox ItemsSource="{Binding VadPreRollOptions}"
+                                      SelectedItem="{Binding SelectedVadPreRoll, Mode=TwoWay}"
+                                      HorizontalAlignment="Stretch" AutomationProperties.Name="VAD の冒頭の保持時間">
+                                <ComboBox.ItemTemplate>
+                                    <DataTemplate x:DataType="vm:VadDurationOption">
+                                        <TextBlock Text="{Binding Name}"/>
+                                    </DataTemplate>
+                                </ComboBox.ItemTemplate>
+                            </ComboBox>
+                        </HeaderedContentControl>
 
-                                <TextBlock Text="検出しきい値 (FireRed VAD speech probability)" FontSize="12" Margin="0,4,0,2"/>
-                                <Slider Minimum="0.1" Maximum="0.9" Value="{Binding VadThreshold, Mode=TwoWay}"
-                                        TickFrequency="0.05" IsSnapToTickEnabled="True"/>
-                                <TextBlock Text="{Binding VadThreshold, StringFormat='現在: {0:F2} (本アプリ既定 0.80、 上げるほど判定が厳しくなり送信量減)'}"
-                                           FontSize="11" Foreground="{DynamicResource Brush.FG2}" Margin="0,0,0,8"/>
-
-                                <TextBlock Text="プリロール時間 (ms) — 発話冒頭の取りこぼし防止" FontSize="12" Margin="0,4,0,2"/>
-                                <NumericUpDown Value="{Binding VadPreRollMs, Mode=TwoWay}"
-                                               Minimum="0" Maximum="2000" Increment="50" Margin="0,0,0,8"/>
-
-                                <TextBlock Text="ハングオーバー時間 (ms) — 発話末尾の切れ防止" FontSize="12" Margin="0,4,0,2"/>
-                                <NumericUpDown Value="{Binding VadHangoverMs, Mode=TwoWay}"
-                                               Minimum="0" Maximum="2000" Increment="50"/>
-                            </StackPanel>
-                        </Border>
-
+                        <HeaderedContentControl Header="末尾の保持時間" Margin="0,12,0,0">
+                            <ComboBox ItemsSource="{Binding VadHangoverOptions}"
+                                      SelectedItem="{Binding SelectedVadHangover, Mode=TwoWay}"
+                                      HorizontalAlignment="Stretch" AutomationProperties.Name="VAD の末尾の保持時間">
+                                <ComboBox.ItemTemplate>
+                                    <DataTemplate x:DataType="vm:VadDurationOption">
+                                        <TextBlock Text="{Binding Name}"/>
+                                    </DataTemplate>
+                                </ComboBox.ItemTemplate>
+                            </ComboBox>
+                        </HeaderedContentControl>
+                        <TextBlock Text="保持時間の既定値は FireRed streaming の開始パディング 50 ms・終了判定の無音 200 ms に合わせています。本アプリの処理は 32 ms 単位のため、実際の保持時間と公式の後処理には差があります。"
+                                   FontSize="11" Foreground="{DynamicResource Brush.FG2}" TextWrapping="Wrap" Margin="0,6,0,0"/>
                         <TextBlock Text="自動 Pause 保険" FontSize="16" FontWeight="Bold" Margin="0,24,0,8"/>
 
                         <HeaderedContentControl Header="連続無音時間で自動停止">

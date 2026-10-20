@@ -125,53 +125,56 @@ public class AudioCaptureSettings
     public bool EnableVad { get; set; } = true;
 
     /// <summary>
-    /// VAD の感度プリセット。 "Balanced" (推奨) / "PrioritizeEdges" (頭尻尾重視) /
-    /// "AggressiveSavings" (節約重視) / "Custom" (下の Threshold/PreRollMs/HangoverMs を直接使用)。
-    /// プリセット選択時は SettingsViewModel が Threshold/PreRollMs/HangoverMs を上書きする。
+    /// 出荷済み settings.json の一括プリセットを独立設定へ一度だけ移行するための読込専用互換値。
+    /// 移行後は null にし、保存しない。新しい設定では各 VAD 値を直接使用する。
     /// </summary>
-    public string VadPreset { get; set; } = "Balanced";
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? VadPreset { get; set; }
 
     /// <summary>
     /// speech probability のしきい値 (0.0-1.0, default: 0.8)。
-    /// <para>
-    /// 下げると小声を拾いやすくなる一方、BGM/SE の誤検出と継続送信が増え、発話の切れ目が
-    /// 失われる場合がある。閾値はモデル固有の値なので、音源・送信量・発話境界を一緒に比較する。
-    /// </para>
-    /// <para>
-    /// FireRed streaming の全プリセットの閾値は Balanced 0.8 / PrioritizeEdges 0.6 / AggressiveSavings 0.9。
-    /// 旧モデルの閾値をそのまま適用せず、低音量・短発話・合成背景音の送信波形を比較して調整する。
-    /// Balanced の pre-roll 1000ms / hangover 800ms、Edges の 1200ms / 800ms は維持する。
-    /// <see cref="VadHangoverMs"/> と pre-roll の保護を単独で削らず、アイドル字幕確定との組み合わせを維持する。
-    /// </para>
-    /// 遠距離小音量の声拾いは入力プリプロセス DSP (<see cref="AudioPreprocessingSettings"/>) に任せる方針。
+    /// 上げるほど判定が厳しくなる。下げると小声とともに BGM/SE の誤検出も増える場合がある。
     /// </summary>
     public float VadThreshold { get; set; } = 0.8f;
 
     /// <summary>
-    /// 発話冒頭の取りこぼし防止用にリングバッファに保持する直近音声の長さ (ms)。
-    /// Balanced プリセットの推奨値は **1000ms** (v1.0.31 で 600→800、 v1.0.42 で 800→1000 に拡張)。
-    /// 頭の子音 + 立ち上がりを確実に拾うため、 既定を厚めに取る方針。
-    /// 発話境界 (句点) には影響しないので、 v1.0.49 の回帰修正でも 1000ms を維持している。
+    /// 発話冒頭のために保持する直近音声の長さ (ms)。
+    /// 既定 50ms は FireRed streaming の pad_start_frame=5 (10ms 単位) に合わせた値。
+    /// 本アプリの外部フレームは32msなので、実際の保持時間はフレーム単位に切り上げる。
     /// </summary>
-    public int VadPreRollMs { get; set; } = 1000;
+    public int VadPreRollMs { get; set; } = 50;
 
     /// <summary>
-    /// 発話末尾の切れ防止用に speech 終了判定後も送信を継続する長さ (ms)。
-    /// Balanced プリセットの推奨値は **800ms** (v1.0.31 で 400→600、 v1.0.42 で 600→400 → v1.0.49 で 600 に復帰
-    /// → v1.0.50 で <b>800 に増量</b>)。
-    /// <para>
-    /// ⚠️ <b>token 節約のために削ってはいけない。</b> OpenAI Realtime は発音の後ろに無音を付けないと
-    /// 後続音声に押し出されるまで出力が止まる (ロケット鉛筆方式)。 Hangover は発話末尾の「間」を
-    /// server に送り届けて turn end (= 句点) を引かせる役割を持つため、 薄くすると
-    /// <see cref="VadThreshold"/> の下げ過ぎと同じく字幕連結の原因になる。
-    /// </para>
-    /// <para>
-    /// v1.0.50 で 800 に増やしたのは、 ボイスチャットを拾うため <see cref="VadThreshold"/> を 0.3 へ
-    /// 下げる代償として、 発話境界の形成を Hangover 側で肩代わりさせるため。 過去 2 回の連結回帰
-    /// (v1.0.30 / v1.0.42) はいずれも「threshold 0.3 かつ Hangover 400」の組み合わせだった。
-    /// </para>
+    /// 発話終了判定後も実音の送信を続ける長さ (ms)。
+    /// 既定 200ms は FireRed streaming の min_silence_frame=20 に合わせた近似で、
+    /// 公式実装と同じ後処理ではない。字幕確定を促す無音送信は SilencePaddingMs が別に担当する。
     /// </summary>
-    public int VadHangoverMs { get; set; } = 800;
+    public int VadHangoverMs { get; set; } = 200;
+
+    /// <summary>旧プリセットを一度だけ移行し、3値を互いに独立して有効範囲へ収める。</summary>
+    public bool NormalizeVadSettings()
+    {
+        bool changed = false;
+        if (VadPreset is not null)
+        {
+            if (!string.Equals(VadPreset, "Custom", StringComparison.OrdinalIgnoreCase))
+            {
+                VadPreRollMs = 50;
+                VadHangoverMs = 200;
+            }
+            VadPreset = null;
+            changed = true;
+        }
+
+        float threshold = float.IsFinite(VadThreshold) ? Math.Clamp(VadThreshold, 0f, 1f) : 0.8f;
+        int preRoll = Math.Clamp(VadPreRollMs, 0, 2000);
+        int hangover = Math.Clamp(VadHangoverMs, 0, 2000);
+        changed |= VadThreshold != threshold || VadPreRollMs != preRoll || VadHangoverMs != hangover;
+        VadThreshold = threshold;
+        VadPreRollMs = preRoll;
+        VadHangoverMs = hangover;
+        return changed;
+    }
 
     // ────────── 自動 Pause 保険 ──────────
 

@@ -100,22 +100,6 @@ public partial class SettingsViewModel : ObservableObject
             new("Normal", "標準"),
             new("Bold",   "太字")
         });
-        VadPresetOptions = new ReadOnlyCollection<VadPresetOption>(new VadPresetOption[]
-        {
-            // 閾値と Hangover は送信量と発話境界に影響する。閾値だけを下げると
-            // BGM/SE の誤検出で継続送信が増え、複数発話が連結する場合がある。
-            // FireRed streaming は Silero と確率の尺度が異なるため、旧閾値を引き継がない。
-            // 背景音の誤検出を抑えるため、発話と認める閾値を高めにする。
-            // 冒頭・末尾の保持時間は維持する。合成音源の結果を実ゲームの精度保証とは扱わない。
-            new("Balanced",          "ふつう (推奨)",                    0.8f, 1000, 800),
-            // 標準で拾えない声向け。低い閾値と長い pre-roll で冒頭を保護する。
-            new("PrioritizeEdges",   "頭と尻尾を取りこぼさない",         0.6f, 1200, 800),
-            // 厳しい閾値で誤検出を抑える。pre-roll と hangover は従来の節約設定を維持する。
-            new("AggressiveSavings", "ガッツリ節約",                      0.9f, 700, 350),
-            // Custom は下の詳細スライダーで個別調整するモード。 setter で 3 値は上書きしないため、
-            // ここの 3 値は実際には参照されない (rere B2-007 対応: 死コード相当だったので 0/0/0 に)。
-            new("Custom",            "カスタム (詳細設定)",               0f,   0,   0)
-        });
         // 翻訳ログの保持期間 ComboBox (Windows ごみ箱風: 無制限がデフォルト)。
         // 0 = 無制限、 削除しない (ユーザーが手動で消すまで残す)。
         TranslationLogRetentionOptions = new ReadOnlyCollection<TranslationLogRetentionOption>(new TranslationLogRetentionOption[]
@@ -164,6 +148,14 @@ public partial class SettingsViewModel : ObservableObject
         // 範囲外のサイズ / 行数 / 言語が入っているケースを、 起動時にデフォルトへ矯正する。
         // ComboBox が未選択状態で出る UX バグ ( setter が呼ばれず実態とのズレが続く ) を防ぐ。
         SanitizeSettings();
+        VadThresholdOptions = new ReadOnlyCollection<VadThresholdOption>(
+            new[] { 0.6f, 0.8f, 1.0f, _settings.AudioCapture.VadThreshold }
+                .Distinct().Order().Select(value => new VadThresholdOption(value,
+                    value == 0.8f ? "0.8（既定）" : value.ToString("G", System.Globalization.CultureInfo.CurrentCulture))).ToArray());
+        VadPreRollOptions = CreateVadDurationOptions(_settings.AudioCapture.VadPreRollMs, 50,
+            [0, 50, 100, 200, 500, 700, 1000, 1200, 2000]);
+        VadHangoverOptions = CreateVadDurationOptions(_settings.AudioCapture.VadHangoverMs, 200,
+            [0, 100, 200, 350, 500, 800, 1000, 2000]);
     }
 
     public AppSettings Settings => _settings;
@@ -293,28 +285,7 @@ public partial class SettingsViewModel : ObservableObject
             changed = true;
         }
 
-        if (!VadPresetOptions.Any(o => string.Equals(o.Key, _settings.AudioCapture.VadPreset, StringComparison.OrdinalIgnoreCase)))
-        {
-            LoggerService.LogInfo($"SettingsViewModel.Sanitize: VadPreset='{_settings.AudioCapture.VadPreset}' が一覧外 → 'Balanced' に矯正");
-            _settings.AudioCapture.VadPreset = "Balanced";
-            changed = true;
-        }
-        // プリセット選択時 (Custom 以外) は 3 値をプリセット値に強制同期させる
-        // (settings.json を手で書いて threshold だけ別値にしたケースの整合性確保)。
-        var preset = VadPresetOptions.First(o => string.Equals(o.Key, _settings.AudioCapture.VadPreset, StringComparison.OrdinalIgnoreCase));
-        if (!string.Equals(preset.Key, "Custom", StringComparison.OrdinalIgnoreCase))
-        {
-            if (Math.Abs(_settings.AudioCapture.VadThreshold - preset.Threshold) > 0.005f ||
-                _settings.AudioCapture.VadPreRollMs != preset.PreRollMs ||
-                _settings.AudioCapture.VadHangoverMs != preset.HangoverMs)
-            {
-                LoggerService.LogInfo($"SettingsViewModel.Sanitize: VadPreset='{preset.Key}' のため Threshold/PreRoll/Hangover を ({preset.Threshold}/{preset.PreRollMs}/{preset.HangoverMs}) に強制同期");
-                _settings.AudioCapture.VadThreshold = preset.Threshold;
-                _settings.AudioCapture.VadPreRollMs = preset.PreRollMs;
-                _settings.AudioCapture.VadHangoverMs = preset.HangoverMs;
-                changed = true;
-            }
-        }
+        changed |= _settings.AudioCapture.NormalizeVadSettings();
 
         if (!AutoPauseOptions.Any(o => o.Seconds == _settings.AudioCapture.AutoPauseOnSilenceSec))
         {
@@ -376,7 +347,9 @@ public partial class SettingsViewModel : ObservableObject
     public ReadOnlyCollection<double> DisplayDurations { get; }
     public ReadOnlyCollection<OutputLanguageOption> OutputLanguageOptions { get; }
 
-    public ReadOnlyCollection<VadPresetOption> VadPresetOptions { get; }
+    public ReadOnlyCollection<VadThresholdOption> VadThresholdOptions { get; }
+    public ReadOnlyCollection<VadDurationOption> VadPreRollOptions { get; }
+    public ReadOnlyCollection<VadDurationOption> VadHangoverOptions { get; }
     public ReadOnlyCollection<AutoPauseOption> AutoPauseOptions { get; }
     public ReadOnlyCollection<TranslationLogRetentionOption> TranslationLogRetentionOptions { get; }
 
@@ -593,79 +566,47 @@ public partial class SettingsViewModel : ObservableObject
         }
     }
 
-    /// <summary>
-    /// VAD 感度プリセット ComboBox。 Custom 以外を選択すると、 Threshold / PreRoll / Hangover を
-    /// プリセット値に一括上書きする (旧 UI の 3 つのスライダー/NumericUpDown を 1 つの選択肢に集約)。
-    /// </summary>
-    public VadPresetOption? SelectedVadPreset
+    private static ReadOnlyCollection<VadDurationOption> CreateVadDurationOptions(int current, int defaultValue, int[] values)
+        => new(values.Append(current).Distinct().Order()
+            .Select(value => new VadDurationOption(value,
+                value == defaultValue ? $"{value} ms（既定）" : $"{value} ms")).ToArray());
+
+    public VadThresholdOption? SelectedVadThreshold
     {
-        get => VadPresetOptions.FirstOrDefault(o => string.Equals(o.Key, _settings.AudioCapture.VadPreset, StringComparison.OrdinalIgnoreCase))
-               ?? VadPresetOptions[0];
+        get => VadThresholdOptions.First(option => option.Value == _settings.AudioCapture.VadThreshold);
         set
         {
-            if (value == null || string.Equals(_settings.AudioCapture.VadPreset, value.Key, StringComparison.OrdinalIgnoreCase))
+            if (value is null || value.Value == _settings.AudioCapture.VadThreshold)
                 return;
-            _settings.AudioCapture.VadPreset = value.Key;
-            // Custom 以外: プリセット値を強制適用 (現在のカスタム値は捨てる)。
-            if (!string.Equals(value.Key, "Custom", StringComparison.OrdinalIgnoreCase))
-            {
-                _settings.AudioCapture.VadThreshold = value.Threshold;
-                _settings.AudioCapture.VadPreRollMs = value.PreRollMs;
-                _settings.AudioCapture.VadHangoverMs = value.HangoverMs;
-                // 詳細スライダーが裏で動くので追従通知する。 IsVadPresetCustom もここで切替わる。
-                OnPropertyChanged(nameof(VadThreshold));
-                OnPropertyChanged(nameof(VadPreRollMs));
-                OnPropertyChanged(nameof(VadHangoverMs));
-            }
+            _settings.AudioCapture.VadThreshold = value.Value;
             OnPropertyChanged();
-            OnPropertyChanged(nameof(IsVadPresetCustom));
             ScheduleAutoSave();
         }
     }
 
-    /// <summary>カスタムプリセット選択時のみ詳細スライダー UI を表示するフラグ。</summary>
-    public bool IsVadPresetCustom => string.Equals(_settings.AudioCapture.VadPreset, "Custom", StringComparison.OrdinalIgnoreCase);
-
-    public float VadThreshold
+    public VadDurationOption? SelectedVadPreRoll
     {
-        get => _settings.AudioCapture.VadThreshold;
+        get => VadPreRollOptions.First(option => option.Milliseconds == _settings.AudioCapture.VadPreRollMs);
         set
         {
-            // Slider の連続値で発火するため微小差は無視 (settings.json 書き込み頻度抑制)
-            if (Math.Abs(_settings.AudioCapture.VadThreshold - value) > 0.005f)
-            {
-                _settings.AudioCapture.VadThreshold = value;
-                OnPropertyChanged();
-                ScheduleAutoSave();
-            }
+            if (value is null || value.Milliseconds == _settings.AudioCapture.VadPreRollMs)
+                return;
+            _settings.AudioCapture.VadPreRollMs = value.Milliseconds;
+            OnPropertyChanged();
+            ScheduleAutoSave();
         }
     }
 
-    public int VadPreRollMs
+    public VadDurationOption? SelectedVadHangover
     {
-        get => _settings.AudioCapture.VadPreRollMs;
+        get => VadHangoverOptions.First(option => option.Milliseconds == _settings.AudioCapture.VadHangoverMs);
         set
         {
-            if (_settings.AudioCapture.VadPreRollMs != value)
-            {
-                _settings.AudioCapture.VadPreRollMs = value;
-                OnPropertyChanged();
-                ScheduleAutoSave();
-            }
-        }
-    }
-
-    public int VadHangoverMs
-    {
-        get => _settings.AudioCapture.VadHangoverMs;
-        set
-        {
-            if (_settings.AudioCapture.VadHangoverMs != value)
-            {
-                _settings.AudioCapture.VadHangoverMs = value;
-                OnPropertyChanged();
-                ScheduleAutoSave();
-            }
+            if (value is null || value.Milliseconds == _settings.AudioCapture.VadHangoverMs)
+                return;
+            _settings.AudioCapture.VadHangoverMs = value.Milliseconds;
+            OnPropertyChanged();
+            ScheduleAutoSave();
         }
     }
 
@@ -1053,8 +994,11 @@ public sealed record OutputLanguageOption(string Code, string DisplayName);
 public sealed record ColorOption(string Name, string Value);
 public sealed record SettingsSavedEventArgs(AppSettings Settings);
 
-/// <summary>VAD 感度プリセット。 SelectedVadPreset の setter で 3 値を一括上書きする。</summary>
-public sealed record VadPresetOption(string Key, string Name, float Threshold, int PreRollMs, int HangoverMs);
+/// <summary>VAD の検出しきい値の選択肢。</summary>
+public sealed record VadThresholdOption(float Value, string Name);
+
+/// <summary>VAD の冒頭・末尾保持時間の選択肢。</summary>
+public sealed record VadDurationOption(int Milliseconds, string Name);
 
 /// <summary>自動 Pause の選択肢。 Seconds=0 が無効。</summary>
 public sealed record AutoPauseOption(int Seconds, string Name);

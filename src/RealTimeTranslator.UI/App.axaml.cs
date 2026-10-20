@@ -302,8 +302,10 @@ public partial class App : Application
         services.AddSingleton<IUpdateService, UpdateService>();
         services.AddSingleton<ITranslationPipelineService, TranslationPipelineService>();
         services.AddSingleton<IVoiceAudioService, VoiceAudioService>();
+        services.AddSingleton<IVoicePlaybackService, VoicePlaybackService>();
         services.AddSingleton<IVoiceTranslationService>(sp => new VoiceTranslationService(
-            sp.GetRequiredService<IVoiceAudioService>(), () => new OpenAIRealtimeClient()));
+            sp.GetRequiredService<IVoiceAudioService>(), () => new OpenAIRealtimeClient(),
+            playback: sp.GetRequiredService<IVoicePlaybackService>()));
         services.AddSingleton<VoiceTranslationViewModel>();
         // 翻訳ログ機能。 Roaming AppData 配下に TSV 形式で永続化 (Velopack 更新で消えない)。
         // IOptionsMonitor で RetentionDays を hot-reload するため Singleton 登録。
