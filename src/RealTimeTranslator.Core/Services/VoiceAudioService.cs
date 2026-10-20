@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Buffers.Binary;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
@@ -94,16 +95,19 @@ public sealed class VoiceAudioService : IVoiceAudioService
     private void CaptureFrame(Session session, ReadOnlySpan<byte> buffer, AudioClientBufferFlags flags)
     {
         if (!session.Active || buffer.IsEmpty) return;
+        byte[]? owned = null;
         try
         {
             // ネイティブバッファを即コピーし、変換後の配列もフレーム専用にする。
-            var owned = buffer.ToArray();
+            var activeLength = buffer.Length;
+            owned = ArrayPool<byte>.Shared.Rent(activeLength);
+            buffer.CopyTo(owned);
             var format = session.CaptureFormat!;
-            var frames = owned.Length / format.BlockAlign;
+            var frames = activeLength / format.BlockAlign;
             var mono = new float[frames];
             if ((flags & AudioClientBufferFlags.Silent) == 0)
             {
-                using var stream = new RawSourceWaveStream(new MemoryStream(owned, false), format);
+                using var stream = new RawSourceWaveStream(new MemoryStream(owned, 0, activeLength, false), format);
                 var provider = stream.ToSampleProvider();
                 var interleaved = new float[frames * format.Channels];
                 var count = provider.Read(interleaved);
@@ -121,6 +125,10 @@ public sealed class VoiceAudioService : IVoiceAudioService
         catch (Exception exception)
         {
             Fault(session, exception);
+        }
+        finally
+        {
+            if (owned is not null) ArrayPool<byte>.Shared.Return(owned);
         }
     }
 
@@ -149,6 +157,7 @@ public sealed class VoiceAudioService : IVoiceAudioService
     private void Fault(Session session, Exception exception)
     {
         if (!session.Deactivate()) return;
+        var outputDiagnostics = exception.Data;
         // キャプチャ／再生スレッド上で Dispose を呼ぶと、自分自身の終了待ちになる。
         _ = Task.Run(async () =>
         {
@@ -168,7 +177,22 @@ public sealed class VoiceAudioService : IVoiceAudioService
             }
             try
             {
-                ErrorReceived?.Invoke(session.Id, exception);
+                try
+                {
+                    var details = outputDiagnostics.Contains("OutputQueuedMilliseconds")
+                        ? $" queuedMs={outputDiagnostics["OutputQueuedMilliseconds"]:F1} incomingMs={outputDiagnostics["OutputIncomingMilliseconds"]:F1}"
+                            + $" pcmPeak={outputDiagnostics["OutputInputPeak"]:F6} silent={outputDiagnostics["OutputInputSilent"]}"
+                            + $" readCalls={outputDiagnostics["OutputReadCalls"]} consumedSamples={outputDiagnostics["OutputReadSamples"]}"
+                            + $" lastReadAgeMs={outputDiagnostics["OutputLastReadAgeMilliseconds"]:F1}"
+                            + $" outputRate={outputDiagnostics["OutputSampleRate"]} inputRate={outputDiagnostics["OutputInputSampleRate"]}"
+                        : string.Empty;
+                    LoggerService.LogException($"ボイス通訳の音声入出力を停止: session={session.Id}{details}", exception);
+                }
+                finally
+                {
+                    // 診断ログが失敗しても、停止状態と利用者へのエラー通知は維持する。
+                    ErrorReceived?.Invoke(session.Id, exception);
+                }
             }
             catch (Exception handlerException)
             {
@@ -296,6 +320,9 @@ public sealed class VoiceAudioService : IVoiceAudioService
         private bool _muted;
         private int _inputSampleRate;
         private StreamingResampler? _resampler;
+        private long _readCalls;
+        private long _readSamples;
+        private long _lastReadTimestamp;
         public WaveFormat WaveFormat { get; } = WaveFormat.CreateIeeeFloatWaveFormat(sampleRate, 1);
 
         public void Append(byte[] pcm16, int inputSampleRate)
@@ -305,7 +332,7 @@ public sealed class VoiceAudioService : IVoiceAudioService
                 if (_muted) return;
                 // 大きすぎる受信を変換前に拒否し、変換用配列も上限以内に保つ。
                 if ((long)pcm16.Length * sampleRate / (sizeof(short) * inputSampleRate) > _buffer.Length - _count)
-                    throw new IOException("音声出力が2秒の上限を超えたため、仮想マイクへの出力を停止しました。");
+                    throw CreateOverflowException("音声出力が2秒の上限を超えたため、仮想マイクへの出力を停止しました。", pcm16, inputSampleRate);
                 if (_inputSampleRate != inputSampleRate)
                 {
                     if (_count != 0)
@@ -318,10 +345,30 @@ public sealed class VoiceAudioService : IVoiceAudioService
                     samples[i] = BinaryPrimitives.ReadInt16LittleEndian(pcm16.AsSpan(i * sizeof(short))) / 32768f;
                 if (_resampler is not null) samples = _resampler.Resample(samples);
                 if (samples.Length > _buffer.Length - _count)
-                    throw new IOException("音声出力バッファの上限を超えました。");
+                    throw CreateOverflowException("音声出力バッファの上限を超えました。", pcm16, inputSampleRate);
                 foreach (var sample in samples)
                     _buffer[(_start + _count++) % _buffer.Length] = sample;
             }
+        }
+
+        // PCM 本文は保存せず、過負荷時だけ無音・受信量・再生の進捗を記録する。
+        private IOException CreateOverflowException(string message, byte[] pcm16, int inputSampleRate)
+        {
+            int peak = 0;
+            for (var i = 0; i < pcm16.Length; i += sizeof(short))
+                peak = Math.Max(peak, Math.Abs((int)BinaryPrimitives.ReadInt16LittleEndian(pcm16.AsSpan(i, sizeof(short)))));
+            var exception = new IOException(message);
+            exception.Data["OutputQueuedMilliseconds"] = _count * 1000d / sampleRate;
+            exception.Data["OutputIncomingMilliseconds"] = pcm16.Length * 1000d / (sizeof(short) * inputSampleRate);
+            exception.Data["OutputInputPeak"] = peak / 32768d;
+            exception.Data["OutputInputSilent"] = peak == 0;
+            exception.Data["OutputReadCalls"] = _readCalls;
+            exception.Data["OutputReadSamples"] = _readSamples;
+            exception.Data["OutputLastReadAgeMilliseconds"] = _lastReadTimestamp == 0
+                ? -1d : Stopwatch.GetElapsedTime(_lastReadTimestamp).TotalMilliseconds;
+            exception.Data["OutputSampleRate"] = sampleRate;
+            exception.Data["OutputInputSampleRate"] = inputSampleRate;
+            return exception;
         }
 
         public int Read(Span<byte> buffer)
@@ -335,6 +382,9 @@ public sealed class VoiceAudioService : IVoiceAudioService
                     samples[i] = _buffer[(_start + i) % _buffer.Length];
                 _start = (_start + available) % _buffer.Length;
                 _count -= available;
+                _readCalls++;
+                _readSamples += available;
+                _lastReadTimestamp = Stopwatch.GetTimestamp();
                 return buffer.Length;
             }
         }

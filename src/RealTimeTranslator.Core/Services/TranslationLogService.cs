@@ -207,6 +207,20 @@ public sealed class TranslationLogService : ITranslationLogger, IAsyncDisposable
         return tcs.Task;
     }
 
+    private Task EnqueueAsync(Func<Task> action)
+    {
+        var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (!_writeChannel.Writer.TryWrite(async () =>
+        {
+            try { await action().ConfigureAwait(false); tcs.SetResult(); }
+            catch (Exception ex) { tcs.SetException(ex); }
+        }))
+        {
+            tcs.SetException(new InvalidOperationException("TranslationLogService の書き込みチャネルが閉じています。"));
+        }
+        return tcs.Task;
+    }
+
     private async Task<IReadOnlyList<TranslationLogEntry>> ReadAllInternalAsync(int? maxEntries)
     {
         if (!Directory.Exists(LogDirectory)) return Array.Empty<TranslationLogEntry>();
@@ -275,16 +289,7 @@ public sealed class TranslationLogService : ITranslationLogger, IAsyncDisposable
     {
         // Phase 6 レビュー #R-C1 対応: Cleanup を Channel 経由で直列化することで、
         // Append/ClearAll との実行順序が保証される。 await した完了通知も含めて返す。
-        var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        if (!_writeChannel.Writer.TryWrite(async () =>
-        {
-            try { await PerformRetentionCleanupInternalAsync().ConfigureAwait(false); tcs.SetResult(); }
-            catch (Exception ex) { tcs.SetException(ex); }
-        }))
-        {
-            tcs.SetException(new InvalidOperationException("TranslationLogService の書き込みチャネルが閉じています。"));
-        }
-        return tcs.Task;
+        return EnqueueAsync(PerformRetentionCleanupInternalAsync);
     }
 
     private async Task PerformRetentionCleanupInternalAsync()
@@ -331,16 +336,7 @@ public sealed class TranslationLogService : ITranslationLogger, IAsyncDisposable
     {
         // Phase 6 レビュー #R-C1 対応: ClearAll を Channel 経由で直列化することで、
         // 「ClearAll 完了 → 後続 Append」の順序が確実になり、 削除直後の Append が消えるエントリの「先に書き込まれて消されない」事故も無くなる。
-        var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        if (!_writeChannel.Writer.TryWrite(async () =>
-        {
-            try { await ClearAllInternalAsync().ConfigureAwait(false); tcs.SetResult(); }
-            catch (Exception ex) { tcs.SetException(ex); }
-        }))
-        {
-            tcs.SetException(new InvalidOperationException("TranslationLogService の書き込みチャネルが閉じています。"));
-        }
-        return tcs.Task;
+        return EnqueueAsync(ClearAllInternalAsync);
     }
 
     private async Task ClearAllInternalAsync()

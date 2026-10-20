@@ -447,7 +447,8 @@ public class AudioCaptureService : IAudioCaptureService
 
         var packetCount = Interlocked.Increment(ref _packetCount);
         var isSilent = (flags & AudioClientBufferFlags.Silent) != 0;
-        if (packetCount % 500 == 0 || isSilent)
+        var debugEnabled = LoggerService.IsEnabled(LogLevel.Debug);
+        if (debugEnabled && (packetCount % 500 == 0 || isSilent))
         {
             LoggerService.LogDebug($"[Packet] #{packetCount} IsSilent={isSilent}, Flags={flags}, Bytes={buffer.Length}, DevicePosition={devicePosition}, QpcPosition={qpcPosition}");
         }
@@ -466,7 +467,8 @@ public class AudioCaptureService : IAudioCaptureService
             var callCount = Interlocked.Increment(ref _dataAvailableCallCount);
             if (callCount == 1)
             {
-                LoggerService.LogDebug($"[Capture] WaveFormat: Encoding={sourceFormat.Encoding}, SampleRate={sourceFormat.SampleRate}, Channels={sourceFormat.Channels}, BitsPerSample={sourceFormat.BitsPerSample}");
+                if (debugEnabled)
+                    LoggerService.LogDebug($"[Capture] WaveFormat: Encoding={sourceFormat.Encoding}, SampleRate={sourceFormat.SampleRate}, Channels={sourceFormat.Channels}, BitsPerSample={sourceFormat.BitsPerSample}");
                 // D-C1 止血: 上層 (TranslationPipelineService) の StreamingResampler は 48000Hz 固定でハードコードされている。
                 // Hi-Res オーディオ (96kHz/192kHz) や CD レート (44.1kHz) device が default playback だと
                 // 時間軸が歪み VAD / transcribe 精度が崩壊する経路。 検知時に WARN ログを 1 度だけ残す。
@@ -476,7 +478,7 @@ public class AudioCaptureService : IAudioCaptureService
                     LoggerService.LogWarning($"[Capture] ⚠️ 想定外の SampleRate を検出: {sourceFormat.SampleRate}Hz (期待値 48000Hz)。 リサンプラが 48k 前提のため、 VAD 判定や字幕精度が劣化する可能性があります。 Windows サウンド設定で playback device を 48kHz に変更することを推奨します。");
                 }
             }
-            var logHex = callCount <= 3 || callCount % 100 == 0;
+            var logHex = debugEnabled && (callCount <= 3 || callCount % 100 == 0);
             if (logHex)
             {
                 var len = Math.Min(16, bytesRecorded);
@@ -505,12 +507,15 @@ public class AudioCaptureService : IAudioCaptureService
                 {
                     // 16bit PCM の生値範囲はログ出力時のみ取得（毎チャンクの全走査を排除）。
                     var (raw16Min, raw16Max) = GetRaw16BitRange(bufferCopy, bytesRecorded, sourceFormat);
-                    var sum = 0f;
-                    for (var i = 0; i < samples.Length; i++)
-                        sum += Math.Abs(samples[i]);
-                    var avg = samples.Length > 0 ? sum / samples.Length : 0f;
-                    var raw16Str = raw16Min.HasValue ? $", raw16=[{raw16Min.Value},{raw16Max!.Value}]" : "";
-                    LoggerService.LogDebug($"[Capture] OnDataAvailable #{callCount}: bytes={bytesRecorded}, samples={samples.Length}, max={max:F6}, avg={avg:F6}{raw16Str}");
+                    if (debugEnabled)
+                    {
+                        var sum = 0f;
+                        for (var i = 0; i < samples.Length; i++)
+                            sum += Math.Abs(samples[i]);
+                        var avg = samples.Length > 0 ? sum / samples.Length : 0f;
+                        var raw16Str = raw16Min.HasValue ? $", raw16=[{raw16Min.Value},{raw16Max!.Value}]" : "";
+                        LoggerService.LogDebug($"[Capture] OnDataAvailable #{callCount}: bytes={bytesRecorded}, samples={samples.Length}, max={max:F6}, avg={avg:F6}{raw16Str}");
+                    }
                     // raw16 が -1～1 のみで再生の有無で変わらない場合は、実音ではなくドライバのプレースホルダーと判断
                     if (!_loggedPlaceholderWarning && raw16Min.HasValue && raw16Max.HasValue
                         && raw16Min.Value >= -1 && raw16Max.Value <= 1 && (raw16Min.Value < 0 || raw16Max.Value > 0))
@@ -548,7 +553,8 @@ public class AudioCaptureService : IAudioCaptureService
                     {
                         _audioBuffer.Dequeue();
                     }
-                    LoggerService.LogDebug($"Audio buffer overflow prevented: removed {excessSamples} samples");
+                    if (debugEnabled)
+                        LoggerService.LogDebug($"Audio buffer overflow prevented: removed {excessSamples} samples");
                 }
 
                 // 一定量のデータが溜まったらイベントを発火（Queue.Dequeue は O(1)）

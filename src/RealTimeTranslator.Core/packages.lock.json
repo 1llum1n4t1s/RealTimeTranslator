@@ -2,19 +2,13 @@
   "version": 1,
   "dependencies": {
     "net10.0-windows10.0.20348": {
-      "1llum1n4t1s.NAudio": {
+      "1llum1n4t1s.NAudio.Wasapi": {
         "type": "Direct",
         "requested": "[4.0.8, )",
         "resolved": "4.0.8",
-        "contentHash": "/ac+qv0tNZPiu0Bf0i4iZgdKb3Qp7HMsRp4vGorIkeT99abZQmc1InmpZTHFyWFMyIf3fuJb//EsNX3L9I9mZg==",
+        "contentHash": "1HIJ4SwW4KUY0gpVW7TA04f3ucOx1rGC5UeHhcaiPov0mrcRhAKS/H46HSTfmkFaaGlWBlTkWzZJ7HsJKyDzVA==",
         "dependencies": {
-          "1llum1n4t1s.NAudio.Asio": "4.0.8",
-          "1llum1n4t1s.NAudio.Core": "4.0.8",
-          "1llum1n4t1s.NAudio.Dmo": "4.0.8",
-          "1llum1n4t1s.NAudio.Midi": "4.0.8",
-          "1llum1n4t1s.NAudio.Wasapi": "4.0.8",
-          "1llum1n4t1s.NAudio.WinForms": "4.0.8",
-          "1llum1n4t1s.NAudio.WinMM": "4.0.8"
+          "1llum1n4t1s.NAudio.Core": "4.0.8"
         }
       },
       "Microsoft.ML.OnnxRuntime": {
@@ -43,61 +37,12 @@
         "resolved": "10.0.13",
         "contentHash": "aUSmC6cPjFLSE0rDTsmkR3wvUOnscqewebOaaELEToh12sNmoltZqT3f0C81mJ1zhxKjWco25soHTvYwsXCsUw=="
       },
-      "1llum1n4t1s.NAudio.Asio": {
-        "type": "Transitive",
-        "resolved": "4.0.8",
-        "contentHash": "8hAZtJ1m3CtiiH9j4pQAL9L0FKh9y1/Is4EFGsaCUTxod8EYMyEjWFalVF0OTH1o+99I7Ds+tVIyxr5WrVenUQ==",
-        "dependencies": {
-          "1llum1n4t1s.NAudio.Core": "4.0.8"
-        }
-      },
       "1llum1n4t1s.NAudio.Core": {
         "type": "Transitive",
         "resolved": "4.0.8",
         "contentHash": "neuGiCA5twJUYmWrlwT9hsZ+FOEfjK6PnVQHGiYlTjg0b1nr9FKS5KvFWbrxPWnjfB8AX83PQ64L+WrNWGAtjA==",
         "dependencies": {
           "System.Numerics.Tensors": "10.0.13"
-        }
-      },
-      "1llum1n4t1s.NAudio.Dmo": {
-        "type": "Transitive",
-        "resolved": "4.0.8",
-        "contentHash": "QPHnWp8k8tSedAdGiXAbcX/q+MNVRFUPzK5ZbduFjiVO4A5o3bhfuLEEd3oFGWSpuFXptLCBMF7E3RES1czE7Q==",
-        "dependencies": {
-          "1llum1n4t1s.NAudio.Core": "4.0.8"
-        }
-      },
-      "1llum1n4t1s.NAudio.Midi": {
-        "type": "Transitive",
-        "resolved": "4.0.8",
-        "contentHash": "9ex068cwxa/e0vca4QVe3oyreqt5BOt31NbRjrhz7bTbJtlU5etwJK51pm30mpTU9y2NZSOud1lxtj9r6ds6ig==",
-        "dependencies": {
-          "1llum1n4t1s.NAudio.Core": "4.0.8"
-        }
-      },
-      "1llum1n4t1s.NAudio.Wasapi": {
-        "type": "Transitive",
-        "resolved": "4.0.8",
-        "contentHash": "1HIJ4SwW4KUY0gpVW7TA04f3ucOx1rGC5UeHhcaiPov0mrcRhAKS/H46HSTfmkFaaGlWBlTkWzZJ7HsJKyDzVA==",
-        "dependencies": {
-          "1llum1n4t1s.NAudio.Core": "4.0.8"
-        }
-      },
-      "1llum1n4t1s.NAudio.WinForms": {
-        "type": "Transitive",
-        "resolved": "4.0.8",
-        "contentHash": "3THrW7Ty1WFtPk3pFsrs9qV0IxI8qrD9IzwCXpcCDpqKjDbin//qWFSUy8bphrqIcAHKyox1uenCksgAoHGbjw==",
-        "dependencies": {
-          "1llum1n4t1s.NAudio.WinMM": "4.0.8"
-        }
-      },
-      "1llum1n4t1s.NAudio.WinMM": {
-        "type": "Transitive",
-        "resolved": "4.0.8",
-        "contentHash": "5JppVf/W9dryE79QUxBSlXH06Zy39eKWJVvcgC7PGftVAVKwVf9jiek5m/B5Yu6MKhNjDBiMKy4F4jnmeXUVIQ==",
-        "dependencies": {
-          "1llum1n4t1s.NAudio.Core": "4.0.8",
-          "1llum1n4t1s.NAudio.Midi": "4.0.8"
         }
       },
       "Microsoft.Extensions.DependencyInjection": {

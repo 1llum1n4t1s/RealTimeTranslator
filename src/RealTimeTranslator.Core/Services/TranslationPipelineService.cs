@@ -1235,6 +1235,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
 
             // newPortion を句点で分割して、 完結した文ごとに emit する。
             emissions = new List<(string, string, bool)>();
+            string pendingTrailing = string.Empty;
             int start = 0;
             for (int i = 0; i < newPortion.Length; i++)
             {
@@ -1292,24 +1293,26 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                         // 累積 done (OpenAI 等、 transcript 非空) の trailing は本当に未完結なので partial のまま。
                         // 次回の累積 done で続きが届くため SegmentId は据え置き。
                         emissions.Add((_currentSegmentId, trailing, false));
+                        pendingTrailing = trailing;
                     }
                 }
             }
 
-            // partial 表示用の delta 蓄積はクリア (次の done までの partial 用に再使用)
+            // 累積全文から取り直した未完末尾を保持し、次の delta / idle / 停止で確定できるようにする。
             _accumulatedText.Clear();
+            _accumulatedText.Append(pendingTrailing);
             _lastEmitTime = DateTime.MinValue;
             _hasPendingDelta = false;
             _throttleTimer.Change(Timeout.Infinite, Timeout.Infinite);
             ScheduleIdleFinalize();
             _latencyStopwatch.Reset();
-            foreach (var (segmentId, text, _) in emissions)
+            foreach (var (segmentId, text, isSentenceEnd) in emissions)
                 _pendingSubtitleNotifications.Enqueue(new SubtitleItem
                 {
                     SegmentId = segmentId,
-                    OriginalText = string.Empty,
-                    TranslatedText = text,
-                    IsFinal = true,
+                    OriginalText = isSentenceEnd ? string.Empty : text,
+                    TranslatedText = isSentenceEnd ? text : string.Empty,
+                    IsFinal = isSentenceEnd,
                 });
         }
 
@@ -1875,7 +1878,8 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         // ms 値をフレーム数換算 (最低 1 / 0 を保証)。 frameMs は VAD の RequiredFrameSize と
         // SampleRate から動的計算するため、 別 VAD (例: v4 / 8kHz モード) に差し替えても破綻しない。
         double frameMs = frameSeconds * 1000.0;
-        int preRollCapacity = Math.Max(1, (int)(settings.VadPreRollMs / frameMs));
+        // 指定した冒頭保持時間を下回らないよう切り上げる (50ms は32msフレームを2つ保持)。
+        int preRollCapacity = Math.Max(1, (int)Math.Ceiling(settings.VadPreRollMs / frameMs));
         int hangoverFrames = Math.Max(0, (int)(settings.VadHangoverMs / frameMs));
 
 

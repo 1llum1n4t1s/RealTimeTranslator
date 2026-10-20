@@ -7,7 +7,8 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="1llum1n4t1s.NAudio" Version="4.0.8" />
+    <!-- 使用する WASAPI と Core だけを参照し、未使用の音声バックエンドを配布しない。 -->
+    <PackageReference Include="1llum1n4t1s.NAudio.Wasapi" Version="4.0.8" />
     <!-- FireRed VAD 推論用 (CPU 版、ネイティブ DLL は win-x64 のみ実質使用) -->
     <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.31.0" />
     <PackageReference Include="SuperLightLogger" Version="1.0.17" />

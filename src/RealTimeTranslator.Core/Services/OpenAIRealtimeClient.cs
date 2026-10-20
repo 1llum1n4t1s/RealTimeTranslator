@@ -978,7 +978,7 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeSpeechTranslator
     /// セッション張り替えタイマー発火 (~55 分): OpenAI の 60 分セッション上限で session_expired により
     /// サーバーに切られる前に、 こちらから先回りして新セッションへ張り替える (プロアクティブ再接続)。
     /// reactive 再接続と同じ TryReconnectAsync 経路を使うが、 state を Reconnecting に倒し、
-    /// 再接続カウンタを 0 に戻して最小遅延 (ReconnectDelayMs) で張り替える。
+    /// 再接続カウンタを 0 に戻し、初回の待機なしで張り替える。
     /// </summary>
     private void OnSessionRefreshTimerElapsed(object? state)
     {
@@ -988,10 +988,10 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeSpeechTranslator
         Logger.Info($"セッションが約 {SessionRefreshInterval.TotalMinutes:F0} 分に到達 — 60 分上限前にプロアクティブ再接続を実行");
         Interlocked.Exchange(ref _reconnectAttempts, 0);
         SetState(ConnectionState.Reconnecting);
-        _ = Task.Run(() => TryReconnectAsync(), CancellationToken.None);
+        _ = Task.Run(() => TryReconnectAsync(skipInitialDelay: true), CancellationToken.None);
     }
 
-    private async Task TryReconnectAsync()
+    private async Task TryReconnectAsync(bool skipInitialDelay = false)
     {
         // CompareExchange で複数経路（ReceiveLoop 終了 + 末尾の再試行）から同時に呼ばれても
         // 1 つだけが実行される。while ループで全試行を消費し、末尾の自己再帰起動を排除する。
@@ -1023,6 +1023,12 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeSpeechTranslator
                 // Random.Shared は thread-safe (.NET 6+)。
                 var jitterPercent = (Random.Shared.NextDouble() * 0.4) - 0.2;
                 var delay = (int)Math.Clamp(baseDelay * (1.0 + jitterPercent), 100, 30000);
+                // 予定更新の初回は障害回復待ちが不要。失敗後の再試行は通常の backoff を使う。
+                if (skipInitialDelay)
+                {
+                    delay = 0;
+                    skipInitialDelay = false;
+                }
                 Logger.Info($"再接続試行 {currentAttempt}/{_settings.MaxReconnectAttempts}（{delay}ms 後、base={baseDelay}ms）");
 
                 // ⭐ rere P1 #7: Task.Delay と _connectLock.WaitAsync の両方に CancellationToken を渡して、

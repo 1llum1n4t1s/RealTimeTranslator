@@ -823,7 +823,6 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 LoggerService.LogInfo($"RefreshProcesses: オーディオセッションを持つプロセス {allProcesses.Count} 個を特定（自分自身を除外）");
 
                 var processList = new List<ProcessInfo>();
-                var processNames = new Dictionary<string, int>();
 
                 foreach (var p in allProcesses)
                 {
@@ -837,12 +836,6 @@ public partial class MainViewModel : ObservableObject, IDisposable
                         // FileVersionInfo.ProductName / FileDescription を試行 (例: "Google Chrome", "Discord")。
                         // SYSTEM 権限プロセスや x64/x86 mix で取れないケースがあるので失敗は無視。
                         var productName = TryGetProductName(p);
-
-                        if (!processNames.ContainsKey(name))
-                        {
-                            processNames[name] = 0;
-                        }
-                        processNames[name]++;
 
                         // セッション所有者がそのまま CaptureProcessId。子プロセスの音声も含まれる。
                         processList.Add(new ProcessInfo

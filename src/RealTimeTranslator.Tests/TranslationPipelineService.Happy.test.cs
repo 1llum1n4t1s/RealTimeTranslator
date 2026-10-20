@@ -141,28 +141,26 @@ public sealed class TranslationPipelineServiceHappyTests
         Assert.AreEqual("追加文。", finals[0].TranslatedText, "delta確定済み2文を除いた差分のみ");
     }
 
-    // v1.0.24-26 の最大寿命タイマー / partial 連結方式テストは v1.0.27 で削除済み (棚卸し結論)。
-    // 「server gap で trailing が永遠に未確定」問題は v1.0.27 の無音 PCM 継続送信で server に delta
-    // 引き出しを要求する設計に置換。 client 側で強制確定する経路は廃止された。
-
-    /// <happypath category="done-no-terminator-trailing" description="句点なしdoneは差分全体をtrailing確定としてemit" expected="IsFinal『まいど』が1件" />
+    // 非空の累積 done の末尾は partial に保ち、句読点・空 done・idle・停止で確定する。
+    /// <happypath category="done-no-terminator-trailing" description="句点なし累積doneはpartialとしてemit" expected="未確定『まいど』が1件" />
     [TestMethod]
     [TestCategory("Happy")]
-    public void OnTranscriptCompleted_句点なし累積全文_trailingをIsFinalでemitすること()
+    public void OnTranscriptCompleted_句点なし累積全文_trailingをpartialでemitすること()
     {
         var (pipeline, transcriber, emitted) = CreatePipeline();
 
         // Act: 句点を含まない累積全文がdoneで届く
         transcriber.RaiseDone("まいど");
 
-        // Assert: done文脈ではtrailing「まいど」をIsFinal=trueでemit
-        var finals = emitted.Where(x => x.IsFinal).ToList();
-        Assert.AreEqual(1, finals.Count, "句点なしdoneは差分全体をtrailing確定として1件emit");
-        Assert.AreEqual("まいど", finals[0].TranslatedText);
-        Assert.IsTrue(finals[0].IsFinal);
+        // Assert: 未完結の末尾は表示できるpartialとし、確定ログへ流さない。
+        Assert.AreEqual(0, emitted.Count(x => x.IsFinal));
+        var partial = emitted.Single(x => !x.IsFinal);
+        Assert.AreEqual("まいど", partial.OriginalText);
+        Assert.AreEqual("まいど", partial.DisplayText);
+        Assert.AreEqual(string.Empty, partial.TranslatedText);
     }
 
-    /// <happypath category="done-sentence-plus-trailing" description="done差分が『完結文。+未完trailing』のとき完結文とtrailingを分けてemit" expected="IsFinal2件、『はい。』と『つづき』、別SegmentId" />
+    /// <happypath category="done-sentence-plus-trailing" description="完結文と未完末尾を分けてemit" expected="確定『はい。』とpartial『つづき』、別SegmentId" />
     [TestMethod]
     [TestCategory("Happy")]
     public void OnTranscriptCompleted_文末trailing付き累積_完結文をemitしtrailingは未確定で保持すること()
@@ -172,11 +170,12 @@ public sealed class TranslationPipelineServiceHappyTests
         // Act: 完結文 + 句点なしtrailing の累積全文がdoneで届く
         transcriber.RaiseDone("はい。つづき");
 
-        // Assert: 完結文「はい。」とtrailing「つづき」が両方emit(done時はtrailingも即IsFinal)
+        // Assert: 完結文だけを確定し、末尾は同じSegmentIdで続けられるpartialにする。
         var finals = emitted.Where(x => x.IsFinal).ToList();
-        Assert.AreEqual(2, finals.Count, "完結文1 + trailing1 で2件emit");
+        Assert.AreEqual(1, finals.Count, "完結文だけを確定する");
         Assert.AreEqual("はい。", finals[0].TranslatedText, "1件目は完結文");
-        Assert.AreEqual("つづき", finals[1].TranslatedText, "2件目はtrailing");
-        Assert.AreNotEqual(finals[0].SegmentId, finals[1].SegmentId, "完結文とtrailingは別SegmentId");
+        var partial = emitted.Single(x => !x.IsFinal);
+        Assert.AreEqual("つづき", partial.DisplayText, "2件目は未完末尾");
+        Assert.AreNotEqual(finals[0].SegmentId, partial.SegmentId, "完結文とtrailingは別SegmentId");
     }
 }

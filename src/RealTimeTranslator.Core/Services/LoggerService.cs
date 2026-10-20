@@ -287,6 +287,8 @@ public static class LoggerService
         }
     }
 
+    internal static bool IsEnabled(LogLevel level) => level >= MinLogLevel;
+
     /// <summary>
     /// ログを出力する
     /// </summary>
@@ -294,7 +296,7 @@ public static class LoggerService
     /// <param name="level">ログレベル（デフォルト: Info）</param>
     public static void Log(string message, LogLevel level = LogLevel.Info)
     {
-        if (level < MinLogLevel)
+        if (!IsEnabled(level))
             return;
 
         if (Volatile.Read(ref _isConfigured) == 0) Initialize();
