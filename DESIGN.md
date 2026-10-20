@@ -38,7 +38,11 @@ RealTimeTranslator は、Windows 上で指定したプロセスの再生音声�
 → Wave Link 3 の翻訳専用再生チャンネル → その音声だけを含む Chat Mix → ゲーム
 ```
 
-マイクを native callback からネットワークへ直接送らず、処理 task で変換・送信する。ボイス通訳は独立した PTT ゲートを使用し、字幕用 VAD の状態・プリセットを変更しない。キーを離した後も無音 PCM を送り、翻訳の末尾を出力させる。リサンプラに残った実音もキー閉鎖中は送らない。原音モードは API を経由せず、ミュートは出力しない。モード変更時は一旦ミュートしてキューを消去し、古い接続の遅延出力を破棄する。
+マイクを native callback からネットワークへ直接送らず、処理 task で変換・送信する。ボイス通訳は独立した PTT ゲートを使用し、字幕用 VAD の状態・個別設定を変更しない。発話キーは UI が実際のキー入力から通常キー1つと修飾キーを登録し、`PushToTalkVirtualKey` と `PushToTalkModifiers` に保存する。旧設定は修飾キーなしとして引き継ぐ。マイク取得時にすべての指定キーの押下を確認して送信許可を固定する。キーを離した後も無音 PCM を送り、翻訳の末尾を出力させる。リサンプラに残った実音もキー閉鎖中は送らない。原音モードは API を経由せず、ミュートは出力しない。モード変更時は一旦ミュートしてキューを消去し、古い接続の遅延出力を破棄する。
+
+訳音声の任意のライブ試聴は `IVoicePlaybackService` / `VoicePlaybackService` の独立した WASAPI 再生を使い、訳音声の同じ PCM16 をゲーム送話と試聴へ渡す。試聴先 ID だけを設定へ保存し、オン状態は永続化しない。試聴は利用可能な Windows の再生機器を対象とし、hardware ID で確認できた Wave Link 関連機器と、送話先と同じ ID を除外する。列挙・開始で同じ条件を使い、既定機器には fallback しない。RDP や仮想ヘッドホンを物理 bus がない理由だけで拒否しない。送話側の厳密な Wave Link 判定は変更しない。試聴用バッファは最大2秒とし、機器消失・過負荷は試聴のみ停止させる。世代付きエラーを確認し、通訳停止・モード変更時は試聴の残留音も消去する。試聴だけの停止や失敗で送話・字幕の client を停止しない。
+
+ボイス通訳の入力・出力ゲインは `VoiceTranslationSettings` の独立した2フィールドに保存し、clone に含める。範囲は各−24～+24 dB、既定0 dBとし、非有限値は0 dBへ正規化する。入力ゲインは処理 task の48 kHz mono floatへリサンプル前に適用する。PTT閉鎖中はリサンプラの残留も含めて無音化し、ゲインで送信許可を変えない。出力ゲインは受信元配列を変更せずPCM16へ適用し、同じ調整済みPCMを送話・試聴へ渡す。原音モードにも両ゲインを適用する。ゲイン変更は実行中に反映し、clientの再接続や字幕設定の変更を伴わない。UIは適用後ピークのdBFSメーター、1.5秒保持のclip表示、各0 dBリセットを備える。
 
 機器は ID で明示選択し、入力から Wave Link の録音ミックスを除外、出力は Wave Link 3 の仮想再生チャンネルに限定する。利用者が変更できる endpoint 表示名や adapter の表示文字列を識別の正本にせず、endpoint の `DeviceTopology.GetConnector(0).ConnectedToDeviceId` で接続先音声アダプターを解決し、その `PKEY_Device_InstanceId` から Windows Configuration Manager で PnP 親を辿る。`USB\VID_0FD9&PID_0096` または `TUSBAUDIO_ENUM\VID_0FD9&PID_0096&KS` の hardware ID を確認し、元の endpoint の方向と `PKEY_Device_DeviceDesc` を使う。render は `System` / `Music` / `Browser` / `Voice Chat` / `SFX` / `Game` / `Aux 1` / `Aux 2` だけを許可し、`Wave Mic 1`〜`4` と録音ミックスを送信先にしない。同じ仮想機器の capture は入力候補から一括で除外する。列挙時・開始時に同じ判定を使い、接続先・親・属性を確認できない機器は許可しない。
 
@@ -88,6 +92,8 @@ OpenAI の `/v1/realtime/translations` は標準 Realtime endpoint と wire cont
 入力ゲインはリサンプル前の mono float に一度だけ適用し、VAD と送信の双方が同じ信号を見るようにします。自動 limiter は置かず、ゲイン後ピークと clip 表示を見てユーザーが調整します。
 
 OpenAI セッションでは VAD と送信用のリサンプラを48 kHz入力から並列に処理します。16 kHz を経由して24 kHzを作ると8 kHzより上の帯域を復元できず、OpenAIへ送る情報量を減らすためです。
+
+VADの閾値・pre-roll・hangoverは独立したドロップダウンで編集し、一括プリセットによる上書きを廃止する。既定は0.8 / 50 ms / 200 ms。時間はFireRed VAD公式ストリーミング設定の pad_start_frame=5 / min_silence_frame=20（10 ms単位）に合わせるが、本アプリの最大確率判定・32 msゲートは公式の平滑化・最短発話判定とは異なる。pre-rollは不足しないようフレーム数を切り上げ、50 msで2フレーム=64 msを保持する。hangoverは既存の最初の無音フレーム＋追加フレームの計数を維持し、200 ms設定では合計224 ms相当となる。旧 `VadPreset` は読込時の移行専用nullableフィールドとし、Custom以外では閾値を維持して時間を新既定値へ一度だけ移行する。Customは3値を維持し、移行後はnullを保存から省略して個別選択を尊重する。既存の独自値も選択肢へ含める。
 
 VAD gate は次の情報を組み合わせます。
 

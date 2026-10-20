@@ -8,7 +8,7 @@
 - `implementation_details.md`
 - `missing_implementation_details.md`
 - `project_structure.md`
-- `release_guide.md`（リリース手順のみ参考可。Velopack の最新フローは `.github/workflows/velopack-release.yml` を正とする）
+- `release_guide.md`（過去の手順として参考可。現行の署名・配信フローは [`scripts/release-local.ps1`](../scripts/release-local.ps1) を正とする）
 - `naudio_replacement_candidates.md`
 - `process_loopback_thread_investigation.md`
 - `setup_guide.md`
@@ -21,8 +21,8 @@
 ## 最新のドキュメントは
 
 - アプリ全体の動作: ルートの [`README.md`](../README.md)
-- 開発者向け規約: ルートの [`CLAUDE.md`](../CLAUDE.md)
-- ビルド・公開手順: [`.github/workflows/`](../.github/workflows/)
+- 開発者向け規約: ルートの [`AGENTS.md`](../AGENTS.md)
+- ビルド・公開手順: [`AGENTS.md`](../AGENTS.md) と [`scripts/release-local.ps1`](../scripts/release-local.ps1)
 
 ## このアーカイブを残している理由
 

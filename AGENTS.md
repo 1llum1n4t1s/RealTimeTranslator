@@ -74,7 +74,7 @@ rg -n --fixed-strings '"net10.0-windows10.0.20348/win-x64"' src -g packages.lock
 
 - FireRed VAD のストリーミング用 ONNX と CMVN を同梱する。外部フレームは 16 kHz / 512 samples を維持し、内部では 25 ms 窓 / 10 ms 刻みの 80 bin Fbank と推論 cache を使う。`StartAsync` ごとに detector の特徴量履歴・cache と両リサンプラをリセットする。前処理は公式 Kaldi の窓・振幅・CMVN と照合する。
 - 無音 PCM の padding 送信中も実音を pre-roll へ保持し、次の発話検出時に現在フレームと一つの PCM バッチで復元する。ゼロ PCM 送信と実音保存を両立させ、OpenAI client の bounded queue への連続 enqueue で復元した冒頭を押し出さない。
-- `VadPreset` が `Custom` 以外なら、`SettingsViewModel` の preset 定義を正本として threshold / pre-roll / hangover を sanitize 時にも強制同期する。preset 値を変えるときは3値の組み合わせと既存設定の移行挙動をまとめて検証する。
+- VAD の threshold / pre-roll / hangover は独立して選択・保存し、sanitize で別項目へ連動させない。旧 `VadPreset` は一度限りの読込移行専用とし、非 Custom は閾値を保って保持時間を新既定 50 / 200 ms へ移行、Custom は3値を保持する。移行後は旧キーを保存せず、一覧外の有効な既存値も選択肢として保持する。
 - VAD の pre-roll は発話冒頭、hangover は発話末尾、silence padding はOpenAI に保留出力を押し出させる役割を持つ。値を単独で削る前に `VadGate.test.cs` と文分割テストで相互作用を確認する。
 - delta の確定順は句読点、`MaxPartialChars`、OpenAI の完了通知、idle finalize。`ResolveIdleFinalizeMs` の不変条件 `idle <= 0` または `idle >= SilencePaddingMs + 1000` を維持する。
 - 字幕更新は `SegmentId` ごとに partial を置換し、final で確定する。通知は生成順にキューへ積み、ロック外で購読者へ渡す。停止時の通知完了待ちと、同期 callback からの Stop / Dispose 再入時に自身を待たない経路を維持する。
