@@ -13,12 +13,29 @@ public sealed class VoiceTranslationSettings
     public string MonitorOutputDeviceId { get; set; } = string.Empty;
     public float InputGainDb { get; set; }
     public float OutputGainDb { get; set; }
+    public bool EnableVad { get; set; } = true;
+    public float VadThreshold { get; set; } = 0.8f;
+    public int VadPreRollMs { get; set; } = 50;
+    public int VadHangoverMs { get; set; } = 200;
 
     public const float MinimumGainDb = -24f;
     public const float MaximumGainDb = 24f;
 
     public static float ClampGainDb(float value) => float.IsFinite(value)
         ? Math.Clamp(value, MinimumGainDb, MaximumGainDb) : 0f;
+
+    /// <summary>字幕側の設定へ触れず、マイク VAD の各値を独立して有効範囲へ収める。</summary>
+    public bool NormalizeVadSettings()
+    {
+        float threshold = float.IsFinite(VadThreshold) ? Math.Clamp(VadThreshold, 0f, 1f) : 0.8f;
+        int preRoll = Math.Clamp(VadPreRollMs, 0, 2000);
+        int hangover = Math.Clamp(VadHangoverMs, 0, 2000);
+        bool changed = VadThreshold != threshold || VadPreRollMs != preRoll || VadHangoverMs != hangover;
+        VadThreshold = threshold;
+        VadPreRollMs = preRoll;
+        VadHangoverMs = hangover;
+        return changed;
+    }
 
     public VoiceTranslationSettings Clone() => new()
     {
@@ -31,7 +48,11 @@ public sealed class VoiceTranslationSettings
         PushToTalkModifiers = PushToTalkModifiers,
         MonitorOutputDeviceId = MonitorOutputDeviceId,
         InputGainDb = InputGainDb,
-        OutputGainDb = OutputGainDb
+        OutputGainDb = OutputGainDb,
+        EnableVad = EnableVad,
+        VadThreshold = VadThreshold,
+        VadPreRollMs = VadPreRollMs,
+        VadHangoverMs = VadHangoverMs
     };
 }
 

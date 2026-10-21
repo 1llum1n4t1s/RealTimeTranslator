@@ -140,6 +140,55 @@
                     </StackPanel>
                 </HeaderedContentControl>
 
+                <HeaderedContentControl Header="マイクの発話検出（VAD）">
+                    <StackPanel Spacing="10">
+                        <CheckBox Content="翻訳モードでマイクの発話を検出する"
+                                  IsChecked="{Binding EnableVad, Mode=TwoWay}"
+                                  IsEnabled="{Binding CanEditSettings}"
+                                  AutomationProperties.Name="翻訳モードのマイク発話検出を有効にする"
+                                  AutomationProperties.AutomationId="VoiceVadEnabled"/>
+                        <StackPanel Spacing="6" IsEnabled="{Binding CanEditVadSettings}">
+                            <TextBlock Text="検出閾値"/>
+                            <ComboBox ItemsSource="{Binding VadThresholdOptions}"
+                                      SelectedItem="{Binding SelectedVadThreshold, Mode=TwoWay}"
+                                      HorizontalAlignment="Stretch"
+                                      AutomationProperties.Name="マイクの発話検出閾値"
+                                      AutomationProperties.AutomationId="VoiceVadThreshold">
+                                <ComboBox.ItemTemplate>
+                                    <DataTemplate x:DataType="vm:VadThresholdOption">
+                                        <TextBlock Text="{Binding Name}"/>
+                                    </DataTemplate>
+                                </ComboBox.ItemTemplate>
+                            </ComboBox>
+                            <TextBlock Text="発話冒頭の保持時間" Margin="0,4,0,0"/>
+                            <ComboBox ItemsSource="{Binding VadPreRollOptions}"
+                                      SelectedItem="{Binding SelectedVadPreRoll, Mode=TwoWay}"
+                                      HorizontalAlignment="Stretch"
+                                      AutomationProperties.Name="マイクの発話冒頭の保持時間"
+                                      AutomationProperties.AutomationId="VoiceVadPreRoll">
+                                <ComboBox.ItemTemplate>
+                                    <DataTemplate x:DataType="vm:VadDurationOption">
+                                        <TextBlock Text="{Binding Name}"/>
+                                    </DataTemplate>
+                                </ComboBox.ItemTemplate>
+                            </ComboBox>
+                            <TextBlock Text="発話末尾の保持時間" Margin="0,4,0,0"/>
+                            <ComboBox ItemsSource="{Binding VadHangoverOptions}"
+                                      SelectedItem="{Binding SelectedVadHangover, Mode=TwoWay}"
+                                      HorizontalAlignment="Stretch"
+                                      AutomationProperties.Name="マイクの発話末尾の保持時間"
+                                      AutomationProperties.AutomationId="VoiceVadHangover">
+                                <ComboBox.ItemTemplate>
+                                    <DataTemplate x:DataType="vm:VadDurationOption">
+                                        <TextBlock Text="{Binding Name}"/>
+                                    </DataTemplate>
+                                </ComboBox.ItemTemplate>
+                            </ComboBox>
+                        </StackPanel>
+                        <TextBlock Classes="hint" Text="閾値を上げるほど小さな音を検出しにくくなります。冒頭・末尾の保持時間は、それぞれ発話の前後を残す長さです。字幕とは別に保存され、次の開始から適用されます。原音送信には適用されません。"/>
+                    </StackPanel>
+                </HeaderedContentControl>
+
                 <HeaderedContentControl Header="翻訳と送信">
                     <StackPanel Spacing="10" IsEnabled="{Binding CanEditSettings}">
                         <TextBlock Text="相手へ送る言語"/>
@@ -161,7 +210,7 @@
                                     Click="BeginCapture" LostFocus="OnCaptureLostFocus" HorizontalAlignment="Stretch"
                                     AutomationProperties.Name="発話キーを登録" AutomationProperties.AutomationId="VoicePttKey"/>
                         </StackPanel>
-                        <TextBlock Classes="hint" Text="キーのボタンを押して、登録したいキーや Ctrl・Shift・Alt・Win との組み合わせを押し、離してください。Esc でキャンセルします。「押している間だけ送信」をオフにすると、ミュート以外では常時送信します。"/>
+                        <TextBlock Classes="hint" Text="キーのボタンを押して、登録したいキーや Ctrl・Shift・Alt・Win との組み合わせを押し、離してください。Esc でキャンセルします。「押している間だけ送信」をオフにすると、発話キーを使いません。翻訳モードではマイクの発話検出設定に従います。"/>
                     </StackPanel>
                 </HeaderedContentControl>
 

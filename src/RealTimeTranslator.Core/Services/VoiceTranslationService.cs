@@ -13,6 +13,8 @@ public sealed partial class VoiceTranslationService : IVoiceTranslationService
     private readonly Func<IRealtimeSpeechTranslator> _createClient;
     private readonly Func<int, bool> _isKeyDown;
     private readonly IVoicePlaybackService? _playback;
+    private readonly Func<IVoiceActivityDetector> _vadFactory;
+    private MicrophoneVadGate? _voiceVad;
     private int _monitoring;
     private long _monitorSessionId;
     private bool _monitorStarting;
@@ -37,12 +39,13 @@ public sealed partial class VoiceTranslationService : IVoiceTranslationService
 
     public VoiceTranslationService(IVoiceAudioService audio,
         Func<IRealtimeSpeechTranslator> createClient, Func<int, bool>? isKeyDown = null,
-        IVoicePlaybackService? playback = null)
+        IVoicePlaybackService? playback = null, Func<IVoiceActivityDetector>? vadFactory = null)
     {
         _audio = audio;
         _createClient = createClient;
         _isKeyDown = isKeyDown ?? (key => (GetAsyncKeyState(key) & 0x8000) != 0);
         _playback = playback;
+        _vadFactory = vadFactory ?? (() => new FireRedVadDetector());
         if (_playback is not null) _playback.ErrorReceived += OnMonitoringError;
         _audio.MicrophoneFrame += OnMicrophoneFrame;
         _audio.ErrorReceived += OnAudioError;
@@ -78,6 +81,7 @@ public sealed partial class VoiceTranslationService : IVoiceTranslationService
                 throw new ArgumentException("発話キーを登録し直してください。", nameof(settings));
 
             _settings = settings.Clone();
+            _settings.NormalizeVadSettings();
             SetGains(_settings.InputGainDb, _settings.OutputGainDb);
             _connectionSettings = new OpenAIRealtimeSettings
             {
@@ -103,7 +107,10 @@ public sealed partial class VoiceTranslationService : IVoiceTranslationService
             _transcript.Clear();
             SetState(VoiceTranslationState.Starting);
             if (_settings.Mode == VoiceSendMode.Translated)
+            {
+                InitializeVoiceVad(_sessionCancellation.Token);
                 await ConnectClientAsync(_sessionCancellation.Token).ConfigureAwait(false);
+            }
             await _audio.StartAsync(_settings.InputDeviceId, _settings.OutputDeviceId,
                 _sessionCancellation.Token).ConfigureAwait(false);
             lock (_routing) _mode = (int)_settings.Mode;
@@ -140,6 +147,7 @@ public sealed partial class VoiceTranslationService : IVoiceTranslationService
             if (mode == VoiceSendMode.Translated)
             {
                 using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, _sessionCancellation!.Token);
+                InitializeVoiceVad(linked.Token);
                 await ConnectClientAsync(linked.Token).ConfigureAwait(false);
             }
             lock (_routing)
@@ -238,6 +246,7 @@ public sealed partial class VoiceTranslationService : IVoiceTranslationService
         StreamingResampler? resampler = null;
         var inputRate = 0;
         var previousEpoch = -1;
+        int? failedEpoch = null;
         var previousKeyOpen = false;
         var lastMeter = Environment.TickCount64;
         float inputMeterPeak = 0;
@@ -245,54 +254,71 @@ public sealed partial class VoiceTranslationService : IVoiceTranslationService
         {
             await foreach (var queued in reader.ReadAllAsync(ct).ConfigureAwait(false))
             {
-                var frame = queued.Frame;
-                if (frame.SampleRate is < 8000 or > 384000 || frame.Samples.Length > frame.SampleRate * 2)
-                    throw new InvalidDataException("マイクの音声形式またはチャンク長が不正です。");
-                var epoch = Volatile.Read(ref _epoch);
-                if (queued.Epoch != epoch) continue;
-                if (previousEpoch != epoch || inputRate != frame.SampleRate)
-                {
-                    inputRate = frame.SampleRate;
-                    resampler = new StreamingResampler(inputRate, 24000);
-                    previousEpoch = epoch;
-                }
-                var inputGain = Volatile.Read(ref _inputGain);
-                inputMeterPeak = Math.Max(inputMeterPeak, Math.Min(Peak(frame.Samples) * inputGain, 1f));
-                var keyOpen = queued.KeyOpen;
-                var input = keyOpen ? frame.Samples : new float[frame.Samples.Length];
-                if (keyOpen && inputGain != 1f)
-                {
-                    input = (float[])frame.Samples.Clone();
-                    for (var i = 0; i < input.Length; i++) input[i] *= inputGain;
-                }
-                var samples = resampler!.Resample(input);
-                var pcm = AudioFormatConverter.Float32ToPcm16(samples);
-                // リサンプラの先読み履歴にも実音が残るので、閉鎖中の送信は厳密に無音にする。
-                if (!keyOpen) Array.Clear(pcm);
+                var epoch = queued.Epoch;
+                MicrophoneVadGate? vad;
                 lock (_routing)
                 {
-                    if (epoch != _epoch || State != VoiceTranslationState.Running) continue;
-                    if (Mode == VoiceSendMode.Original)
+                    if (epoch != _epoch || failedEpoch == epoch || State != VoiceTranslationState.Running) continue;
+                    vad = Mode == VoiceSendMode.Translated ? _voiceVad : null;
+                }
+                try
+                {
+                    var frame = queued.Frame;
+                    if (frame.SampleRate is < 8000 or > 384000 || frame.Samples.Length > frame.SampleRate * 2)
+                        throw new InvalidDataException("マイクの音声形式またはチャンク長が不正です。");
+                    if (previousEpoch != epoch || inputRate != frame.SampleRate)
                     {
-                        if (!keyOpen && previousKeyOpen) _audio.ClearOutput();
-                        var output = ApplyOutputGain(pcm);
-                        _audio.WriteOutput(output, 24000);
-                        _outputLevel = Math.Max(_outputLevel, PcmPeak(output));
+                        inputRate = frame.SampleRate;
+                        resampler = new StreamingResampler(inputRate, 24000);
+                        previousEpoch = epoch;
                     }
-                    else if (Mode == VoiceSendMode.Translated)
+                    var inputGain = Volatile.Read(ref _inputGain);
+                    inputMeterPeak = Math.Max(inputMeterPeak, Math.Min(Peak(frame.Samples) * inputGain, 1f));
+                    var keyOpen = queued.KeyOpen;
+                    var input = keyOpen ? frame.Samples : new float[frame.Samples.Length];
+                    if (keyOpen && inputGain != 1f)
                     {
-                        // 発話キーを離した後も無音を送り、翻訳の末尾を押し出す。
-                        _client?.SendAudio(pcm);
-                        if (_client is { DroppedAudioChunkCount: > 0 })
-                            throw new IOException("翻訳音声の送信が遅延したため停止しました。再開始してください。");
+                        input = (float[])frame.Samples.Clone();
+                        for (var i = 0; i < input.Length; i++) input[i] *= inputGain;
+                    }
+                    var pcm = vad is not null
+                        ? vad.Process(input, frame.SampleRate, keyOpen, epoch)
+                        : AudioFormatConverter.Float32ToPcm16(resampler!.Resample(input));
+                    // リサンプラの先読み履歴にも実音が残るので、閉鎖中の送信は厳密に無音にする。
+                    if (!keyOpen) Array.Clear(pcm);
+                    lock (_routing)
+                    {
+                        if (epoch != _epoch || State != VoiceTranslationState.Running) continue;
+                        if (Mode == VoiceSendMode.Original)
+                        {
+                            if (!keyOpen && previousKeyOpen) _audio.ClearOutput();
+                            var output = ApplyOutputGain(pcm);
+                            _audio.WriteOutput(output, 24000);
+                            _outputLevel = Math.Max(_outputLevel, PcmPeak(output));
+                        }
+                        else if (Mode == VoiceSendMode.Translated)
+                        {
+                            // VAD 有効時は発話後の padding だけを送り、待機中も接続は保つ。
+                            if (pcm.Length > 0) _client?.SendAudio(pcm);
+                            if (_client is { DroppedAudioChunkCount: > 0 })
+                                throw new IOException("翻訳音声の送信が遅延したため停止しました。再開始してください。");
+                        }
+                    }
+                    previousKeyOpen = keyOpen;
+                    if (Environment.TickCount64 - lastMeter >= 100)
+                    {
+                        lastMeter = Environment.TickCount64;
+                        LevelsChanged?.Invoke(inputMeterPeak, Interlocked.Exchange(ref _outputLevel, 0));
+                        inputMeterPeak = 0;
                     }
                 }
-                previousKeyOpen = keyOpen;
-                if (Environment.TickCount64 - lastMeter >= 100)
+                catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+                catch (Exception ex)
                 {
-                    lastMeter = Environment.TickCount64;
-                    LevelsChanged?.Invoke(inputMeterPeak, Interlocked.Exchange(ref _outputLevel, 0));
+                    // 失敗した世代だけを閉じ、切替先のフレームを読む処理 loop は残す。
+                    failedEpoch = epoch;
                     inputMeterPeak = 0;
+                    ScheduleFrameFault(ex, epoch, vad);
                 }
             }
         }
@@ -384,8 +410,40 @@ public sealed partial class VoiceTranslationService : IVoiceTranslationService
         });
     }
 
+    private void ScheduleFrameFault(Exception error, int epoch, MicrophoneVadGate? vad)
+    {
+        CancellationTokenSource? session;
+        lock (_routing)
+        {
+            session = _sessionCancellation;
+            if (session is null || epoch != _epoch || !ReferenceEquals(vad, _voiceVad)
+                || _faultScheduled != 0 || State != VoiceTranslationState.Running) return;
+        }
+        _ = Task.Run(async () =>
+        {
+            await _lifecycle.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                lock (_routing)
+                {
+                    // 予約後の mode 切替も照合し、旧失敗で新モードを停止しない。
+                    if (!ReferenceEquals(session, _sessionCancellation) || epoch != _epoch
+                        || !ReferenceEquals(vad, _voiceVad) || _faultScheduled != 0
+                        || State != VoiceTranslationState.Running) return;
+                    _faultScheduled = 1;
+                }
+                await StopCoreAsync().ConfigureAwait(false);
+                SetState(VoiceTranslationState.Faulted);
+                ErrorReceived?.Invoke(error);
+            }
+            finally { _lifecycle.Release(); }
+        });
+    }
+
     private IRealtimeSpeechTranslator? MuteRouting()
     {
+        IRealtimeSpeechTranslator? client;
+        MicrophoneVadGate? vad;
         lock (_routing)
         {
             _mode = (int)VoiceSendMode.Muted;
@@ -395,10 +453,14 @@ public sealed partial class VoiceTranslationService : IVoiceTranslationService
             _playback?.Clear();
             if (Interlocked.Exchange(ref _monitoring, 0) != 0) MonitoringChanged?.Invoke(false);
             while (_frames?.Reader.TryRead(out _) == true) { }
-            var client = _client;
+            client = _client;
             _client = null;
-            return client;
+            vad = _voiceVad;
+            _voiceVad = null;
         }
+        // 推論を待つ間も routing を閉じたままにし、旧世代の送受信を先に遮断する。
+        vad?.Dispose();
+        return client;
     }
 
     private void CancelSession()

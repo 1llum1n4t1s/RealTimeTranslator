@@ -148,14 +148,9 @@ public partial class SettingsViewModel : ObservableObject
         // 範囲外のサイズ / 行数 / 言語が入っているケースを、 起動時にデフォルトへ矯正する。
         // ComboBox が未選択状態で出る UX バグ ( setter が呼ばれず実態とのズレが続く ) を防ぐ。
         SanitizeSettings();
-        VadThresholdOptions = new ReadOnlyCollection<VadThresholdOption>(
-            new[] { 0.6f, 0.8f, 1.0f, _settings.AudioCapture.VadThreshold }
-                .Distinct().Order().Select(value => new VadThresholdOption(value,
-                    value == 0.8f ? "0.8（既定）" : value.ToString("G", System.Globalization.CultureInfo.CurrentCulture))).ToArray());
-        VadPreRollOptions = CreateVadDurationOptions(_settings.AudioCapture.VadPreRollMs, 50,
-            [0, 50, 100, 200, 500, 700, 1000, 1200, 2000]);
-        VadHangoverOptions = CreateVadDurationOptions(_settings.AudioCapture.VadHangoverMs, 200,
-            [0, 100, 200, 350, 500, 800, 1000, 2000]);
+        VadThresholdOptions = VadOptionFactory.CreateThresholdOptions(_settings.AudioCapture.VadThreshold);
+        VadPreRollOptions = VadOptionFactory.CreatePreRollOptions(_settings.AudioCapture.VadPreRollMs);
+        VadHangoverOptions = VadOptionFactory.CreateHangoverOptions(_settings.AudioCapture.VadHangoverMs);
     }
 
     public AppSettings Settings => _settings;
@@ -565,11 +560,6 @@ public partial class SettingsViewModel : ObservableObject
             }
         }
     }
-
-    private static ReadOnlyCollection<VadDurationOption> CreateVadDurationOptions(int current, int defaultValue, int[] values)
-        => new(values.Append(current).Distinct().Order()
-            .Select(value => new VadDurationOption(value,
-                value == defaultValue ? $"{value} ms（既定）" : $"{value} ms")).ToArray());
 
     public VadThresholdOption? SelectedVadThreshold
     {

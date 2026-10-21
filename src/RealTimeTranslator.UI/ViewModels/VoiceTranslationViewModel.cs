@@ -57,6 +57,7 @@ public partial class VoiceTranslationViewModel : ObservableObject, IDisposable
             UseShellExecute = true,
         })?.Dispose());
         _settings = settingsVm.Settings.VoiceTranslation.Clone();
+        InitializeVad();
         OutputLanguageOptions = settingsVm.OutputLanguageOptions;
         SelectedLanguage = OutputLanguageOptions.FirstOrDefault(x => x.Code == _settings.OutputLanguage)
             ?? OutputLanguageOptions.First(x => x.Code == "en");
@@ -255,6 +256,7 @@ public partial class VoiceTranslationViewModel : ObservableObject, IDisposable
             _inputClipUntil = _outputClipUntil = 0;
         }
         OnPropertyChanged(nameof(CanEditSettings));
+        OnPropertyChanged(nameof(CanEditVadSettings));
         OnPropertyChanged(nameof(CanStart));
         OnPropertyChanged(nameof(CanStop));
         OnPropertyChanged(nameof(CanChangeMode));
