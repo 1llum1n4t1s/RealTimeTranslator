@@ -48,8 +48,6 @@ RealTimeTranslator は、Windows 上で指定したプロセスの再生音声�
 
 訳音声の任意のライブ試聴は `IVoicePlaybackService` / `VoicePlaybackService` の独立した WASAPI 再生を使い、訳音声の同じ PCM16 をゲーム送話と試聴へ渡す。試聴先 ID だけを設定へ保存し、オン状態は永続化しない。試聴は利用可能な Windows の再生機器を対象とし、hardware ID で確認できた Wave Link 関連機器と、送話先と同じ ID を除外する。列挙・開始で同じ条件を使い、既定機器には fallback しない。RDP や仮想ヘッドホンを物理 bus がない理由だけで拒否しない。送話側の厳密な Wave Link 判定は変更しない。試聴用バッファは最大2秒とし、機器消失・過負荷は試聴のみ停止させる。世代付きエラーを確認し、通訳停止・モード変更時は試聴の残留音も消去する。試聴だけの停止や失敗で送話・字幕の client を停止しない。
 
-ゲーム送信用PTTはマイク取り込み用PTTと独立した3設定（GamePushToTalkEnabled / GamePushToTalkVirtualKey / GamePushToTalkModifiers）を開始時cloneで固定する。既定false / F9 / None。送話Sessionだけが専用keyboard controllerを所有し、試聴・字幕経路はキーを操作しない。OutputBuffer.Readが変換済みPCMの実音を検出して押下し、最初の100msはゼロを返してキューを保持する。最後の実音位置から計算した読み出し時間＋300msまで保持し、無音だけでは期限を延長しない。この待機は機器の厳密なdrain通知ではなく、20ms再生バッファと後段ルーティングのための余裕である。通常の原音マイクPTT閉鎖ではClearPendingOutputで未再生PCMだけを破棄し、すでにReadした実音の保持期限は残す。初回100ms待機中に破棄した場合は実音をまだ渡していないため解放する。停止・モード切替・異常時のClear / Mute / Disposeは世代を跨ぐ保留を残さず解放し、キー制御失敗は当該送話だけを停止して通知する。Windowsの低レベルフックは機能有効時だけ専用message threadに置き、注入入力を物理入力として数えず、利用者が保持するキーの所有権を保つ。同一主キーの二重PTT設定は開始時に拒否する。
-
 ボイス通訳の入力・出力ゲインは `VoiceTranslationSettings` の独立した2フィールドに保存し、clone に含める。範囲は各−24～+24 dB、既定0 dBとし、非有限値は0 dBへ正規化する。入力ゲインは処理 task でマイクの取得レートの mono float へ適用し、その後24 kHzへリサンプルする。PTT閉鎖中はリサンプラの残留も含めて無音化し、ゲインで送信許可を変えない。出力ゲインは受信元配列を変更せずPCM16へ適用し、同じ調整済みPCMを送話・試聴へ渡す。原音モードにも両ゲインを適用する。ゲイン変更は実行中に反映し、clientの再接続や字幕設定の変更を伴わない。UIは適用後ピークのdBFSメーター、1.5秒保持のclip表示、各0 dBリセットを備える。
 
 機器は ID で明示選択し、入力から Wave Link の録音ミックスを除外、出力は Wave Link 3 の仮想再生チャンネルに限定する。利用者が変更できる endpoint 表示名や adapter の表示文字列を識別の正本にせず、endpoint の `DeviceTopology.GetConnector(0).ConnectedToDeviceId` で接続先音声アダプターを解決し、その `PKEY_Device_InstanceId` から Windows Configuration Manager で PnP 親を辿る。`USB\VID_0FD9&PID_0096` または `TUSBAUDIO_ENUM\VID_0FD9&PID_0096&KS` の hardware ID を確認し、元の endpoint の方向と `PKEY_Device_DeviceDesc` を使う。render は `System` / `Music` / `Browser` / `Voice Chat` / `SFX` / `Game` / `Aux 1` / `Aux 2` だけを許可し、`Wave Mic 1`〜`4` と録音ミックスを送信先にしない。同じ仮想機器の capture は入力候補から一括で除外する。列挙時・開始時に同じ判定を使い、接続先・親・属性を確認できない機器は許可しない。
@@ -59,6 +57,16 @@ RealTimeTranslator は、Windows 上で指定したプロセスの再生音声�
 以前の出力 ID が候補にない場合は未選択とし、保存済み ID を保持したまま Wave Link の明示的な再選択を求める。既定機器への fallback や Windows 全体の既定変更は行わない。停止は接続待ちもキャンセルでき、音声を消去してから capture/player を解放する。通信・機器・キュー超過はミュートして停止し、原音への自動切替や保留音声付きの自動再接続は行わない。WASAPI へ既に渡した短い再生単位は source キューの消去だけでは回収できない。
 
 `VoiceTranslationViewModel` と `VoiceTranslationView` は専用タブで機器・言語・PTT・モード・メーター・翻訳文を表示し、サービスイベントを UI thread へ dispatch する。終了処理では音声送信を明示停止した後に DI の非同期破棄を行う。Wave Link 3 の本体・Audio Driver の導入、翻訳専用チャンネルだけを含む送話用ミックスの設定と、ゲーム側の `Chat Mix (Elgato Virtual Audio)` 等の録音入力の指定は利用者が行う。Wave Link が Windows 11 を必要とすることと、字幕翻訳だけでは導入不要であることを初回案内に表示する。公式ダウンロードと導入説明へのリンクは固定 URL とし、アプリからドライバーの取得・実行や Windows 全体の既定変更は行わない。
+
+### ゲーム送信用PTT
+
+ゲーム送信用PTTはマイク取り込み用PTTと独立した3設定（`GamePushToTalkEnabled` / `GamePushToTalkVirtualKey` / `GamePushToTalkModifiers`）を開始時 clone で固定する。既定は false / F9 / None。同一主キーの二重PTT設定は開始時に拒否する。`VoiceAudioService` の送話セッションだけが `WindowsGamePushToTalkController` を所有し、試聴・字幕経路はキーを操作しない。
+
+`OutputBuffer.Read` が変換済みPCMの実音を検出し、`GamePushToTalkOutputGate` を介して押下する。最初の100 msはゼロを返してキューを保持する。最後の実音位置から計算した読み出し時間＋300 msまで保持し、無音だけでは期限を延長しない。この待機は機器の厳密な drain 通知ではなく、20 ms再生バッファと後段ルーティングのための余裕である。解放期限は25 ms周期のタイマーで確認する。
+
+通常の原音マイクPTT閉鎖では `ClearPendingOutput` で未再生PCMだけを破棄し、すでに `Read` した実音の保持期限は残す。初回100 ms待機中に破棄した場合は実音をまだ渡していないため解放する。停止・モード切替・異常時の `Clear` / `Mute` / `Dispose` は世代を跨ぐ保留を残さず解放し、キー制御失敗は当該ボイス通訳セッションを停止して通知する。
+
+Windowsの低レベルフックは機能有効時だけ専用メッセージスレッドに置く。マイクPTTはそこで記録した物理キー状態を参照し、注入入力で送信許可を開かない。キーは修飾キーから順に注入し、解放は逆順とする。利用者が物理的に保持しているキーは重ねて押さず、ゲームPTT保持中に物理解放されたキーはアプリが保持を引き継ぐ。終了時にも物理保持中のキーを勝手に解放せず、アプリが所有する注入キーだけを解放する。これによりマイクPTTとの修飾キー共有と、利用者の操作を両立させる。
 
 ## 実行時のデータフロー
 
@@ -158,7 +166,7 @@ idle finalize は無音 padding の処理中に発火させません。実効値
 | 翻訳ログ | `%APPDATA%/RealTimeTranslator/logs/translations/` | 確定字幕だけを日別 TSV として保存 |
 | デバッグ音声 | `%APPDATA%/RealTimeTranslator/debug/` | 明示的に有効化したセッションだけ、実送信レートの WAV を保存 |
 
-設定保存では API キーを暗号化した clone を作り、DI と実行中 client が参照する元 object を変更しません。保存対象は `AppSettings` のフィールドに限定され、廃止した翻訳プロバイダの選択値や固有設定は保存しません。フィールド追加時の作業規則は [AGENTS.md](AGENTS.md#設定シークレット永続化) を参照してください。配布物は `settings.default.json` のみを含み、利用者の `settings.json` を含めません。
+設定保存では API キーを暗号化した clone を作り、DI と実行中 client が参照する元 object を変更しません。OpenAI設定のコピーは保存と接続で `OpenAIRealtimeSettings.Clone` を共用し、両経路のコピー項目のずれを防ぎます。ボイス通訳設定は文字列と値型のみで構成し、`MemberwiseClone` で開始時の独立スナップショットを作ります。保存対象は `AppSettings` のフィールドに限定され、廃止した翻訳プロバイダの選択値や固有設定は保存しません。フィールド追加時の作業規則は [AGENTS.md](AGENTS.md#設定シークレット永続化) を参照してください。配布物は `settings.default.json` のみを含み、利用者の `settings.json` を含めません。
 
 overlay 背景色は `BackgroundColorBase` (`#RRGGBB`) と `BackgroundOpacityPercent` を編集用の正本とし、表示で使う `BackgroundColor` (`#AARRGGBB`) を派生させます。旧設定の `BackgroundColor` だけがある場合は sanitize 時に分解し、以後は setter と保存前 sanitize で3フィールドを同期します。
 

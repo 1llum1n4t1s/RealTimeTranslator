@@ -68,11 +68,12 @@ rg -n --fixed-strings '"net10.0-windows10.0.20348/win-x64"' src -g packages.lock
 - マイク VAD は翻訳モード専用とし、字幕側の detector・cache・設定を共有しない。PTT 許可とルーティング世代を優先し、閉鎖前の pre-roll・DSP 残留音を再押下へ持ち越さない。有効時の初期化・推論失敗を全音声送信へ fallback させず、現世代のボイス通訳だけを停止する。padding・append 休止・リセット条件は DESIGN.md の同節を参照する。
 - PTT の許可とルーティング世代はマイク取得時に記録する。キー閉鎖中はリサンプラの残留音も含めて送信 PCM を無音にし、訳音声の末尾は受信・出力できるようにする。
 - PTT の通常キーと修飾キーは UI の登録・設定の検証・実行時の押下判定で一致させる。入力・出力ゲインは字幕設定と独立させ、同じ出力ゲイン適用済み PCM を送話と試聴へ渡す。
+- ゲーム送信用PTTは送話セッションだけが所有し、マイクPTTと独立させる。同一主キーの二重PTT設定を開始時に拒否し、注入キーでマイクPTTを開かない。原音モードのマイクPTT閉鎖では `ClearPendingOutput` で未再生音声だけを消去し、再生済み末尾のキー保持を残す。停止・モード切替・異常時は保持も解放する。タイミングとキー所有権は [DESIGN.md](DESIGN.md#ゲーム送信用ptt) を参照する。
 - 試聴は `IVoicePlaybackService` の独立した再生経路を使う。列挙・開始で Wave Link 関連機器と送話先を除外し、既定機器へ fallback しない。試聴の失敗は試聴だけを停止し、旧世代のエラーを新しい試聴へ適用しない。試聴のオン状態を永続化せず、停止・モード変更で保留音声を消去する。
 - 機器の列挙と開始で同じ Wave Link 判定を使い、表示名や既定機器への fallback で選択制約を緩めない。録音側のミックスを入力マイクとして再取り込みせず、翻訳専用の再生チャンネルだけを送話用ミックスへ含める案内を維持する。停止・モード変更時のキュー消去と旧セッション通知の排除を維持する。
 - 字幕側の `DropOldest` をボイス通訳へ一律に適用しない。入力キュー超過・送信 drop・出力バッファ超過は停止させ、`MaxReconnectAttempts = 0` を維持する。原音への自動切替や自動再接続を追加しない。
 - 送話・試聴の無音蓄積抑制は、出力変換後の受信音声と待機音声に実音がない場合だけ適用する。無音も先にリサンプルし、フィルタ末尾・待機キュー・実音の間隔を保持する。単一チャンクと待機バッファの2秒上限を緩めない。
-- 変更時は字幕との同時実行、PTT の修飾キー登録・解放後の末尾、マイク VAD の冒頭・末尾保持と無音送信休止・再開、実行中のゲイン変更、送話と試聴の同時出力、無入力の継続、停止・モード切替時の残留音、接続待ち中の停止、送話・試聴それぞれの機器消失・過負荷時の停止範囲を必要範囲で実機確認する。実機確認ができない項目は未検証として報告する。
+- 変更時は字幕との同時実行、PTT の修飾キー登録・解放後の末尾、ゲームPTTの初回待機中の取消・物理キーとの同時保持・左右修飾キーの解放・停止時のキー解放、マイク VAD の冒頭・末尾保持と無音送信休止・再開、実行中のゲイン変更、送話と試聴の同時出力、無入力の継続、停止・モード切替時の残留音、接続待ち中の停止、送話・試聴それぞれの機器消失・過負荷時の停止範囲を必要範囲で実機確認する。実機確認ができない項目は未検証として報告する。
 
 ### VAD と字幕確定
 
@@ -93,6 +94,7 @@ rg -n --fixed-strings '"net10.0-windows10.0.20348/win-x64"' src -g packages.lock
 
 - 設定の正本は `%APPDATA%/RealTimeTranslator/settings.json`。API キーは保存用 clone だけを DPAPI CurrentUser で暗号化する。
 - `AppSettings` に永続化フィールドを追加したら `SettingsService.CloneWithEncryptedSecrets` にも追加し、`SettingsServiceClone.test.cs` で保存時の欠落と secret 暗号化を検証する。
+- `OpenAIRealtimeSettings` のフィールド追加時は、保存と接続が共用する `OpenAIRealtimeSettings.Clone` を更新する。`VoiceTranslationSettings.Clone` は `MemberwiseClone` のため、可変参照型を追加するときは独立したコピーになるよう所有関係を見直す。
 - overlay 背景の編集用正本は `BackgroundColorBase` + `BackgroundOpacityPercent`、`BackgroundColor` は表示・旧設定互換用の派生 `#AARRGGBB`。sanitize と各 setter の compose / split 同期を維持し、`BackgroundColorRoundTrip.test.cs` で検証する。
 - 配布物には `settings.default.json` だけを含める。`settings.json` を publish へ含めない。
 - OpenAI の endpoint は、credential を送る前に `wss`、userinfo なし、許可 host を検証する。endpoint の既定値や接続処理を変えるときは allowlist と adversarial テストも更新する。
