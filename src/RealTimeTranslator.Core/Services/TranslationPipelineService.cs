@@ -1653,15 +1653,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         bool prevIsDigit = i > 0 && text[i - 1] >= '0' && text[i - 1] <= '9';
         bool nextIsDigit = i + 1 < text.Length && text[i + 1] >= '0' && text[i + 1] <= '9';
 
-        // 小数点 (例: 6.3 / 3.14): 区切らない
-        if (prevIsDigit && nextIsDigit) return false;
-
-        // delta 受信中の「末尾ピリオド + 直前数字」: 次の delta で「3インチ」みたいな
-        // 続きが来る可能性 → 区切らず保留 (続きが来てから判定)。
-        // done 確定時 (isFinalContext=true) は遠慮なく区切る。
-        if (!isFinalContext && prevIsDigit && i == text.Length - 1) return false;
-
-        return true;
+        return IsPeriodBoundary(prevIsDigit, nextIsDigit, i == text.Length - 1, isFinalContext);
     }
 
     /// <summary>
@@ -1680,11 +1672,12 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         bool prevIsDigit = i > 0 && sb[i - 1] >= '0' && sb[i - 1] <= '9';
         bool nextIsDigit = i + 1 < length && sb[i + 1] >= '0' && sb[i + 1] <= '9';
 
-        if (prevIsDigit && nextIsDigit) return false;
-        if (!isFinalContext && prevIsDigit && i == length - 1) return false;
-
-        return true;
+        return IsPeriodBoundary(prevIsDigit, nextIsDigit, i == length - 1, isFinalContext);
     }
+
+    // 小数点と、次のdeltaで数字が続く可能性のある末尾ピリオドを両経路で保護する。
+    private static bool IsPeriodBoundary(bool prevIsDigit, bool nextIsDigit, bool isLast, bool isFinalContext)
+        => !prevIsDigit || (!nextIsDigit && (isFinalContext || !isLast));
 
 
     /// <summary>

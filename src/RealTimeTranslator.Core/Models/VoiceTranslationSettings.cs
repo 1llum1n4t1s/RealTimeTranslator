@@ -40,26 +40,8 @@ public sealed class VoiceTranslationSettings
         return changed;
     }
 
-    public VoiceTranslationSettings Clone() => new()
-    {
-        InputDeviceId = InputDeviceId,
-        OutputDeviceId = OutputDeviceId,
-        OutputLanguage = OutputLanguage,
-        Mode = Mode,
-        PushToTalkEnabled = PushToTalkEnabled,
-        PushToTalkVirtualKey = PushToTalkVirtualKey,
-        PushToTalkModifiers = PushToTalkModifiers,
-        GamePushToTalkEnabled = GamePushToTalkEnabled,
-        GamePushToTalkVirtualKey = GamePushToTalkVirtualKey,
-        GamePushToTalkModifiers = GamePushToTalkModifiers,
-        MonitorOutputDeviceId = MonitorOutputDeviceId,
-        InputGainDb = InputGainDb,
-        OutputGainDb = OutputGainDb,
-        EnableVad = EnableVad,
-        VadThreshold = VadThreshold,
-        VadPreRollMs = VadPreRollMs,
-        VadHangoverMs = VadHangoverMs
-    };
+    // 全インスタンス状態は文字列と値型。可変参照型を追加するときはコピーの所有権を見直す。
+    public VoiceTranslationSettings Clone() => (VoiceTranslationSettings)MemberwiseClone();
 }
 
 [Flags]

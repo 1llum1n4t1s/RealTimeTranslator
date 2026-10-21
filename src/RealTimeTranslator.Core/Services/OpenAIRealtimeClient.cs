@@ -167,18 +167,7 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeSpeechTranslator
             // セッション開始時のスナップショットを保持する。 SettingsViewModel が in-place 編集する
             // AppSettings.OpenAIRealtime をそのまま握ると、走行中のキー／言語変更が再接続へ混ざり、
             // OpenAI 設定は次の Start で反映する契約を守るため、コピーで現セッションから切り離す。
-            _settings = new OpenAIRealtimeSettings
-            {
-                ApiKey = settings.ApiKey,
-                OutputLanguage = settings.OutputLanguage,
-                Model = settings.Model,
-                Endpoint = settings.Endpoint,
-                ReconnectDelayMs = settings.ReconnectDelayMs,
-                MaxReconnectAttempts = settings.MaxReconnectAttempts,
-                SilencePaddingMs = settings.SilencePaddingMs,
-                MaxPartialChars = settings.MaxPartialChars,
-                DeltaIdleFinalizeMs = settings.DeltaIdleFinalizeMs,
-            };
+            _settings = settings.Clone();
             _shouldReconnect = true;
 
             // 新しい Start ごとにセッション統計をリセットする。 OpenAIRealtimeClient は singleton 共有なので、

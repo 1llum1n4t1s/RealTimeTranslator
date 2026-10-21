@@ -327,6 +327,20 @@ public class OpenAIRealtimeSettings
     //
     // 値が 0 以下なら機能を無効化する (= v1.0.48 以前と同じ、 句点 / 文字数 / done 待ちのみ)。
     public int DeltaIdleFinalizeMs { get; set; } = 6000;
+
+    /// <summary>保存と接続が共通で使う、基底設定型の独立スナップショット。</summary>
+    internal OpenAIRealtimeSettings Clone() => new()
+    {
+        ApiKey = ApiKey,
+        OutputLanguage = OutputLanguage,
+        Model = Model,
+        Endpoint = Endpoint,
+        ReconnectDelayMs = ReconnectDelayMs,
+        MaxReconnectAttempts = MaxReconnectAttempts,
+        SilencePaddingMs = SilencePaddingMs,
+        MaxPartialChars = MaxPartialChars,
+        DeltaIdleFinalizeMs = DeltaIdleFinalizeMs
+    };
 }
 
 // GameProfile / GameProfiles は旧 Whisper+LLM ローカル翻訳時代の設定。

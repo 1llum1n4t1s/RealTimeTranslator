@@ -174,25 +174,7 @@ public class SettingsService : ISettingsService
         Overlay = source.Overlay,
         AudioCapture = source.AudioCapture,
         VoiceTranslation = source.VoiceTranslation.Clone(),
-        OpenAIRealtime = new OpenAIRealtimeSettings
-        {
-            ApiKey = DpapiHelper.Encrypt(source.OpenAIRealtime.ApiKey),
-            OutputLanguage = source.OpenAIRealtime.OutputLanguage,
-            Model = source.OpenAIRealtime.Model,
-            Endpoint = source.OpenAIRealtime.Endpoint,
-            ReconnectDelayMs = source.OpenAIRealtime.ReconnectDelayMs,
-            MaxReconnectAttempts = source.OpenAIRealtime.MaxReconnectAttempts,
-            // rere v1.0.32 #C2-001: 旧版で SilencePaddingMs / MaxPartialChars がコピー対象に
-            // 入っていなかったため、 SaveAsync 経由で settings.json に書き出されるたびに
-            // 該当 2 値が default (5000 / 50) に静かにリセットされる致命バグだった。
-            // ユーザーが settings.json を手動編集して MaxPartialChars=120 等にしても、
-            // UI 設定変更時の autosave で消える経路。 ここに追加して保全する。
-            SilencePaddingMs = source.OpenAIRealtime.SilencePaddingMs,
-            MaxPartialChars = source.OpenAIRealtime.MaxPartialChars,
-            // v1.0.49 で追加した delta アイドル確定閾値。 上の C2-001 と同じ罠で漏れていた
-            // (autosave のたびに default 6000 へ戻り、 settings.json で 0=無効化 / 8000 等にした値が消えていた)。
-            DeltaIdleFinalizeMs = source.OpenAIRealtime.DeltaIdleFinalizeMs,
-        },
+        OpenAIRealtime = CloneWithEncryptedApiKey(source.OpenAIRealtime),
         LastSelectedProcessName = source.LastSelectedProcessName,
         LastSelectedProcessId = source.LastSelectedProcessId,
         Update = source.Update,
@@ -204,4 +186,12 @@ public class SettingsService : ISettingsService
 
     /// <inheritdoc />
     public void DecryptApiKey(AppSettings settings) => DpapiHelper.DecryptInPlace(settings);
+
+    private static OpenAIRealtimeSettings CloneWithEncryptedApiKey(OpenAIRealtimeSettings source)
+    {
+        var encryptedApiKey = DpapiHelper.Encrypt(source.ApiKey);
+        var clone = source.Clone();
+        clone.ApiKey = encryptedApiKey;
+        return clone;
+    }
 }

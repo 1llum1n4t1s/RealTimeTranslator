@@ -144,15 +144,20 @@ public sealed class VoiceAudioService : IVoiceAudioService
             {
                 using var stream = new RawSourceWaveStream(new MemoryStream(owned, 0, activeLength, false), format);
                 var provider = stream.ToSampleProvider();
-                var interleaved = new float[frames * format.Channels];
-                var count = provider.Read(interleaved);
-                for (var frame = 0; frame < count / format.Channels; frame++)
+                int sampleCount = frames * format.Channels;
+                var interleaved = ArrayPool<float>.Shared.Rent(sampleCount);
+                try
                 {
-                    float sum = 0;
-                    for (var channel = 0; channel < format.Channels; channel++)
-                        sum += interleaved[frame * format.Channels + channel];
-                    mono[frame] = sum / format.Channels;
+                    var count = provider.Read(interleaved.AsSpan(0, sampleCount));
+                    for (var frame = 0; frame < count / format.Channels; frame++)
+                    {
+                        float sum = 0;
+                        for (var channel = 0; channel < format.Channels; channel++)
+                            sum += interleaved[frame * format.Channels + channel];
+                        mono[frame] = sum / format.Channels;
+                    }
                 }
+                finally { ArrayPool<float>.Shared.Return(interleaved, clearArray: true); }
             }
             if (session.Active)
                 MicrophoneFrame?.Invoke(new VoiceMicrophoneFrame(mono, format.SampleRate));
