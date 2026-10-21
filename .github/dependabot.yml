@@ -1,47 +1,43 @@
-# Dependabot 設定
-# サプライチェーン保護: GitHub Actions と NuGet の依存を自動更新し、
-# タグポイズニング攻撃（actions/*@v7 等の可変タグ）を軽減する。
-# Actions は SHA 固定を推奨するが、Dependabot が SHA と更新 PR を自動で提示する。
+# 更新方針: 毎週月曜09:00（日本時間）、minor/patchを集約、majorは個別PR。
+# マージ可否は既定ブランチのDependabot auto-mergeが最新CIで判定します。
 version: 2
 updates:
-  # GitHub Actions の SHA 固定参照を更新
-  - package-ecosystem: "github-actions"
-    directory: "/"
-    schedule:
-      interval: "weekly"
-      day: "monday"
-      time: "09:00"
-      timezone: "Asia/Tokyo"
-    commit-message:
-      prefix: "ci"
-    # patch/minor はまとめて1 PR、majorは個別PRのまま互換確認できるようにする
-    groups:
-      actions:
-        patterns: ["*"]
-        update-types: ["minor", "patch"]
-
-  # NuGet 依存の自動更新（RealTimeTranslator.slnx 配下の全 csproj が対象）
-  - package-ecosystem: "nuget"
-    directory: "/"
-    schedule:
-      interval: "weekly"
-      day: "monday"
-      time: "09:00"
-      timezone: "Asia/Tokyo"
-    commit-message:
-      prefix: "deps"
-    # 依存の種類による更新対象の制限を設けない
-    allow:
-      - dependency-type: "all"
-    # patch/minor はまとめて1 PR、majorはそもそも下記 ignore で対象外
-    groups:
-      nuget-minor-patch:
-        patterns: ["*"]
-        update-types: ["minor", "patch"]
-    # major 更新は破壊的変更を伴うため Dependabot からは除外（手動アップグレード対象）
-    ignore:
-      - dependency-name: "*"
-        update-types: ["version-update:semver-major"]
-      # 個人 NuGet fork: アカウント乗っ取り経路でのサプライチェーン攻撃リスク軽減のため、
-      # 自動 PR を停止して手動レビュー必須化する (rere レビュー P1 #12)。
-      - dependency-name: "1llum1n4t1s.NAudio"
+- package-ecosystem: github-actions
+  directory: /
+  schedule:
+    interval: weekly
+    day: monday
+    time: 09:00
+    timezone: Asia/Tokyo
+  open-pull-requests-limit: 5
+  groups:
+    minor-and-patch:
+      patterns:
+      - '*'
+      update-types:
+      - minor
+      - patch
+  commit-message:
+    prefix: deps
+- package-ecosystem: nuget
+  directories:
+  - /src/RealTimeTranslator.Core
+  - /src/RealTimeTranslator.Tests
+  - /src/RealTimeTranslator.UI
+  schedule:
+    interval: weekly
+    day: monday
+    time: 09:00
+    timezone: Asia/Tokyo
+  open-pull-requests-limit: 5
+  groups:
+    minor-and-patch:
+      patterns:
+      - '*'
+      update-types:
+      - minor
+      - patch
+  commit-message:
+    prefix: deps
+  allow:
+  - dependency-type: all
