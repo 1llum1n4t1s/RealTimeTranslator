@@ -325,6 +325,15 @@ public partial class SettingsViewModel : ObservableObject
             changed = true;
         }
 
+        if (!VoicePushToTalkShortcut.IsSupportedKey(_settings.VoiceTranslation.GamePushToTalkVirtualKey)
+            || !VoicePushToTalkShortcut.IsSupportedModifiers(_settings.VoiceTranslation.GamePushToTalkModifiers))
+        {
+            _settings.VoiceTranslation.GamePushToTalkVirtualKey = 0x78;
+            _settings.VoiceTranslation.GamePushToTalkModifiers = VoiceShortcutModifiers.None;
+            _sanitizeWarnings.Add("ゲーム送信用PTTのキー設定が無効なため、F9 に戻しました。");
+            changed = true;
+        }
+
         if (changed)
         {
             // 矯正結果を settings.json に永続化 (次回起動時の再矯正を避ける)

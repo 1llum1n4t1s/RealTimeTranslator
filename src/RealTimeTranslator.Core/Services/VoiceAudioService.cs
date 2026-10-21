@@ -13,9 +13,36 @@ namespace RealTimeTranslator.Core.Services;
 public sealed class VoiceAudioService : IVoiceAudioService
 {
     private readonly SemaphoreSlim _lifecycle = new(1, 1);
+    private readonly Lock _configuration = new();
+    private readonly Func<VoiceTranslationSettings, IGamePushToTalkController> _createGamePtt;
+    private VoiceTranslationSettings _gamePttSettings = new();
     private Session? _session;
     private long _sessionId;
     private bool _disposed;
+
+    public VoiceAudioService() : this(settings => new WindowsGamePushToTalkController(
+        settings.GamePushToTalkVirtualKey, settings.GamePushToTalkModifiers)) { }
+
+    public VoiceAudioService(Func<VoiceTranslationSettings, IGamePushToTalkController> createGamePtt)
+        => _createGamePtt = createGamePtt ?? throw new ArgumentNullException(nameof(createGamePtt));
+
+    public void ConfigureGamePushToTalk(VoiceTranslationSettings settings)
+    {
+        ArgumentNullException.ThrowIfNull(settings);
+        lock (_configuration)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            if (Volatile.Read(ref _session) is { Active: true })
+                throw new InvalidOperationException("ゲーム送信用PTTの設定は停止中に変更してください。");
+            _gamePttSettings = settings.Clone();
+        }
+    }
+
+    public bool? GetPhysicalPushToTalkKeyState(int virtualKey)
+    {
+        var session = Volatile.Read(ref _session);
+        return session is { Active: true } ? session.GamePtt?.IsPhysicalKeyDown(virtualKey) : null;
+    }
 
     public long SessionId => Interlocked.Read(ref _sessionId);
     public event Action<VoiceMicrophoneFrame>? MicrophoneFrame;
@@ -60,6 +87,14 @@ public sealed class VoiceAudioService : IVoiceAudioService
                 var session = new Session(Interlocked.Increment(ref _sessionId), microphoneId, outputDeviceId);
                 try
                 {
+                    VoiceTranslationSettings gamePttSettings;
+                    lock (_configuration) gamePttSettings = _gamePttSettings.Clone();
+                    if (gamePttSettings.GamePushToTalkEnabled)
+                        session.ConfigureGamePtt(() => _createGamePtt(gamePttSettings), error =>
+                        {
+                            if (session.Active) Fault(session, error);
+                            else LoggerService.LogException("ゲーム送信用PTTキーの解放に失敗しました。", error);
+                        });
                     session.Initialize();
                     session.Capture!.DataAvailable += (buffer, flags, _, _) => CaptureFrame(session, buffer, flags);
                     session.Capture.RecordingStopped += (_, args) =>
@@ -153,6 +188,7 @@ public sealed class VoiceAudioService : IVoiceAudioService
     }
 
     public void ClearOutput() => Volatile.Read(ref _session)?.Output?.Clear();
+    public void ClearPendingOutput() => Volatile.Read(ref _session)?.Output?.ClearPendingOutput();
 
     private void Fault(Session session, Exception exception)
     {
@@ -254,6 +290,15 @@ public sealed class VoiceAudioService : IVoiceAudioService
         public WasapiPlayer? Player { get; private set; }
         public WaveFormat? CaptureFormat { get; private set; }
         public OutputBuffer? Output { get; private set; }
+        public IGamePushToTalkController? GamePtt { get; private set; }
+        private Func<IGamePushToTalkController>? _createGamePtt;
+        private Action<Exception>? _gamePttError;
+
+        public void ConfigureGamePtt(Func<IGamePushToTalkController> createGamePtt, Action<Exception> onError)
+        {
+            _createGamePtt = createGamePtt;
+            _gamePttError = onError;
+        }
 
         public void Initialize()
         {
@@ -267,10 +312,12 @@ public sealed class VoiceAudioService : IVoiceAudioService
                 || WaveLinkDeviceIdentity.Classify(_outputDevice) != VoiceAudioDeviceKind.WaveLinkOutput)
                 throw new InvalidOperationException("選択した出力が使用できません。Wave Link の再生チャンネルを選んでください。");
 
+            GamePtt = _createGamePtt?.Invoke();
             Capture = new WasapiRecorderBuilder().WithDevice(_microphone).WithSharedMode().WithBufferLength(20).Build();
             CaptureFormat = Capture.WaveFormat;
             Player = new WasapiPlayerBuilder().WithDevice(_outputDevice).WithSharedMode().WithLatency(20).Build();
             Output = new OutputBuffer(Player.DeviceMixFormat.SampleRate);
+            if (GamePtt is not null) Output.ConfigureGamePtt(GamePtt, _gamePttError!);
             // shared mode の音声エンジンが mono float から endpoint mix format へ適合させる。
             Player.Init(Output);
         }
@@ -304,8 +351,16 @@ public sealed class VoiceAudioService : IVoiceAudioService
                 }
                 finally
                 {
-                    _microphone?.Dispose();
-                    _outputDevice?.Dispose();
+                    try
+                    {
+                        _microphone?.Dispose();
+                        _outputDevice?.Dispose();
+                    }
+                    finally
+                    {
+                        try { Output?.DisposeGamePtt(); }
+                        finally { GamePtt?.Dispose(); }
+                    }
                 }
             }
         }
@@ -314,6 +369,10 @@ public sealed class VoiceAudioService : IVoiceAudioService
     /// <summary>最大2秒。無音継続読み出しと書き込み・clear の順序を単一ロックで保証する。</summary>
     private sealed class OutputBuffer(int sampleRate) : IWaveProvider
     {
+        private GamePushToTalkOutputGate? _gamePtt;
+        public void ConfigureGamePtt(IGamePushToTalkController controller, Action<Exception> onError)
+            => _gamePtt = new GamePushToTalkOutputGate(controller, sampleRate, onError);
+        public void DisposeGamePtt() => _gamePtt?.Dispose();
         private readonly object _sync = new();
         private readonly float[] _buffer = new float[sampleRate * 2];
         private int _start;
@@ -392,6 +451,17 @@ public sealed class VoiceAudioService : IVoiceAudioService
                 buffer.Clear();
                 var samples = MemoryMarshal.Cast<byte, float>(buffer);
                 var available = Math.Min(samples.Length, _count);
+                if (_gamePtt is not null)
+                {
+                    int lastSound = available - 1;
+                    while (lastSound >= 0 && _buffer[(_start + lastSound) % _buffer.Length] == 0f) lastSound--;
+                    if (lastSound >= 0 && !_gamePtt.TryRead(lastSound + 1))
+                    {
+                        _readCalls++;
+                        _lastReadTimestamp = Stopwatch.GetTimestamp();
+                        return buffer.Length;
+                    }
+                }
                 for (var i = 0; i < available; i++)
                 {
                     samples[i] = _buffer[(_start + i) % _buffer.Length];
@@ -406,7 +476,11 @@ public sealed class VoiceAudioService : IVoiceAudioService
             }
         }
 
-        public void Clear()
+        public void Clear() => ClearCore(preservePlayedTail: false);
+
+        public void ClearPendingOutput() => ClearCore(preservePlayedTail: true);
+
+        private void ClearCore(bool preservePlayedTail)
         {
             lock (_sync)
             {
@@ -415,6 +489,8 @@ public sealed class VoiceAudioService : IVoiceAudioService
                 _nonSilentSamples = 0;
                 _inputSampleRate = 0;
                 _resampler = null;
+                if (preservePlayedTail) _gamePtt?.ClearPendingOutput();
+                else _gamePtt?.Clear();
             }
         }
 
@@ -427,6 +503,7 @@ public sealed class VoiceAudioService : IVoiceAudioService
                 _count = 0;
                 _nonSilentSamples = 0;
                 _resampler = null;
+                _gamePtt?.Clear();
             }
         }
     }

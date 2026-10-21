@@ -79,9 +79,18 @@ public sealed partial class VoiceTranslationService : IVoiceTranslationService
             if (settings.PushToTalkEnabled && (!VoicePushToTalkShortcut.IsSupportedKey(settings.PushToTalkVirtualKey)
                 || !VoicePushToTalkShortcut.IsSupportedModifiers(settings.PushToTalkModifiers)))
                 throw new ArgumentException("発話キーを登録し直してください。", nameof(settings));
+            if (settings.GamePushToTalkEnabled)
+            {
+                if (!VoicePushToTalkShortcut.IsSupportedKey(settings.GamePushToTalkVirtualKey)
+                    || !VoicePushToTalkShortcut.IsSupportedModifiers(settings.GamePushToTalkModifiers))
+                    throw new ArgumentException("ゲーム送信用PTTキーを登録し直してください。", nameof(settings));
+                if (settings.PushToTalkEnabled && settings.PushToTalkVirtualKey == settings.GamePushToTalkVirtualKey)
+                    throw new ArgumentException("発話キーとゲーム送信用PTTには、別の主キーを登録してください。", nameof(settings));
+            }
 
             _settings = settings.Clone();
             _settings.NormalizeVadSettings();
+            _audio.ConfigureGamePushToTalk(_settings.Clone());
             SetGains(_settings.InputGainDb, _settings.OutputGainDb);
             _connectionSettings = new OpenAIRealtimeSettings
             {
@@ -291,7 +300,7 @@ public sealed partial class VoiceTranslationService : IVoiceTranslationService
                         if (epoch != _epoch || State != VoiceTranslationState.Running) continue;
                         if (Mode == VoiceSendMode.Original)
                         {
-                            if (!keyOpen && previousKeyOpen) _audio.ClearOutput();
+                            if (!keyOpen && previousKeyOpen) _audio.ClearPendingOutput();
                             var output = ApplyOutputGain(pcm);
                             _audio.WriteOutput(output, 24000);
                             _outputLevel = Math.Max(_outputLevel, PcmPeak(output));

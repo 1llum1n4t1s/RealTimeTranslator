@@ -6,13 +6,15 @@ public sealed partial class VoiceTranslationService
 {
     private bool IsPushToTalkDown()
     {
-        if (!_isKeyDown(_settings.PushToTalkVirtualKey)) return false;
+        if (!IsPhysicalKeyDown(_settings.PushToTalkVirtualKey)) return false;
         var modifiers = _settings.PushToTalkModifiers;
-        return (!modifiers.HasFlag(VoiceShortcutModifiers.Control) || _isKeyDown(0x11))
-            && (!modifiers.HasFlag(VoiceShortcutModifiers.Shift) || _isKeyDown(0x10))
-            && (!modifiers.HasFlag(VoiceShortcutModifiers.Alt) || _isKeyDown(0x12))
-            && (!modifiers.HasFlag(VoiceShortcutModifiers.Windows) || _isKeyDown(0x5B) || _isKeyDown(0x5C));
+        return (!modifiers.HasFlag(VoiceShortcutModifiers.Control) || IsPhysicalKeyDown(0x11))
+            && (!modifiers.HasFlag(VoiceShortcutModifiers.Shift) || IsPhysicalKeyDown(0x10))
+            && (!modifiers.HasFlag(VoiceShortcutModifiers.Alt) || IsPhysicalKeyDown(0x12))
+            && (!modifiers.HasFlag(VoiceShortcutModifiers.Windows) || IsPhysicalKeyDown(0x5B) || IsPhysicalKeyDown(0x5C));
     }
+
+    private bool IsPhysicalKeyDown(int key) => _audio.GetPhysicalPushToTalkKeyState(key) ?? _isKeyDown(key);
 
     public async Task SetMonitoringAsync(string? outputDeviceId, CancellationToken ct = default)
     {

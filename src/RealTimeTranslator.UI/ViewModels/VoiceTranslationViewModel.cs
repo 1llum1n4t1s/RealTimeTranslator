@@ -89,7 +89,8 @@ public partial class VoiceTranslationViewModel : ObservableObject, IDisposable
 
     public bool CanEditSettings => !_operationPending && !_stopPending &&
         _state is VoiceTranslationState.Stopped or VoiceTranslationState.Faulted;
-    public bool CanStart => CanEditSettings && !IsCapturingPttKey && SelectedMicrophone is not null && SelectedOutput is not null;
+    public bool CanStart => CanEditSettings && !IsCapturingPttKey && !IsCapturingGamePttKey
+        && SelectedMicrophone is not null && SelectedOutput is not null;
     public bool CanStop => !_stopPending &&
         _state is VoiceTranslationState.Starting or VoiceTranslationState.Running;
     public bool CanChangeMode => !_operationPending && !_stopPending &&
@@ -138,6 +139,14 @@ public partial class VoiceTranslationViewModel : ObservableObject, IDisposable
     [RelayCommand(CanExecute = nameof(CanStart))]
     private async Task StartAsync()
     {
+        CancelPttCapture();
+        CancelGamePttCapture();
+        if (_settings.PushToTalkEnabled && _settings.GamePushToTalkEnabled
+            && _settings.PushToTalkVirtualKey == _settings.GamePushToTalkVirtualKey)
+        {
+            ErrorText = "ゲーム送信用PTTには、マイクの発話キーとは別の主キーを割り当ててください。";
+            return;
+        }
         _operationPending = true;
         _stopRequested = false;
         ErrorText = string.Empty;
@@ -235,6 +244,11 @@ public partial class VoiceTranslationViewModel : ObservableObject, IDisposable
     private void UpdateState()
     {
         _state = _service.State;
+        if (!CanEditSettings)
+        {
+            IsCapturingPttKey = false;
+            IsCapturingGamePttKey = false;
+        }
         DeviceStatus = !_deviceEnumerationSucceeded ? "音声機器を確認できませんでした。エラーを確認し、機器一覧を更新してください。"
             : Outputs.Count == 0 ? "Wave Link 3 が見つかりません。画面内の「Wave Link 3 の初回設定」から導入できます。"
             : Microphones.Count == 0 ? "利用できるマイクがありません。接続して一覧を更新してください。"
@@ -286,6 +300,8 @@ public partial class VoiceTranslationViewModel : ObservableObject, IDisposable
     public void Dispose()
     {
         if (_disposed) return;
+        CancelPttCapture();
+        CancelGamePttCapture();
         _disposed = true;
         _service.StateChanged -= OnStateChanged;
         _service.TranscriptReceived -= OnTranscriptReceived;

@@ -37,9 +37,16 @@ public partial class VoiceTranslationView : UserControl
         if (sender is Button button) button.Focus();
     }
 
+    private void BeginGameCapture(object? sender, RoutedEventArgs args)
+    {
+        _capturedKey = 0;
+        if (DataContext is VoiceTranslationViewModel vm) vm.BeginGamePttCapture();
+        if (sender is Button button) button.Focus();
+    }
+
     private void OnCaptureKeyDown(object? sender, KeyEventArgs args)
     {
-        if (DataContext is not VoiceTranslationViewModel { IsCapturingPttKey: true }) return;
+        if (DataContext is not VoiceTranslationViewModel vm || (!vm.IsCapturingPttKey && !vm.IsCapturingGamePttKey)) return;
         args.Handled = true;
         if (args.Key == Key.Escape) { CancelCapture(); return; }
         var modifiers = VoiceShortcutKey.Modifiers(args.KeyModifiers);
@@ -56,10 +63,11 @@ public partial class VoiceTranslationView : UserControl
 
     private void OnCaptureKeyUp(object? sender, KeyEventArgs args)
     {
-        if (DataContext is not VoiceTranslationViewModel { IsCapturingPttKey: true } vm) return;
+        if (DataContext is not VoiceTranslationViewModel vm || (!vm.IsCapturingPttKey && !vm.IsCapturingGamePttKey)) return;
         args.Handled = true;
         if (_capturedKey == 0 || VoiceShortcutKey.ToVirtualKey(args) != _capturedKey) return;
-        vm.CapturePttShortcut(_capturedKey, _capturedModifiers);
+        if (vm.IsCapturingGamePttKey) vm.CaptureGamePttShortcut(_capturedKey, _capturedModifiers);
+        else vm.CapturePttShortcut(_capturedKey, _capturedModifiers);
         _capturedKey = 0;
     }
 
@@ -69,6 +77,10 @@ public partial class VoiceTranslationView : UserControl
     private void CancelCapture()
     {
         _capturedKey = 0;
-        if (DataContext is VoiceTranslationViewModel vm) vm.CancelPttCapture();
+        if (DataContext is VoiceTranslationViewModel vm)
+        {
+            vm.CancelPttCapture();
+            vm.CancelGamePttCapture();
+        }
     }
 }

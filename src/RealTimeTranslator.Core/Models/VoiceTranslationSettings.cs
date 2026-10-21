@@ -10,6 +10,9 @@ public sealed class VoiceTranslationSettings
     public bool PushToTalkEnabled { get; set; } = true;
     public int PushToTalkVirtualKey { get; set; } = 0x77;
     public VoiceShortcutModifiers PushToTalkModifiers { get; set; }
+    public bool GamePushToTalkEnabled { get; set; }
+    public int GamePushToTalkVirtualKey { get; set; } = 0x78;
+    public VoiceShortcutModifiers GamePushToTalkModifiers { get; set; }
     public string MonitorOutputDeviceId { get; set; } = string.Empty;
     public float InputGainDb { get; set; }
     public float OutputGainDb { get; set; }
@@ -46,6 +49,9 @@ public sealed class VoiceTranslationSettings
         PushToTalkEnabled = PushToTalkEnabled,
         PushToTalkVirtualKey = PushToTalkVirtualKey,
         PushToTalkModifiers = PushToTalkModifiers,
+        GamePushToTalkEnabled = GamePushToTalkEnabled,
+        GamePushToTalkVirtualKey = GamePushToTalkVirtualKey,
+        GamePushToTalkModifiers = GamePushToTalkModifiers,
         MonitorOutputDeviceId = MonitorOutputDeviceId,
         InputGainDb = InputGainDb,
         OutputGainDb = OutputGainDb,

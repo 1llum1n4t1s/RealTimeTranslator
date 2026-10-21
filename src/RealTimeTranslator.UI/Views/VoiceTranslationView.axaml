@@ -214,6 +214,20 @@
                     </StackPanel>
                 </HeaderedContentControl>
 
+                <HeaderedContentControl Header="ゲーム送信用PTT">
+                    <StackPanel Spacing="10">
+                        <CheckBox Content="音声送信に合わせてゲームのPTTキーを自動で押す"
+                                  IsChecked="{Binding GamePushToTalkEnabled}" IsEnabled="{Binding CanEditSettings}"
+                                  AutomationProperties.Name="ゲーム送信用PTTを有効にする"
+                                  AutomationProperties.AutomationId="GamePttEnabled"/>
+                        <Button Content="{Binding GamePttCaptureButtonText}" IsEnabled="{Binding CanCaptureGamePttKey}"
+                                Click="BeginGameCapture" LostFocus="OnCaptureLostFocus" HorizontalAlignment="Stretch"
+                                AutomationProperties.Name="ゲーム送信用PTTキーを登録" AutomationProperties.AutomationId="GamePttKey"/>
+                        <TextBlock Classes="hint" Text="ボタンを押し、登録したいキーや Ctrl・Shift・Alt・Win との組み合わせを押して離してください。Esc でキャンセルします。ゲーム側にも同じキーを割り当て、ゲームを前面にしてください。マイクの発話キーとは別の主キーを使います。"/>
+                        <TextBlock Classes="hint" Text="送話開始の100 ms前にキーを押し、実音の末尾から300 ms後に離します。停止・異常・モード切替でも離します。ゲームによっては合成キーを受け付けない場合があります。"/>
+                    </StackPanel>
+                </HeaderedContentControl>
+
                 <HeaderedContentControl Header="訳音声の試聴" AutomationProperties.AutomationId="VoiceMonitorCard">
                     <StackPanel Spacing="10">
                         <TextBlock Text="試聴するヘッドホン・スピーカー"/>
@@ -319,7 +333,7 @@
                     <StackPanel Spacing="10" Margin="0,10,0,0">
                         <TextBlock Classes="hint" Text="1. Wave Link 3 本体と Audio Driver を導入し、翻訳音声専用の仮想入力チャンネル（例: Aux 1）を用意します。このアプリの送信先に、その再生チャンネルを選択してください。"/>
                         <TextBlock Classes="hint" Text="2. Wave Link の Chat Mix に翻訳専用チャンネルだけを含め、物理マイク・ゲーム音・ほかの音声を外します。ゲームのボイスチャット入力には Chat Mix (Elgato Virtual Audio) を選びます。"/>
-                        <TextBlock Classes="hint" Text="3. ゲーム側は音声検出またはオープンマイクにします。PTT を離したあとに届く翻訳音声も相手へ送るためです。"/>
+                        <TextBlock Classes="hint" Text="3. ゲーム送信用PTTを使う場合は、ゲーム側もPTTにして同じキーを割り当てます。使わない場合は、マイクの発話キーを離したあとに届く翻訳音声も送れるよう、ゲーム側を音声検出またはオープンマイクにしてください。"/>
                         <TextBlock Classes="hint" Text="このアプリ → Wave Link の翻訳専用チャンネル → Chat Mix → ゲームの順に送ります。字幕翻訳は別経路で同時に使用できます。"/>
                     </StackPanel>
                 </Expander>

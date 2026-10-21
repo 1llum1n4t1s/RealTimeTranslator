@@ -37,6 +37,7 @@ public partial class VoiceTranslationViewModel
             _settings.PushToTalkModifiers = VoiceShortcutModifiers.None;
         }
         PttShortcutText = VoiceShortcutKey.Format(_settings.PushToTalkVirtualKey, _settings.PushToTalkModifiers);
+        InitializeGamePushToTalk();
         IsMonitoring = _service.IsMonitoring;
         _service.MonitoringChanged += OnMonitoringChanged;
         _service.MonitoringErrorReceived += OnMonitoringError;
@@ -45,6 +46,7 @@ public partial class VoiceTranslationViewModel
     public void BeginPttCapture()
     {
         if (!CanCapturePttKey) return;
+        CancelGamePttCapture();
         ErrorText = string.Empty;
         IsCapturingPttKey = true;
         UpdateState();
@@ -120,6 +122,8 @@ public partial class VoiceTranslationViewModel
     {
         OnPropertyChanged(nameof(PttCaptureButtonText));
         OnPropertyChanged(nameof(CanCapturePttKey));
+        OnPropertyChanged(nameof(GamePttCaptureButtonText));
+        OnPropertyChanged(nameof(CanCaptureGamePttKey));
         OnPropertyChanged(nameof(CanEditMonitorOutput));
         OnPropertyChanged(nameof(CanToggleMonitoring));
         OnPropertyChanged(nameof(MonitorButtonText));
