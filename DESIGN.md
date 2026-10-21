@@ -31,7 +31,7 @@ RealTimeTranslator は、Windows 上で指定したプロセスの再生音声�
 物理マイク（取得形式）
 → VoiceAudioService（ネイティブ buffer のコピー、mono float 化）
 → bounded channel（取得時の PTT 許可とルーティング世代を保持）
-→ VoiceTranslationService（24 kHz / PCM16 へリサンプル）
+→ VoiceTranslationService（入力ゲイン、PTT、マイク VAD、24 kHz / PCM16 化）
 → 専用 IRealtimeSpeechTranslator / OpenAI Translation session
 → session.output_audio.delta（24 kHz / PCM16 / mono）
 → VoiceAudioService（出力形式変換、2 秒上限のリング、無音補填）
@@ -42,7 +42,9 @@ RealTimeTranslator は、Windows 上で指定したプロセスの再生音声�
 
 マイクを native callback からネットワークへ直接送らず、処理 task で変換・送信する。ボイス通訳は独立した PTT ゲートを使用し、字幕用 VAD の状態・個別設定を変更しない。発話キーは UI が実際のキー入力から通常キー1つと修飾キーを登録し、`PushToTalkVirtualKey` と `PushToTalkModifiers` に保存する。旧設定は修飾キーなしとして引き継ぐ。マイク取得時にすべての指定キーの押下を確認して送信許可を固定する。キーを離した後も無音 PCM を送り、翻訳の末尾を出力させる。リサンプラに残った実音もキー閉鎖中は送らない。原音モードは API を経由せず、ミュートは出力しない。モード変更時は一旦ミュートしてキューを消去し、古い接続の遅延出力を破棄する。
 
-翻訳モードのマイクVADは専用factoryから作るFireRed detectorと16/24 kHzリサンプラを所有し、字幕の検出器・cache・設定を共有しない。入力ゲイン後の同じnative monoから16 kHz判定用と24 kHz送信用へ並列変換する。VoiceTranslationSettingsのEnableVad / VadThreshold / VadPreRollMs / VadHangoverMsを開始時cloneから固定し、既定をtrue / 0.8 / 50 / 200 msとする。発話のpre-rollとhangoverを保持し、発話後は専用の5000 ms無音paddingを送ってからappendを休止する。判定は32 ms単位で、開ゲート中の許可済み末尾は判定を待たず送るため、hangover=0でも次の判定まで最大32 ms未満の音声が先行し得る。padding中も次の冒頭を保持して再検出時に一括復元する。PTT許可・世代を優先し、キー閉鎖時の残留実音と旧pre-rollを送らない。開始・停止・モード・入力レート変更で専用状態をreset/disposeし、有効時の初期化・推論失敗はボイス通訳だけを停止する。原声モードとVAD無効時は既存の送信経路を使用する。
+翻訳モードのマイク VAD は専用 factory から作る FireRed detector と16/24 kHzリサンプラを所有し、字幕の検出器・cache・設定を共有しない。入力ゲイン後の同じ native mono から16 kHz判定用と24 kHz送信用へ並列変換する。`VoiceTranslationSettings` の `EnableVad` / `VadThreshold` / `VadPreRollMs` / `VadHangoverMs` を開始時 clone から固定し、既定を true / 0.8 / 50 / 200 ms とする。原声モードと VAD 無効時は PTT と24 kHz変換だけの経路を使用する。
+
+マイク VAD は pre-roll と hangover を24 kHzのサンプル数で保持し、発話後は専用の5000 ms無音 padding を送ってから append を休止する。接続と訳音声の受信は継続する。判定は32 ms単位で、開ゲート中の許可済み末尾は判定を待たず送るため、hangover=0でも次の判定まで最大32 ms未満の音声が先行し得る。padding 中も次の冒頭を保持して再検出時に一括復元する。PTT 許可・世代を優先し、キー開閉時には特徴量・DSP・pre-roll をリセットして閉鎖前の実音を次の押下へ持ち越さない。開始・停止・モード・入力レート変更でも専用状態をリセットまたは破棄する。有効時の初期化・推論失敗はボイス通訳だけを停止し、処理失敗後の停止予約もセッション・世代・gate の一致を再確認してから適用する。これにより旧モードの失敗で切替後のモードを停止しない。
 
 訳音声の任意のライブ試聴は `IVoicePlaybackService` / `VoicePlaybackService` の独立した WASAPI 再生を使い、訳音声の同じ PCM16 をゲーム送話と試聴へ渡す。試聴先 ID だけを設定へ保存し、オン状態は永続化しない。試聴は利用可能な Windows の再生機器を対象とし、hardware ID で確認できた Wave Link 関連機器と、送話先と同じ ID を除外する。列挙・開始で同じ条件を使い、既定機器には fallback しない。RDP や仮想ヘッドホンを物理 bus がない理由だけで拒否しない。送話側の厳密な Wave Link 判定は変更しない。試聴用バッファは最大2秒とし、機器消失・過負荷は試聴のみ停止させる。世代付きエラーを確認し、通訳停止・モード変更時は試聴の残留音も消去する。試聴だけの停止や失敗で送話・字幕の client を停止しない。
 
@@ -94,6 +96,8 @@ OpenAI の `/v1/realtime/translations` は標準 Realtime endpoint と wire cont
 字幕用接続は約55分でセッションを更新し、60分の上限による切断を避けます。予定更新の初回は待機せず、失敗後は通常の backoff を使います。再接続を無効化したボイス通訳では予定更新も行いません。
 
 ## 音声処理と VAD
+
+以下は字幕経路の設計です。マイク側の保持時間の計数・失敗時の停止方針は [ボイス通訳の独立セッション](#ボイス通訳の独立セッション) を参照してください。
 
 入力ゲインはリサンプル前の mono float に一度だけ適用し、VAD と送信の双方が同じ信号を見るようにします。自動 limiter は置かず、ゲイン後ピークと clip 表示を見てユーザーが調整します。
 
@@ -177,7 +181,7 @@ MSBuild の初期 target より前に logger や response file が扱われる�
 | 字幕 client とボイス通訳 client を分離 | 同時実行しても接続・言語・停止状態を混在させない | ボイス通訳用の専用 client factory とライフサイクル管理が必要 |
 | OpenAI用のVADと送信を48 kHzから並列リサンプル | VAD の16 kHz制約を守りつつOpenAI向け高域を維持する | OpenAIセッションではリサンプラを2つ進めるCPUコストがある |
 | 字幕経路の bounded channel + `DropOldest` | メモリと遅延を有限に保つ | 過負荷時は古い音声が欠落する。OpenAI送信側は計測するが、raw-audio側は個別計測しない |
-| VAD失敗時は全送信へフォールバック | VAD asset / native runtime 障害で起動不能にしない | 無音抑制が失われ、送信量が増える |
+| 字幕 VAD 初期化失敗時は全送信へフォールバック | VAD asset / native runtime 障害で字幕翻訳が起動不能になることを避ける | 無音抑制が失われ、送信量が増える。マイク VAD の失敗はボイス通訳を停止する |
 | subtitle finalization を多段化 | 句読点・長さ・完了通知・idle を組み合わせて字幕を確定できる | 分割条件が相互依存するため回帰テストが必要 |
 | API key を DPAPI CurrentUser で保存 | 平文保存を避け、追加サービスを不要にする | 別ユーザー・別PCへ暗号文を移しても復号できない |
 | 更新 URL をコードで固定 | feed 差し替えによる任意配布物への誘導を防ぐ | mirror や private feed を利用者が選べない |
