@@ -127,22 +127,6 @@ public sealed class TranslationPipelineServiceAdversarialTests
         catch (Exception ex) { return ex; }
     }
 
-    /// <summary>
-    /// テスト並列実行時に ThreadPool 飽和で System.Threading.Timer コールバックが遅延する問題を回避するための
-    /// ポーリング待機ヘルパー。 固定 Task.Delay だと並列テスト数に依存して flaky になるため、
-    /// 条件成立を 50ms 間隔でチェックし、タイムアウトまでに成立しなければ Assert.Fail で落とす。
-    /// </summary>
-    private static async Task WaitForConditionAsync(Func<bool> condition, TimeSpan timeout)
-    {
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-        while (sw.Elapsed < timeout)
-        {
-            if (condition()) return;
-            await Task.Delay(50);
-        }
-        // タイムアウト時は呼び出し元の Assert で詳細メッセージが出るので、 ここでは Assert.Fail しない
-    }
-
     // ════════ 隊員4 (リソース枯渇) 専用テストダブル + ファクトリ ════════
     private sealed class ResourceTestTranscriber : IRealtimeTranscriber
     {

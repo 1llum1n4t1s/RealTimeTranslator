@@ -170,11 +170,7 @@ public partial class OverlayViewModel : ObservableObject, IDisposable
             _settings = newSettings.Overlay;
             ReloadSettings();
         });
-        FontFamily = ResolveFontFamily(_settings.FontFamily);
-        FontSize = _settings.FontSize;
-        FontWeight = ResolveFontWeight(_settings.FontWeight);
-        BackgroundBrush = ParseBrush(_settings.BackgroundColor);
-        BorderBrush = DeriveBorderBrush(_settings.BackgroundColor);
+        ApplyAppearanceSettings();
         BottomMarginPercent = _settings.BottomMarginPercent;
         SubtitleOffsetX = _settings.SubtitleOffsetX;
         SubtitleOffsetY = _settings.SubtitleOffsetY;
@@ -255,11 +251,7 @@ public partial class OverlayViewModel : ObservableObject, IDisposable
     {
         Dispatcher.UIThread.Post(() =>
         {
-            FontFamily = ResolveFontFamily(_settings.FontFamily);
-            FontSize = _settings.FontSize;
-            FontWeight = ResolveFontWeight(_settings.FontWeight);
-            BackgroundBrush = ParseBrush(_settings.BackgroundColor);
-            BorderBrush = DeriveBorderBrush(_settings.BackgroundColor);
+            ApplyAppearanceSettings();
             FinalTextBrushPreview = ParseBrush(_settings.FinalTextColor);
             BottomMarginPercent = _settings.BottomMarginPercent;
             IsOverlayVisible = _settings.ShowSubtitleOverlay;
@@ -270,6 +262,15 @@ public partial class OverlayViewModel : ObservableObject, IDisposable
                 SubtitleOffsetY = _settings.SubtitleOffsetY;
             }
         });
+    }
+
+    private void ApplyAppearanceSettings()
+    {
+        FontFamily = ResolveFontFamily(_settings.FontFamily);
+        FontSize = _settings.FontSize;
+        FontWeight = ResolveFontWeight(_settings.FontWeight);
+        BackgroundBrush = ParseBrush(_settings.BackgroundColor);
+        BorderBrush = DeriveBorderBrush(_settings.BackgroundColor);
     }
 
     // settings.json には "Normal" / "Bold" の文字列で保存し、 ここで Avalonia.Media.FontWeight enum に変換する。

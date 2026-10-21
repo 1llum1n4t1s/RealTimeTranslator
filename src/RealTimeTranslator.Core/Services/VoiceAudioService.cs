@@ -181,6 +181,7 @@ public sealed class VoiceAudioService : IVoiceAudioService
                 {
                     var details = outputDiagnostics.Contains("OutputQueuedMilliseconds")
                         ? $" queuedMs={outputDiagnostics["OutputQueuedMilliseconds"]:F1} incomingMs={outputDiagnostics["OutputIncomingMilliseconds"]:F1}"
+                            + $" queuedNonSilentSamples={outputDiagnostics["OutputQueuedNonSilentSamples"]} queuedPeak={outputDiagnostics["OutputQueuedPeak"]:F6}"
                             + $" pcmPeak={outputDiagnostics["OutputInputPeak"]:F6} silent={outputDiagnostics["OutputInputSilent"]}"
                             + $" readCalls={outputDiagnostics["OutputReadCalls"]} consumedSamples={outputDiagnostics["OutputReadSamples"]}"
                             + $" lastReadAgeMs={outputDiagnostics["OutputLastReadAgeMilliseconds"]:F1}"
@@ -317,6 +318,7 @@ public sealed class VoiceAudioService : IVoiceAudioService
         private readonly float[] _buffer = new float[sampleRate * 2];
         private int _start;
         private int _count;
+        private int _nonSilentSamples;
         private bool _muted;
         private int _inputSampleRate;
         private StreamingResampler? _resampler;
@@ -330,8 +332,8 @@ public sealed class VoiceAudioService : IVoiceAudioService
             lock (_sync)
             {
                 if (_muted) return;
-                // 大きすぎる受信を変換前に拒否し、変換用配列も上限以内に保つ。
-                if ((long)pcm16.Length * sampleRate / (sizeof(short) * inputSampleRate) > _buffer.Length - _count)
+                // 単一チャンクの上限は変換前に守る。待機分との合計は、無音とフィルタ末尾を判定してから確認する。
+                if ((long)pcm16.Length * sampleRate / (sizeof(short) * inputSampleRate) > _buffer.Length)
                     throw CreateOverflowException("音声出力が2秒の上限を超えたため、仮想マイクへの出力を停止しました。", pcm16, inputSampleRate);
                 if (_inputSampleRate != inputSampleRate)
                 {
@@ -344,10 +346,17 @@ public sealed class VoiceAudioService : IVoiceAudioService
                 for (var i = 0; i < samples.Length; i++)
                     samples[i] = BinaryPrimitives.ReadInt16LittleEndian(pcm16.AsSpan(i * sizeof(short))) / 32768f;
                 if (_resampler is not null) samples = _resampler.Resample(samples);
+                // 末尾を押し出すため無音もリサンプルする。実音が残らない無音だけなら Read のゼロ補完へ任せる。
+                // 既存キューは消さず、実音に続く間隔とフィルタの残留音は通常どおり保持する。
+                if (_nonSilentSamples == 0 && samples.AsSpan().IndexOfAnyExcept(0f) < 0)
+                    return;
                 if (samples.Length > _buffer.Length - _count)
-                    throw CreateOverflowException("音声出力バッファの上限を超えました。", pcm16, inputSampleRate);
+                    throw CreateOverflowException("音声出力が2秒の上限を超えたため、仮想マイクへの出力を停止しました。", pcm16, inputSampleRate);
                 foreach (var sample in samples)
+                {
                     _buffer[(_start + _count++) % _buffer.Length] = sample;
+                    if (sample != 0f) _nonSilentSamples++;
+                }
             }
         }
 
@@ -359,6 +368,11 @@ public sealed class VoiceAudioService : IVoiceAudioService
                 peak = Math.Max(peak, Math.Abs((int)BinaryPrimitives.ReadInt16LittleEndian(pcm16.AsSpan(i, sizeof(short)))));
             var exception = new IOException(message);
             exception.Data["OutputQueuedMilliseconds"] = _count * 1000d / sampleRate;
+            exception.Data["OutputQueuedNonSilentSamples"] = _nonSilentSamples;
+            float queuedPeak = 0;
+            for (var i = 0; i < _count; i++)
+                queuedPeak = Math.Max(queuedPeak, Math.Abs(_buffer[(_start + i) % _buffer.Length]));
+            exception.Data["OutputQueuedPeak"] = queuedPeak;
             exception.Data["OutputIncomingMilliseconds"] = pcm16.Length * 1000d / (sizeof(short) * inputSampleRate);
             exception.Data["OutputInputPeak"] = peak / 32768d;
             exception.Data["OutputInputSilent"] = peak == 0;
@@ -379,7 +393,10 @@ public sealed class VoiceAudioService : IVoiceAudioService
                 var samples = MemoryMarshal.Cast<byte, float>(buffer);
                 var available = Math.Min(samples.Length, _count);
                 for (var i = 0; i < available; i++)
+                {
                     samples[i] = _buffer[(_start + i) % _buffer.Length];
+                    if (samples[i] != 0f) _nonSilentSamples--;
+                }
                 _start = (_start + available) % _buffer.Length;
                 _count -= available;
                 _readCalls++;
@@ -395,6 +412,7 @@ public sealed class VoiceAudioService : IVoiceAudioService
             {
                 _start = 0;
                 _count = 0;
+                _nonSilentSamples = 0;
                 _inputSampleRate = 0;
                 _resampler = null;
             }
@@ -407,6 +425,7 @@ public sealed class VoiceAudioService : IVoiceAudioService
                 _muted = true;
                 _start = 0;
                 _count = 0;
+                _nonSilentSamples = 0;
                 _resampler = null;
             }
         }

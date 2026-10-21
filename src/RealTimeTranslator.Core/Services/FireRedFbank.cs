@@ -59,6 +59,11 @@ internal sealed class FireRedFbank
         // Kaldi モードの三角フィルター。Slaney 正規化は librosa モードだけの設定なので使わない。
         float lowMel = MelScale(20f);
         float step = (MelScale(8000f) - lowMel) / (FeatureSize + 1);
+        Span<float> melFrequencies = stackalloc float[SpectrumSize];
+        for (int k = 0; k < SpectrumSize; k++)
+        {
+            melFrequencies[k] = MelScale(k * (16000f / FftSize));
+        }
         for (int bin = 0; bin < FeatureSize; bin++)
         {
             _melStarts[bin] = SpectrumSize;
@@ -67,7 +72,7 @@ internal sealed class FireRedFbank
             float right = lowMel + ((bin + 2) * step);
             for (int k = 0; k < SpectrumSize; k++)
             {
-                float mel = MelScale(k * (16000f / FftSize));
+                float mel = melFrequencies[k];
                 if (mel > left && mel < right)
                 {
                     _melWeights[(bin * SpectrumSize) + k] = mel <= center

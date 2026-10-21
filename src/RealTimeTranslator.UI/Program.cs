@@ -11,24 +11,27 @@ namespace RealTimeTranslator.UI;
 /// <summary>
 /// アプリケーションエントリポイント（起動トリガーはここ1か所のみ）
 /// </summary>
-internal static class Program
+internal static partial class Program
 {
     // 単一インスタンス Mutex はユーザーセッション単位で十分（BringExistingWindowToFront も現セッション内のプロセスしか列挙しないため）。
     // Global\ は別ユーザーからの DoS スプーフィングを許してしまうので Local\ を使う。
     private const string SingleInstanceMutexName = "Local\\RealTimeTranslator_SingleInstance_7B3F9E2A";
     private const string AppUserModelId = "velopack.RealTimeTranslator";
 
-    [DllImport("user32.dll")]
-    private static extern bool SetForegroundWindow(IntPtr hWnd);
+    [LibraryImport("user32.dll", EntryPoint = "SetForegroundWindow")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool SetForegroundWindow(IntPtr hWnd);
 
-    [DllImport("user32.dll")]
-    private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+    [LibraryImport("user32.dll", EntryPoint = "ShowWindow")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool ShowWindow(IntPtr hWnd, int nCmdShow);
 
-    [DllImport("user32.dll")]
-    private static extern bool IsIconic(IntPtr hWnd);
+    [LibraryImport("user32.dll", EntryPoint = "IsIconic")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool IsIconic(IntPtr hWnd);
 
-    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
-    private static extern int SetCurrentProcessExplicitAppUserModelID(string appId);
+    [LibraryImport("shell32.dll", EntryPoint = "SetCurrentProcessExplicitAppUserModelID", StringMarshalling = StringMarshalling.Utf16)]
+    private static partial int SetCurrentProcessExplicitAppUserModelID(string appId);
 
     private const int SW_RESTORE = 9;
 

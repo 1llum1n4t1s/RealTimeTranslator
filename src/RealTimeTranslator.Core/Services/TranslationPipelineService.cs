@@ -170,7 +170,6 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     // 信号フロー: WASAPI → [InputGain] → [AntiClip] → _vadResampler →...
     // ステートフルなので _vadResampler と同じくシングルインスタンスで保持 + StartCoreAsync で Reset
     // (詳細は _global/systemPatterns.md の DSP 教訓と各 DSP クラスの XML doc 参照)。
-    private const int CaptureSampleRate = 48000;
     private readonly InputGainStage _inputGain = new(0f);
     // レベルメーター用: ゲイン適用後のピーク振幅を ~50ms スロットルで UI へ通知する状態。
     private DateTime _lastLevelEmitUtc = DateTime.MinValue;
@@ -790,11 +789,14 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
             // while ループ化の理由: 1 delta で巨大な (例: 100,000 文字) テキストが流れ込んだ場合、
             // 1 回切るだけだと残り 99,920 文字が partial として残り「育ちすぎる」問題が残存する。
             // ループで _accumulatedText.Length が maxChars 未満になるまで切り続ける。
-            // 各 iteration は O(1) のスキャン + O(分割サイズ) の Remove なので、 全体は O(N)。
+            // 区切り不在を確認した後は、この delta 内で先頭を削るだけの残りを再走査しない。
             int maxChars = _activeMaxPartialChars;
+            bool useMaxCharsFallback = false;
             while (maxChars > 0 && _accumulatedText.Length >= maxChars)
             {
-                int splitIdx = FindForcedSplitIndex(_accumulatedText, maxChars);
+                int splitIdx = useMaxCharsFallback
+                    ? maxChars
+                    : FindForcedSplitIndex(_accumulatedText, maxChars, out useMaxCharsFallback);
                 if (splitIdx <= 0 || splitIdx > _accumulatedText.Length)
                 {
                     // 防御: FindForcedSplitIndex は本来 1〜sb.Length を返すが、
@@ -1697,7 +1699,11 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     /// 戻り値は分割位置 (0 = 分割不要、 sb.Length 以下)。 呼び出し側で sb.ToString(0, idx) で切り出せる。
     /// </remarks>
     internal static int FindForcedSplitIndex(StringBuilder sb, int maxChars)
+        => FindForcedSplitIndex(sb, maxChars, out _);
+
+    private static int FindForcedSplitIndex(StringBuilder sb, int maxChars, out bool usedMaxCharsFallback)
     {
+        usedMaxCharsFallback = false;
         if (sb is null) throw new ArgumentNullException(nameof(sb));
         if (maxChars <= 0 || sb.Length < maxChars) return 0;
 
@@ -1726,6 +1732,7 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
         }
 
         // 3. 最終手段: maxChars 位置で強制切断
+        usedMaxCharsFallback = true;
         return maxChars;
     }
 

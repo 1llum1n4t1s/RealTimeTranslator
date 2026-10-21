@@ -1,6 +1,0 @@
-ActivateAudioInterfaceAsync
-IActivateAudioInterfaceCompletionHandler
-IActivateAudioInterfaceAsyncOperation
-PROPVARIANT
-AUDIOCLIENT_ACTIVATION_PARAMS
-AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS

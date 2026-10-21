@@ -21,7 +21,6 @@ public class AudioCaptureService : IAudioCaptureService
 {
     private const int AudioChunkDurationMs = 100; // 音声チャンクの長さ（ミリ秒）
     private const int MonoChannelCount = 1; // モノラルチャンネル数
-    private const int BytesPerFloat = 4;
     private const int RetryIntervalMs = 1000; // リトライ間隔（ミリ秒）
     private const int ProcessLoopbackBufferMs = 20; // 旧フォーク版と同じ Process Loopback バッファ長
     private const int CaptureStateTransitionTimeoutMs = 3000;

@@ -229,6 +229,7 @@ public sealed class VoicePlaybackService : IVoicePlaybackService
         private readonly float[] _buffer = new float[sampleRate * 2];
         private int _start;
         private int _count;
+        private int _nonSilentSamples;
         private bool _muted;
         private int _inputSampleRate;
         private StreamingResampler? _resampler;
@@ -240,7 +241,7 @@ public sealed class VoicePlaybackService : IVoicePlaybackService
             {
                 if (_muted)
                     return;
-                if ((long)pcm16.Length * sampleRate / (sizeof(short) * inputSampleRate) > _buffer.Length - _count)
+                if ((long)pcm16.Length * sampleRate / (sizeof(short) * inputSampleRate) > _buffer.Length)
                     throw new IOException("試聴音声が2秒の上限を超えたため、試聴を停止しました。");
                 if (_inputSampleRate != inputSampleRate)
                 {
@@ -254,10 +255,16 @@ public sealed class VoicePlaybackService : IVoicePlaybackService
                     samples[i] = BinaryPrimitives.ReadInt16LittleEndian(pcm16.AsSpan(i * sizeof(short))) / 32768f;
                 if (_resampler is not null)
                     samples = _resampler.Resample(samples);
+                // 送話と同じく、実音のない無音待機は Read のゼロ補完へ任せる。フィルタ末尾は先に処理する。
+                if (_nonSilentSamples == 0 && samples.AsSpan().IndexOfAnyExcept(0f) < 0)
+                    return;
                 if (samples.Length > _buffer.Length - _count)
-                    throw new IOException("試聴音声バッファの上限を超えました。");
+                    throw new IOException("試聴音声が2秒の上限を超えたため、試聴を停止しました。");
                 foreach (var sample in samples)
+                {
                     _buffer[(_start + _count++) % _buffer.Length] = sample;
+                    if (sample != 0f) _nonSilentSamples++;
+                }
             }
         }
 
@@ -269,7 +276,10 @@ public sealed class VoicePlaybackService : IVoicePlaybackService
                 var samples = MemoryMarshal.Cast<byte, float>(buffer);
                 var available = Math.Min(samples.Length, _count);
                 for (var i = 0; i < available; i++)
+                {
                     samples[i] = _buffer[(_start + i) % _buffer.Length];
+                    if (samples[i] != 0f) _nonSilentSamples--;
+                }
                 _start = (_start + available) % _buffer.Length;
                 _count -= available;
                 return buffer.Length;
@@ -282,6 +292,7 @@ public sealed class VoicePlaybackService : IVoicePlaybackService
             {
                 _start = 0;
                 _count = 0;
+                _nonSilentSamples = 0;
                 _inputSampleRate = 0;
                 _resampler = null;
             }
@@ -294,6 +305,7 @@ public sealed class VoicePlaybackService : IVoicePlaybackService
                 _muted = true;
                 _start = 0;
                 _count = 0;
+                _nonSilentSamples = 0;
                 _resampler = null;
             }
         }
