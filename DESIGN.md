@@ -103,7 +103,9 @@ API key を送る前に endpoint の `wss` scheme、userinfo が空であるこ�
 
 OpenAI の `/v1/realtime/translations` は標準 Realtime endpoint と wire contract が異なります。session update では server 既定の VAD を使い、音声は `session.input_audio_buffer.append` として送ります。複数世代の transcript event を受理しつつ、同一 response の text / audio-transcript 二重通知は client で抑制します。
 
-字幕用接続は約55分でセッションを更新し、60分の上限による切断を避けます。予定更新の初回は待機せず、失敗後は通常の backoff を使います。再接続を無効化したボイス通訳では予定更新も行いません。
+字幕用接続は約55分でセッションを更新し、60分の上限による切断を避けます。予定更新の初回は待機せず、失敗後は通常の backoff を使います。
+
+ボイス通訳は `VoiceTranslationService` が専用接続の成功から約55分後に予定更新します。開始停止・モード切替と同じ直列化境界で一時的に送受信を閉じ、旧接続・保留音声・VAD/DSP履歴・ゲームPTTの保持を破棄して、新しい専用clientへ接続します。試聴のオン状態と入出力機器は保持し、更新中のマイク音声と旧clientの通知は持ち越しません。停止操作は更新中の接続待ちもキャンセルし、モード切替は更新と直列に実行します。接続設定は開始時のスナップショットを使い、新接続の成功から次の55分を数えます。障害時の自動再接続は `MaxReconnectAttempts = 0` のまま維持し、予定更新に失敗した場合はボイス通訳だけを停止します。
 
 ## 音声処理と VAD
 

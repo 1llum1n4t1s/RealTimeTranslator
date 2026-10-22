@@ -220,6 +220,7 @@ public sealed partial class VoiceTranslationService : IVoiceTranslationService
             ct.ThrowIfCancellationRequested();
             if (client.State != ConnectionState.Connected || Volatile.Read(ref _faultScheduled) != 0)
                 throw new IOException("ボイス通訳の接続を開始できませんでした。再開始してください。");
+            ScheduleSessionRefresh(client, ct);
         }
         catch
         {
@@ -449,18 +450,20 @@ public sealed partial class VoiceTranslationService : IVoiceTranslationService
         });
     }
 
-    private IRealtimeSpeechTranslator? MuteRouting()
+    private IRealtimeSpeechTranslator? MuteRouting(bool preserveMonitoring = false)
     {
         IRealtimeSpeechTranslator? client;
         MicrophoneVadGate? vad;
         lock (_routing)
         {
+            _sessionRefreshTimer?.Dispose();
+            _sessionRefreshTimer = null;
             _mode = (int)VoiceSendMode.Muted;
             _epoch++;
             _outputLevel = 0;
             _audio.ClearOutput();
             _playback?.Clear();
-            if (Interlocked.Exchange(ref _monitoring, 0) != 0) MonitoringChanged?.Invoke(false);
+            if (!preserveMonitoring && Interlocked.Exchange(ref _monitoring, 0) != 0) MonitoringChanged?.Invoke(false);
             while (_frames?.Reader.TryRead(out _) == true) { }
             client = _client;
             _client = null;
