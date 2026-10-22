@@ -42,7 +42,7 @@ RealTimeTranslator は、Windows 上で指定したプロセスの再生音声�
 
 マイクを native callback からネットワークへ直接送らず、処理 task で変換・送信する。ボイス通訳は独立した PTT ゲートを使用し、字幕用 VAD の状態・個別設定を変更しない。発話キーは UI が実際のキー入力から通常キー1つと修飾キーを登録し、`PushToTalkVirtualKey` と `PushToTalkModifiers` に保存する。旧設定は修飾キーなしとして引き継ぐ。マイク取得時にすべての指定キーの押下を確認して送信許可を固定する。キーを離した後も無音 PCM を送り、翻訳の末尾を出力させる。リサンプラに残った実音もキー閉鎖中は送らない。原音モードは API を経由せず、ミュートは出力しない。モード変更時は一旦ミュートしてキューを消去し、古い接続の遅延出力を破棄する。
 
-翻訳モードのマイク VAD は専用 factory から作る FireRed detector と16/24 kHzリサンプラを所有し、字幕の検出器・cache・設定を共有しない。入力ゲイン後の同じ native mono から16 kHz判定用と24 kHz送信用へ並列変換する。`VoiceTranslationSettings` の `EnableVad` / `VadThreshold` / `VadPreRollMs` / `VadHangoverMs` を開始時 clone から固定し、既定を true / 0.8 / 50 / 200 ms とする。原声モードと VAD 無効時は PTT と24 kHz変換だけの経路を使用する。
+翻訳モードのマイク VAD は専用 factory から作る FireRed detector と16/24 kHzリサンプラを所有し、字幕の検出器・cache・設定を共有しない。入力ゲイン後の同じ native mono から16 kHz判定用と24 kHz送信用へ並列変換する。`VoiceTranslationSettings` の `EnableVad` / `VadThreshold` / `VadPreRollMs` / `VadHangoverMs` を開始時 clone から固定し、既定を true / 0.8 / 50 / 200 ms とする。原音モードと VAD 無効時は PTT と24 kHz変換だけの経路を使用する。
 
 マイク VAD は pre-roll と hangover を24 kHzのサンプル数で保持し、発話後は専用の5000 ms無音 padding を送ってから append を休止する。接続と訳音声の受信は継続する。判定は32 ms単位で、開ゲート中の許可済み末尾は判定を待たず送るため、hangover=0でも次の判定まで最大32 ms未満の音声が先行し得る。padding 中も次の冒頭を保持して再検出時に一括復元する。PTT 許可・世代を優先し、キー開閉時には特徴量・DSP・pre-roll をリセットして閉鎖前の実音を次の押下へ持ち越さない。開始・停止・モード・入力レート変更でも専用状態をリセットまたは破棄する。有効時の初期化・推論失敗はボイス通訳だけを停止し、処理失敗後の停止予約もセッション・世代・gate の一致を再確認してから適用する。これにより旧モードの失敗で切替後のモードを停止しない。
 
@@ -183,6 +183,12 @@ overlay 背景色は `BackgroundColorBase` (`#RRGGBB`) と `BackgroundOpacityPer
 ローカル専用の `Directory.Build.local.props` が作業ルートを指定し、`Directory.Build.props` が作業別ディレクトリへビルド・中間生成物・テスト結果・パッケージキャッシュを振り分けます。製品利用者の AppData 保存先と OS 全体の一時ディレクトリは変更しません。CI と他の checkout ではローカル専用設定なしで従来の出力先を利用できます。
 
 MSBuild の初期 target より前に logger や response file が扱われるため、`scripts/Dev.ps1` が子プロセスの環境と引数を先に検査し、`Directory.Build.targets` が評価後の実効出力先を検査します。両者は `scripts/DevelopmentOutput.ps1` のパス検証を使い、リンク経由の逸脱を拒否します。この checkout では専用設定がなくても既定出力へ戻さず失敗させます。実行コマンドとこの PC の保存先は [AGENTS.md](AGENTS.md#正規の-restorebuildtest) を参照してください。
+
+## 依存関係更新の境界
+
+`.github/dependabot.yml` は GitHub Actions と3プロジェクトの NuGet 更新を毎週月曜09:00（日本時間）に確認します。minor/patch はまとめ、major は個別 PR とし、特定パッケージの除外は設けていません。
+
+`.github/workflows/dependabot-auto-merge.yml` は既定ブランチ側の処理で GitHub API を使い、PR のコードを checkout・実行せずにマージ可否を判定します。同一リポジトリの Dependabot PR に限定し、コミット署名と作成者、許可した依存関連ファイルの差分、最新 head に対する `ci.yml` の成功、他の check/status を確認します。GitHub Actions の差分は `uses` の参照更新に限定します。マージ直前にも head/base とマージ可能状態を再確認し、GitHub のマージ要件に従います。これにより権限付き処理から PR コードを実行する経路を避け、依存更新の検証を通常の CI に分離します。更新種別の major/minor/patch 自体はマージ判定の除外条件ではありません。
 
 ## 採用した判断とトレードオフ
 

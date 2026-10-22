@@ -115,6 +115,11 @@ rg -n --fixed-strings '"net10.0-windows10.0.20348/win-x64"' src -g packages.lock
 - Velopack 操作は `UpdateService` の単一直列化境界を通す。
 - リリースを依頼された場合は `scripts/release-local.ps1` とリリース用手順を確認し、通常の build / publish を配信完了と見なさない。
 
+### 依存関係と自動マージ
+
+- Dependabot の更新対象・頻度は `.github/dependabot.yml`、自動マージの判定は `.github/workflows/dependabot-auto-merge.yml` を正本とする。更新グループやバージョン範囲を変更するときは両方を確認する。
+- 自動マージ判定の変更では、PR のコードを権限付き処理で実行せず、対象 bot・署名・差分の範囲・最新 head の CI・他の check/status・マージ直前の head/base の再確認を維持する。構造と判定の理由は [DESIGN.md](DESIGN.md#依存関係更新の境界) を参照する。
+
 ## 検証の選び方
 
 - 文書のみ: 記載したパス・コマンド・設定名を `rg` と現行コードで照合し、対象文書の diff と ignore 状態を確認する。
@@ -122,4 +127,5 @@ rg -n --fixed-strings '"net10.0-windows10.0.20348/win-x64"' src -g packages.lock
 - 音声形式・VAD・OpenAI client・字幕分割: 対応する個別テストに加え、`TranslationPipelineService.Happy.test.cs` と `.Adversarial.test.cs` を確認する。
 - WASAPI の構築・停止・実音取得: `ProcessLoopbackCaptureTests.cs` を確認し、実機検証が可能な場合だけ Integration テストを実行する。
 - 設定・API キー・更新・ログ: clone / round-trip / URI 防御 / 並行順序の該当テストを実行する。
+- ボイス通訳の予定更新: 更新後の送話・試聴の継続、旧音声の破棄、更新中の停止・モード切替、更新失敗時の停止範囲を確認する。実機で確認できない項目は未検証として報告する。
 - 変更終了時は `git diff -- <対象>` と `git status --short -- <対象>` で、意図したファイルだけが変わったことを確認する。
