@@ -128,6 +128,8 @@ rg -n --fixed-strings '"net10.0-windows10.0.20348/win-x64"' src -g packages.lock
 - WASAPI の構築・停止・実音取得: `ProcessLoopbackCaptureTests.cs` を確認し、実機検証が可能な場合だけ Integration テストを実行する。
 - 設定・API キー・更新・ログ: clone / round-trip / URI 防御 / 並行順序の該当テストを実行する。
 - ボイス通訳の予定更新: 更新後の送話・試聴の継続、旧音声の破棄、更新中の停止・モード切替、更新失敗時の停止範囲を確認する。実機で確認できない項目は未検証として報告する。
+- ボイス通訳の障害・終了処理: `VoiceTranslationService.Faults.test.cs` で音声停止と client 破棄の単独・同時失敗、元の障害通知、終端状態、再開始を確認する。終了処理の一部失敗で残りの解放を省略しない。
+- アプリログの保存先・移行: `LoggerService` と UI の「ログフォルダを開く」を整合させ、`LegacyLogMigration.test.cs` で同名ログの保持、使用中ファイルの再試行、リンクの拒否、翻訳履歴の保護を確認する。保存先と移行範囲は [DESIGN.md](DESIGN.md#設定データセキュリティ) を参照する。
 - 変更終了時は `git diff -- <対象>` と `git status --short -- <対象>` で、意図したファイルだけが変わったことを確認する。
 
 ### ローカルリリースの実行

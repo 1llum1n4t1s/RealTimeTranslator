@@ -56,6 +56,8 @@ RealTimeTranslator は、Windows 上で指定したプロセスの再生音声�
 
 以前の出力 ID が候補にない場合は未選択とし、保存済み ID を保持したまま Wave Link の明示的な再選択を求める。既定機器への fallback や Windows 全体の既定変更は行わない。停止は接続待ちもキャンセルでき、音声を消去してから capture/player を解放する。通信・機器・キュー超過はミュートして停止し、原音への自動切替や保留音声付きの自動再接続は行わない。WASAPI へ既に渡した短い再生単位は source キューの消去だけでは回収できない。
 
+終了処理は試聴停止、音声停止、処理 task の完了待ち、client 破棄、セッション資源の解放を順に試み、一部が失敗しても残りを実行する。通常停止では解放時の例外を呼び出し元へ返し、複数なら集約して `Faulted` とする。開始失敗・実行中障害では終了処理の失敗を別途ログに残し、元の原因と `Faulted` 状態を保つ。実行中障害の通知を解放時の例外で失わないための境界である。
+
 `VoiceTranslationViewModel` と `VoiceTranslationView` は専用タブで機器・言語・PTT・モード・メーター・翻訳文を表示し、サービスイベントを UI thread へ dispatch する。終了処理では音声送信を明示停止した後に DI の非同期破棄を行う。Wave Link 3 の本体・Audio Driver の導入、翻訳専用チャンネルだけを含む送話用ミックスの設定と、ゲーム側の `Chat Mix (Elgato Virtual Audio)` 等の録音入力の指定は利用者が行う。Wave Link が Windows 11 を必要とすることと、字幕翻訳だけでは導入不要であることを初回案内に表示する。公式ダウンロードと導入説明へのリンクは固定 URL とし、アプリからドライバーの取得・実行や Windows 全体の既定変更は行わない。
 
 ### ゲーム送信用PTT
@@ -100,6 +102,8 @@ Windowsの低レベルフックは機能有効時だけ専用メッセージス�
 pipeline は開始時に OpenAI 設定をスナップショットし、実行中接続へ設定変更を混在させません。変更は次の翻訳開始から反映します。
 
 API key を送る前に endpoint の `wss` scheme、userinfo が空であること、許可 host を検証します。
+
+接続テストと接続・送受信の失敗表示は、内部例外の HTTP status、Socket error、名前解決失敗、タイムアウトから通信原因を説明します。接続・送受信では元例外を内部例外と詳細ログに保持し、認証などの API エラー分類も維持します。接続テストのキャンセルは10秒の応答タイムアウトと区別します。
 
 OpenAI の `/v1/realtime/translations` は標準 Realtime endpoint と wire contract が異なります。session update では server 既定の VAD を使い、音声は `session.input_audio_buffer.append` として送ります。複数世代の transcript event を受理しつつ、同一 response の text / audio-transcript 二重通知は client で抑制します。
 
@@ -164,9 +168,11 @@ idle finalize は無音 padding の処理中に発火させません。実効値
 | --- | --- | --- |
 | 設定 | `%APPDATA%/RealTimeTranslator/settings.json` | temp file を書いて原子的に置換。旧配置から初回移行 |
 | API キー | 上記 settings 内 | DPAPI CurrentUser で暗号化。実行中 object のみ平文 |
-| アプリログ | `%LOCALAPPDATA%/RealTimeTranslator/logs/` | 日別ローテーション。診断用の字幕断片を含み得る。旧ログは起動時に移動し、同名は別名で保持、使用中などで移動できない場合は次回再試行する |
+| アプリログ | `%LOCALAPPDATA%/RealTimeTranslator/logs/` | 日別ローテーション。診断用の字幕断片を含み得る |
 | 翻訳ログ | `%APPDATA%/RealTimeTranslator/logs/translations/` | 確定字幕だけを日別 TSV として保存 |
 | デバッグ音声 | `%APPDATA%/RealTimeTranslator/debug/` | 明示的に有効化したセッションだけ、実送信レートの WAV を保存 |
+
+既定のアプリログ初期化時には、旧 `%APPDATA%/RealTimeTranslator/logs/` と `%LOCALAPPDATA%/Kagayoi/RealTimeTranslator/logs/` の直下にある `RealTimeTranslator_*.log` だけを移動します。同名は別名で保持し、使用中などで移動できないファイルは次回起動時に再試行します。祖先を含むリンク経由の移行とリンクファイルを拒否し、翻訳履歴などのサブディレクトリは移しません。UI の「ログフォルダを開く」は `LoggerService.GetLogFilePath()` を使い、診断ログの実際の出力先を開きます。
 
 設定保存では API キーを暗号化した clone を作り、DI と実行中 client が参照する元 object を変更しません。OpenAI設定のコピーは保存と接続で `OpenAIRealtimeSettings.Clone` を共用し、両経路のコピー項目のずれを防ぎます。ボイス通訳設定は文字列と値型のみで構成し、`MemberwiseClone` で開始時の独立スナップショットを作ります。保存対象は `AppSettings` のフィールドに限定され、廃止した翻訳プロバイダの選択値や固有設定は保存しません。フィールド追加時の作業規則は [AGENTS.md](AGENTS.md#設定シークレット永続化) を参照してください。配布物は `settings.default.json` のみを含み、利用者の `settings.json` を含めません。
 
