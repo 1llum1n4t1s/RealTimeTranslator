@@ -133,15 +133,15 @@ public sealed class VoiceAudioService : IVoiceAudioService
         byte[]? owned = null;
         try
         {
-            // ネイティブバッファを即コピーし、変換後の配列もフレーム専用にする。
             var activeLength = buffer.Length;
-            owned = ArrayPool<byte>.Shared.Rent(activeLength);
-            buffer.CopyTo(owned);
             var format = session.CaptureFormat!;
             var frames = activeLength / format.BlockAlign;
             var mono = new float[frames];
             if ((flags & AudioClientBufferFlags.Silent) == 0)
             {
+                // 実音のネイティブバッファを即コピーし、変換後の配列もフレーム専用にする。
+                owned = ArrayPool<byte>.Shared.Rent(activeLength);
+                buffer.CopyTo(owned);
                 using var stream = new RawSourceWaveStream(new MemoryStream(owned, 0, activeLength, false), format);
                 var provider = stream.ToSampleProvider();
                 int sampleCount = frames * format.Channels;

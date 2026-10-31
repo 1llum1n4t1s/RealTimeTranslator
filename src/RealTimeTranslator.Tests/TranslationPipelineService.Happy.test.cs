@@ -1,5 +1,4 @@
 using Microsoft.VisualStudio.TestTools.UnitTesting;
-using RealTimeTranslator.Core.Interfaces;
 using RealTimeTranslator.Core.Models;
 using RealTimeTranslator.Core.Services;
 
@@ -16,27 +15,7 @@ public sealed class TranslationPipelineServiceHappyTests
     // TestRealtimeTranscriber / TestVoiceActivityDetector は TestDoubles.cs に共通化 (rere v1.0.32 #B2-004)。
 
     private static (TranslationPipelineService pipeline, TestRealtimeTranscriber transcriber, List<SubtitleItem> emitted) CreatePipeline()
-    {
-        var transcriber = new TestRealtimeTranscriber();
-        var audio = new TestAudioCaptureService();
-        var settings = new AppSettings
-        {
-            OpenAIRealtime = new OpenAIRealtimeSettings
-            {
-                ApiKey = "test-key",
-                Endpoint = "wss://api.openai.com/v1/realtime/translations",
-                Model = "gpt-realtime-translate",
-                OutputLanguage = "ja"
-            }
-        };
-        var monitor = new StubOptionsMonitor(settings);
-        var settingsService = new TestSettingsService();
-        var vad = new TestVoiceActivityDetector();
-        var pipeline = new TranslationPipelineService(audio, transcriber, monitor, settingsService, vad);
-        var emitted = new List<SubtitleItem>();
-        pipeline.SubtitleGenerated += (_, item) => emitted.Add(item);
-        return (pipeline, transcriber, emitted);
-    }
+        => TranslationPipelineTestFixture.Create();
 
     /// <happypath category="done-cumulative-diff" description="累積done(セッション全文)の2回目で差分だけがemitされる" expected="2回目doneのIsFinalは1件、内容は差分の『元気。』のみ" />
     [TestMethod]
@@ -61,30 +40,28 @@ public sealed class TranslationPipelineServiceHappyTests
         Assert.AreEqual("元気。", secondFinals[0].TranslatedText, "既出『今日は。』を除いた差分のみ");
     }
 
-    /// <happypath category="done-multi-sentence" description="1回のdoneで新規分に複数文が含まれると各文を分割emit" expected="IsFinalが3件、各文が別SegmentId、内容は『あ。』『い。』『う。』" />
+    /// <summary>delta のない初回 done は、全文を文順に分割して別 SegmentId で確定する。</summary>
     [TestMethod]
     [TestCategory("Happy")]
-    public void OnTranscriptCompleted_累積全文に複数新規文_各文を別SegmentIdでemitすること()
+    [TestCategory("StateMachine")]
+    [TestCategory("TypePunch")]
+    [DataRow("いきなり確定。", new string[] { "いきなり確定。" })]
+    [DataRow("最初の文。次の文。", new string[] { "最初の文。", "次の文。" })]
+    [DataRow("あ。い。う。", new string[] { "あ。", "い。", "う。" })]
+    public void OnTranscriptCompleted_delta無し初回done_各文を順番に別SegmentIdでemitすること(string transcript, string[] expectedSentences)
     {
         var (pipeline, transcriber, emitted) = CreatePipeline();
+        transcriber.RaiseDone(transcript);
 
-        // Act: 初回doneで一気に3文の累積全文が届く
-        transcriber.RaiseDone("あ。い。う。");
-
-        // Assert: 3文がそれぞれ完結文としてemit
         var finals = emitted.Where(x => x.IsFinal).ToList();
-        Assert.AreEqual(3, finals.Count, "句点3つで3文emitされるはず");
-        Assert.AreEqual("あ。", finals[0].TranslatedText);
-        Assert.AreEqual("い。", finals[1].TranslatedText);
-        Assert.AreEqual("う。", finals[2].TranslatedText);
-        Assert.AreNotEqual(finals[0].SegmentId, finals[1].SegmentId, "文1と文2は別SegmentId");
-        Assert.AreNotEqual(finals[1].SegmentId, finals[2].SegmentId, "文2と文3は別SegmentId");
-        Assert.AreNotEqual(finals[0].SegmentId, finals[2].SegmentId, "文1と文3は別SegmentId");
+        CollectionAssert.AreEqual(expectedSentences, finals.Select(x => x.TranslatedText).ToArray());
+        Assert.AreEqual(expectedSentences.Length, finals.Select(x => x.SegmentId).Distinct().Count(), "全ての文が別 SegmentId を持つ");
     }
 
-    /// <happypath category="done-idempotent" description="同一累積transcriptの再送は差分ゼロでemitなし" expected="2回目doneのIsFinalは0件" />
+    /// <happypath category="done-idempotent" description="同一累積transcriptの再送は差分ゼロでemitなし" expected="2回目doneの追加通知は0件" />
     [TestMethod]
     [TestCategory("Happy")]
+    [TestCategory("StateMachine")]
     public void OnTranscriptCompleted_確定済みと同一transcript再送_新規分なしでemitしないこと()
     {
         var (pipeline, transcriber, emitted) = CreatePipeline();
@@ -97,7 +74,7 @@ public sealed class TranslationPipelineServiceHappyTests
         transcriber.RaiseDone("こんばんは。");
 
         // Assert: 新規分が無いのでemitゼロ
-        Assert.AreEqual(0, emitted.Count(x => x.IsFinal), "同一transcript再送は差分ゼロでemitなし");
+        Assert.AreEqual(0, emitted.Count, "同一transcript再送は追加通知なし");
     }
 
     /// <happypath category="delta-then-done" description="句点なしdeltaで蓄積→doneで確定文をemit" expected="最終的にIsFinal『おはよう。』が1件" />

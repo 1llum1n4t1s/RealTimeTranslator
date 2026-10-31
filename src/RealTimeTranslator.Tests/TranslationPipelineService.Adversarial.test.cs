@@ -24,27 +24,7 @@ public sealed class TranslationPipelineServiceAdversarialTests
     // ResourceTestTranscriber / ChaosTranscriber 等の隊員固有 mock は本ファイル内に残置。
 
     private static (TranslationPipelineService pipeline, TestRealtimeTranscriber transcriber, List<SubtitleItem> emitted) CreatePipeline()
-    {
-        var transcriber = new TestRealtimeTranscriber();
-        var audio = new TestAudioCaptureService();
-        var settings = new AppSettings
-        {
-            OpenAIRealtime = new OpenAIRealtimeSettings
-            {
-                ApiKey = "test-key",
-                Endpoint = "wss://api.openai.com/v1/realtime/translations",
-                Model = "gpt-realtime-translate",
-                OutputLanguage = "ja"
-            }
-        };
-        var monitor = new StubOptionsMonitor(settings);
-        var settingsService = new TestSettingsService();
-        var vad = new TestVoiceActivityDetector();
-        var pipeline = new TranslationPipelineService(audio, transcriber, monitor, settingsService, vad);
-        var emitted = new List<SubtitleItem>();
-        pipeline.SubtitleGenerated += (_, item) => emitted.Add(item);
-        return (pipeline, transcriber, emitted);
-    }
+        => TranslationPipelineTestFixture.Create();
 
     // ════════ 隊員3 (並行性) 専用ヘルパー (lock 集計) ════════
     private static (TranslationPipelineService pipeline, TestRealtimeTranscriber transcriber, List<SubtitleItem> emitted, object sync) CreateConcurrentPipeline(double displayDuration = 5.0)
@@ -957,18 +937,7 @@ public sealed class TranslationPipelineServiceAdversarialTests
         Assert.IsTrue(SnapshotFinals(emitted, gate).Count >= finalsBeforeLateEvents, "Stop 後の遅延イベントで確定字幕数が減る (状態破壊) ことはないはず");
     }
 
-    /// <adversarial category="state" severity="medium" />
-    [TestMethod]
-    [TestCategory("StateMachine")]
-    public void OnTranscriptCompleted_SameTranscriptTwice_SecondDoneSkipped()
-    {
-        var (pipeline, transcriber, emitted, gate) = CreateStatePipeline();
-        transcriber.RaiseDone("おはよう。");
-        Assert.AreEqual(1, SnapshotFinals(emitted, gate).Count, "1 回目の done で完結文 1 件 emit されるはず");
 
-        transcriber.RaiseDone("おはよう。");
-        Assert.AreEqual(1, SnapshotFinals(emitted, gate).Count, "2 回目の同一 done は newPortion 空でスキップされ、 重複 emit しないはず");
-    }
 
     /// <adversarial category="state" severity="medium" />
     [TestMethod]
@@ -984,18 +953,7 @@ public sealed class TranslationPipelineServiceAdversarialTests
         Assert.AreEqual("再接続中の発話。", finals[0].TranslatedText);
     }
 
-    /// <adversarial category="state" severity="medium" />
-    [TestMethod]
-    [TestCategory("StateMachine")]
-    public void OnTranscriptCompleted_DoneWithoutAnyDelta_EmitsFullTranscript()
-    {
-        var (pipeline, transcriber, emitted, gate) = CreateStatePipeline();
-        transcriber.RaiseDone("いきなり確定。");
 
-        var finals = SnapshotFinals(emitted, gate);
-        Assert.AreEqual(1, finals.Count, "delta 無しの done でも transcript 全体が 1 件 emit されるはず");
-        Assert.AreEqual("いきなり確定。", finals[0].TranslatedText);
-    }
 
     // v1.0.27: OnMaxSegmentLifetimeTimer_MultipleConsecutiveFinalizes_EmitDistinctSegmentIds 削除済み
     // (最大寿命タイマー廃止のため該当シナリオ消滅)
@@ -1113,18 +1071,7 @@ public sealed class TranslationPipelineServiceAdversarialTests
         Assert.AreEqual(0, emitted.Count, "空文字列連打は全件ガードで握られ emit ゼロのはず");
     }
 
-    /// <adversarial category="type" severity="high" />
-    [TestMethod]
-    [TestCategory("TypePunch")]
-    public void OnTranscriptCompleted_DoneOnlyNoPriorDelta_EmitsSentencesFromScratch()
-    {
-        var (pipeline, transcriber, emitted) = CreatePipeline();
-        transcriber.RaiseDone("最初の文。次の文。");
-        var finals = emitted.Where(x => x.IsFinal).ToList();
-        Assert.AreEqual(2, finals.Count, "done 単独でも newPortion 全体が句点分割 emit されるはず");
-        Assert.AreEqual("最初の文。", finals[0].TranslatedText);
-        Assert.AreEqual("次の文。", finals[1].TranslatedText);
-    }
+
 
     /// <adversarial category="type" severity="high" />
     [TestMethod]

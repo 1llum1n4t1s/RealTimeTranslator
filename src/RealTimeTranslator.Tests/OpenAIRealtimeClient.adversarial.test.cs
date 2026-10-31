@@ -79,7 +79,9 @@ public sealed class OpenAIRealtimeClientAdversarialTests
     [TestMethod]
     [TestCategory("Adversarial")]
     [Timeout(10000)]
-    public async Task ConnectAsync_WithInvalidEndpoint_ShouldFailGracefully()
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task ConnectAsync_WithInvalidEndpoint_ShouldCleanUpInitialConnectionFailure(bool disableReconnect)
     {
         await using var client = new OpenAIRealtimeClient();
         Exception? receivedError = null;
@@ -91,6 +93,8 @@ public sealed class OpenAIRealtimeClientAdversarialTests
             Endpoint = "wss://localhost:1",
             Model = "test"
         };
+        if (disableReconnect) settings.MaxReconnectAttempts = 0;
+        // 許可外 host は初回接続前に拒否される。接続後の再接続動作はこの試験の対象外。
 
         var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
         typeof(OpenAIRealtimeClient).GetField("_totalAudioInputSamples24kHz", flags)!.SetValue(client, 24000L);
@@ -369,29 +373,6 @@ public sealed class OpenAIRealtimeClientAdversarialTests
     // ═══════════════════════════════════════════════════════════════
     // 🌪️ カテゴリ6: 環境異常（Environmental Chaos）
     // ═══════════════════════════════════════════════════════════════
-
-    /// <adversarial category="chaos" severity="medium" />
-    [TestMethod]
-    [TestCategory("Adversarial")]
-    [Timeout(10000)]
-    public async Task ConnectAsync_MaxReconnectAttemptsZero_ShouldNotRetryIndefinitely()
-    {
-        await using var client = new OpenAIRealtimeClient();
-        var settings = new OpenAIRealtimeSettings
-        {
-            ApiKey = "sk-test",
-            Endpoint = "wss://localhost:1",
-            Model = "test",
-            MaxReconnectAttempts = 0
-        };
-
-        try { await client.ConnectAsync(settings); }
-        catch { /* expected */ }
-
-        // 再接続が無限ループにならないことを確認
-        await Task.Delay(500);
-        Assert.AreNotEqual(ConnectionState.Connected, client.State);
-    }
 
     /// <adversarial category="chaos" severity="medium" />
     [TestMethod]

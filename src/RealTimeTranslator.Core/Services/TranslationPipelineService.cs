@@ -728,10 +728,10 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                     {
                         // 類似重複抑制: Translation API が重複音声セグメントを再翻訳した際の
                         // 近似テキスト (例: "実は" が有無だけ異なる文) を抑制する。
-                        if (!IsSimilarToRecentEmission(sentence))
+                        if (!IsSimilarToRecentEmission(sentence, out var bigrams))
                         {
                             (completedSentences ??= new()).Add((_currentSegmentId, sentence));
-                            RecordEmission(sentence);
+                            RecordEmission(sentence, bigrams);
                         }
                         else
                         {
@@ -818,10 +818,10 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                     continue;
                 }
 
-                if (!IsSimilarToRecentEmission(forcedSentence))
+                if (!IsSimilarToRecentEmission(forcedSentence, out var forcedBigrams))
                 {
                     (completedSentences ??= new()).Add((_currentSegmentId, forcedSentence));
-                    RecordEmission(forcedSentence);
+                    RecordEmission(forcedSentence, forcedBigrams);
                     Logger.Info($"D-7 fallback: 句点なし {forcedSentence.Length} 文字超過 (>= {maxChars}) のため強制分割。 SegmentId={ShortSegmentId(_currentSegmentId)} 末尾='{TruncateForLog(forcedSentence)}'");
                 }
                 else
@@ -1135,8 +1135,8 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
             segmentId = _currentSegmentId;
 
             // 類似重複抑制
-            shouldEmit = !IsSimilarToRecentEmission(sentence);
-            if (shouldEmit) RecordEmission(sentence);
+            shouldEmit = !IsSimilarToRecentEmission(sentence, out var bigrams);
+            if (shouldEmit) RecordEmission(sentence, bigrams);
 
             // 確定累積へ反映 (後続 done の prefix 一致を維持するため、 delta 経路の確定と同じ扱い)。
             _lastFinalizedTranscript.Append(sentence);
@@ -1250,10 +1250,10 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                     var sentence = newPortion[start..(i + 1)];
                     if (!string.IsNullOrWhiteSpace(sentence))
                     {
-                        if (!IsSimilarToRecentEmission(sentence))
+                        if (!IsSimilarToRecentEmission(sentence, out var bigrams))
                         {
                             emissions.Add((_currentSegmentId, sentence, true));
-                            RecordEmission(sentence);
+                            RecordEmission(sentence, bigrams);
                         }
                         else
                         {
@@ -1278,10 +1278,10 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                         // 確定文として emit し SegmentId を回転 + finalized 累積へ追加する。 これをしないと、
                         // 連続する短い確定セグメント ("Yes"→"No" 等) が同一 SegmentId を再利用し、
                         // OverlayViewModel.AddOrUpdateSubtitle が前の字幕を上書きしてしまう (Codex 指摘)。
-                        if (!IsSimilarToRecentEmission(trailing))
+                        if (!IsSimilarToRecentEmission(trailing, out var trailingBigrams))
                         {
                             emissions.Add((_currentSegmentId, trailing, true));
-                            RecordEmission(trailing);
+                            RecordEmission(trailing, trailingBigrams);
                         }
                         else
                         {
@@ -1755,6 +1755,8 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     // 2 つの bigram 集合の Jaccard 係数。 集合構築と分離して再利用可能にする。
     private static double JaccardOf(HashSet<long> a, HashSet<long> b)
     {
+        if (a.Count > b.Count) (a, b) = (b, a);
+
         int intersection = 0;
         foreach (var bg in a)
             if (b.Contains(bg)) intersection++;
@@ -1766,18 +1768,19 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     /// <summary>
     /// 直近の完結文と類似度が高い場合 true を返す。 _textLock 内から呼ぶこと。
     /// </summary>
-    private bool IsSimilarToRecentEmission(string sentence)
+    private bool IsSimilarToRecentEmission(string sentence, out HashSet<long>? sentenceBigrams)
     {
+        sentenceBigrams = null;
         if (_recentEmittedSentences.Count == 0) return false;
 
-        // sentence の bigram は 1 回だけ構築する (旧実装は recent 件数ぶん再構築していた)。
+        // 非類似時はこの集合を履歴にも記録し、同じ文を再走査しない。
+        sentenceBigrams = sentence.Length >= 2 ? BuildBigrams(sentence) : null;
         // 2 文字未満は bigram が作れないので文字列等価で判定 (BigramJaccardSimilarity と同挙動)。
-        var bigramsS = sentence.Length >= 2 ? BuildBigrams(sentence) : null;
         foreach (var (text, bigrams) in _recentEmittedSentences)
         {
-            double sim = (bigramsS is null || text.Length < 2)
+            double sim = (sentenceBigrams is null || text.Length < 2)
                 ? (sentence == text ? 1.0 : 0.0)
-                : JaccardOf(bigramsS, bigrams);
+                : JaccardOf(sentenceBigrams, bigrams);
             if (sim > DuplicateSuppressionThreshold)
                 return true;
         }
@@ -1787,10 +1790,9 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     /// <summary>
     /// 完結文を直近バッファに記録する。 _textLock 内から呼ぶこと。
     /// </summary>
-    private void RecordEmission(string sentence)
+    private void RecordEmission(string sentence, HashSet<long>? bigrams)
     {
-        // bigram も一緒に保持して IsSimilarToRecentEmission での再計算を排除する。
-        HashSet<long> bigrams = sentence.Length >= 2 ? BuildBigrams(sentence) : [];
+        bigrams ??= sentence.Length >= 2 ? BuildBigrams(sentence) : [];
         _recentEmittedSentences.Enqueue((sentence, bigrams));
         while (_recentEmittedSentences.Count > MaxRecentEmissions)
             _recentEmittedSentences.Dequeue();

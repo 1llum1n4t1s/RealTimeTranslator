@@ -109,30 +109,7 @@ public sealed class TranslationPipelineServiceSentenceSplitTests
     }
 
     private static (TranslationPipelineService pipeline, TestRealtimeTranscriber transcriber, List<SubtitleItem> emitted) CreatePipeline()
-    {
-        var transcriber = new TestRealtimeTranscriber();
-        var audio = new TestAudioCaptureService();
-        var settings = new AppSettings
-        {
-            OpenAIRealtime = new OpenAIRealtimeSettings
-            {
-                ApiKey = "test-key",
-                Endpoint = "wss://api.openai.com/v1/realtime/translations",
-                Model = "gpt-realtime-translate",
-                OutputLanguage = "ja",
-                // 既存テストは MaxPartialChars=80 ベースの境界値で書かれているため、
-                // default 変更 (v1.0.31 で 80→50) に追従させず specific value で固定する。
-                MaxPartialChars = 80,
-            }
-        };
-        var monitor = new StubOptionsMonitor(settings);
-        var settingsService = new TestSettingsService();
-        var vad = new TestVoiceActivityDetector();
-        var pipeline = new TranslationPipelineService(audio, transcriber, monitor, settingsService, vad);
-        var emitted = new List<SubtitleItem>();
-        pipeline.SubtitleGenerated += (_, item) => emitted.Add(item);
-        return (pipeline, transcriber, emitted);
-    }
+        => TranslationPipelineTestFixture.Create(maxPartialChars: 80);
 
     /// <test rere="B3-010" />
     [TestMethod]
