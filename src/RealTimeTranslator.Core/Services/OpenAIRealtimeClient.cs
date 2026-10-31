@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Net.NetworkInformation;
+using System.Net.Sockets;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
@@ -369,25 +370,66 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeSpeechTranslator
 
             return (true, message);
         }
-        catch (WebSocketException ex) when (ex.InnerException is HttpRequestException httpEx)
-        {
-            var msg = httpEx.StatusCode switch
-            {
-                System.Net.HttpStatusCode.Unauthorized => "認証失敗: APIキーが無効です。",
-                System.Net.HttpStatusCode.Forbidden => "アクセス拒否: このAPIにアクセスする権限がありません。",
-                System.Net.HttpStatusCode.TooManyRequests => "レート制限に達しています。しばらく待ってください。",
-                _ => $"接続エラー: HTTP {(int?)httpEx.StatusCode}"
-            };
-            return (false, msg);
-        }
         catch (OperationCanceledException)
         {
-            return (false, "タイムアウト: サーバーからの応答がありません。");
+            return (false, ct.IsCancellationRequested
+                ? "接続テストをキャンセルしました。"
+                : "通信タイムアウト: サーバーから10秒以内に応答がありませんでした。接続先やプロキシ、回線の状態を確認してください。");
         }
         catch (Exception ex)
         {
-            return (false, $"接続エラー: {ex.Message}");
+            return (false, DescribeConnectionError(ex));
         }
+    }
+
+    // HTTP応答前の障害はStatusCodeがnullになるため、内部の通信例外から原因を判別する。
+    // OS依存の例外メッセージには依存せず、元例外は呼び出し元で詳細ログ用に保持する。
+    private static string DescribeConnectionError(Exception error)
+    {
+        for (Exception? cause = error; cause is not null; cause = cause.InnerException)
+        {
+            if (cause is HttpRequestException { StatusCode: { } statusCode })
+            {
+                return statusCode switch
+                {
+                    System.Net.HttpStatusCode.Unauthorized =>
+                        "認証失敗（401）: APIキーが無効です。設定画面で正しいキーを入力してください。",
+                    System.Net.HttpStatusCode.Forbidden =>
+                        "アクセス拒否（403）: このAPIにアクセスする権限がありません。",
+                    System.Net.HttpStatusCode.TooManyRequests =>
+                        "レート制限（429）: しばらく待ってから再試行してください。",
+                    _ => $"通信エラー: HTTP {(int)statusCode} ({statusCode})。サーバーまたはプロキシからエラーが返されました。"
+                };
+            }
+
+            if (cause is SocketException socket)
+            {
+                var message = socket.SocketErrorCode switch
+                {
+                    SocketError.HostNotFound or SocketError.TryAgain or SocketError.NoData or SocketError.NoRecovery =>
+                        "DNS名前解決に失敗しました。接続先またはプロキシのアドレスを解決できません。回線やDNS設定を確認してください。",
+                    SocketError.TimedOut =>
+                        "通信がタイムアウトしました。接続先またはプロキシから応答がありません。回線やファイアウォールの状態を確認してください。",
+                    SocketError.ConnectionRefused =>
+                        "接続が拒否されました。接続先やプロキシ、ファイアウォールの設定を確認してください。",
+                    SocketError.ConnectionReset or SocketError.ConnectionAborted or SocketError.NetworkReset =>
+                        "通信が途中で切断されました。接続先または通信経路の状態を確認してください。",
+                    SocketError.NetworkDown or SocketError.NetworkUnreachable or SocketError.HostUnreachable =>
+                        "ネットワークに到達できません。回線やVPN、ルーターの状態を確認してください。",
+                    _ => "ネットワーク通信に失敗しました。回線や接続先の状態を確認してください。"
+                };
+                return $"{message}（Socket {socket.NativeErrorCode}: {socket.SocketErrorCode}）";
+            }
+
+            if (cause is HttpRequestException { HttpRequestError: HttpRequestError.NameResolutionError })
+                return "DNS名前解決に失敗しました。接続先またはプロキシのアドレスを解決できません。回線やDNS設定を確認してください。";
+            if (cause is TimeoutException)
+                return "通信がタイムアウトしました。接続先やプロキシ、回線の状態を確認してください。";
+        }
+
+        return error is WebSocketException
+            ? "WebSocket通信に失敗しました。接続先または通信経路で切断された可能性があります。詳細はログを確認してください。"
+            : $"通信エラー: {error.Message}";
     }
 
     private async Task CleanupAsync()
@@ -505,19 +547,10 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeSpeechTranslator
                 System.Net.HttpStatusCode.TooManyRequests    => OpenAIApiErrorKind.RateLimit,
                 _                                            => OpenAIApiErrorKind.Unknown,
             };
-            var friendlyMsg = statusCode switch
-            {
-                System.Net.HttpStatusCode.Unauthorized =>
-                    "認証失敗（401）: APIキーが無効です。設定画面で正しいキーを入力してください。",
-                System.Net.HttpStatusCode.Forbidden =>
-                    "アクセス拒否（403）: このAPIにアクセスする権限がありません。",
-                System.Net.HttpStatusCode.TooManyRequests =>
-                    "レート制限（429）: しばらく待ってから再試行してください。",
-                _ => $"WebSocket接続エラー: HTTP {(int?)statusCode} {statusCode}"
-            };
+            var friendlyMsg = DescribeConnectionError(ex);
             Logger.Error(friendlyMsg, ex);
             // kind != Unknown のときだけ OpenAIApiException に詰める (IsFatal が拾えるパス)。
-            // それ以外 (HTTP 5xx 等) は WebSocketException をそのまま伝播 (一時的エラー扱い)。
+            // それ以外はWebSocketExceptionとして伝播し、開始失敗時も通知と同じ原因を表示する。
             if (kind != OpenAIApiErrorKind.Unknown)
             {
                 var apiEx = new OpenAIApiException(kind, friendlyMsg, ex.Message);
@@ -525,16 +558,25 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeSpeechTranslator
                 SetState(apiEx.IsFatal ? ConnectionState.Failed : ConnectionState.Disconnected);
                 throw apiEx;
             }
-            ErrorReceived?.Invoke(new InvalidOperationException(friendlyMsg, ex));
+            var connectionError = new WebSocketException(ex.WebSocketErrorCode, friendlyMsg, ex);
+            ErrorReceived?.Invoke(connectionError);
             SetState(ConnectionState.Disconnected);
-            throw;
+            throw connectionError;
         }
         catch (Exception ex)
         {
-            Logger.Error("WebSocket 接続失敗", ex);
-            ErrorReceived?.Invoke(ex);
+            if (ex is OperationCanceledException && ct.IsCancellationRequested)
+            {
+                Logger.Error("WebSocket 接続失敗", ex);
+                ErrorReceived?.Invoke(ex);
+                SetState(ConnectionState.Disconnected);
+                throw;
+            }
+            var connectionError = new InvalidOperationException(DescribeConnectionError(ex), ex);
+            Logger.Error(connectionError.Message, ex);
+            ErrorReceived?.Invoke(connectionError);
             SetState(ConnectionState.Disconnected);
-            throw;
+            throw connectionError;
         }
     }
 
@@ -645,8 +687,9 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeSpeechTranslator
         catch (OperationCanceledException) { }
         catch (Exception ex)
         {
-            Logger.Error("WebSocket 送信ループエラー", ex);
-            ErrorReceived?.Invoke(ex);
+            var connectionError = new InvalidOperationException(DescribeConnectionError(ex), ex);
+            Logger.Error($"WebSocket 送信ループエラー: {connectionError.Message}", ex);
+            ErrorReceived?.Invoke(connectionError);
         }
         finally
         {
@@ -706,7 +749,10 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeSpeechTranslator
         catch (OperationCanceledException) { }
         catch (WebSocketException ex)
         {
-            Logger.Warn("WebSocket 受信エラー", ex);
+            var connectionError = new WebSocketException(ex.WebSocketErrorCode, DescribeConnectionError(ex), ex);
+            Logger.Warn($"WebSocket 受信エラー: {connectionError.Message}", ex);
+            // 状態通知による汎用切断メッセージより先に、ボイス通訳へ具体的な原因を渡す。
+            if (!ct.IsCancellationRequested) ErrorReceived?.Invoke(connectionError);
         }
         catch (Exception ex)
         {
@@ -949,10 +995,11 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeSpeechTranslator
                     {
                         Logger.Warn($"OpenAI API 致命的エラー検知 ({kind}) — 自動再接続を停止して Failed 状態に倒します");
                         _shouldReconnect = false;
-                        SetState(ConnectionState.Failed);
                     }
 
+                    // 具体的な原因を先に通知し、Failed の汎用切断通知に置き換えられないようにする。
                     ErrorReceived?.Invoke(ex);
+                    if (ex.IsFatal) SetState(ConnectionState.Failed);
                     break;
                 }
             }

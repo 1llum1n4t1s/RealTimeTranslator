@@ -62,12 +62,12 @@ public static class LoggerService
     private static string _appName = "RealTimeTranslator";
 
     /// <summary>
-    /// ログ出力ディレクトリ。
-    /// Velopack のインストールルート (%LocalAppData%/RealTimeTranslator) と衝突して
-    /// 更新時に消える可能性があるため、Velopack 管理外の %APPDATA%/Roaming に置く。
+    /// 既定のログ出力ディレクトリ。
     /// </summary>
     private static string _logDirectory = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+        Environment.GetFolderPath(OperatingSystem.IsWindows()
+            ? Environment.SpecialFolder.LocalApplicationData
+            : Environment.SpecialFolder.ApplicationData),
         "RealTimeTranslator",
         "logs");
 
@@ -98,6 +98,17 @@ public static class LoggerService
 
         try
         {
+            if (OperatingSystem.IsWindows() && config is null && _logDirectory == Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "RealTimeTranslator", "logs"))
+            {
+                LegacyLogMigration.Move(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                    "RealTimeTranslator", "logs"), _logDirectory);
+                var previousLocalDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "Kagayoi", "RealTimeTranslator");
+                LegacyLogMigration.Move(Path.Combine(previousLocalDirectory, "logs"), _logDirectory);
+                LegacyLogMigration.RemoveEmptyDirectory(previousLocalDirectory);
+            }
+
             var effectiveConfig = config ?? new LoggerConfig
             {
                 LogDirectory = _logDirectory,

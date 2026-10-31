@@ -129,3 +129,12 @@ rg -n --fixed-strings '"net10.0-windows10.0.20348/win-x64"' src -g packages.lock
 - 設定・API キー・更新・ログ: clone / round-trip / URI 防御 / 並行順序の該当テストを実行する。
 - ボイス通訳の予定更新: 更新後の送話・試聴の継続、旧音声の破棄、更新中の停止・モード切替、更新失敗時の停止範囲を確認する。実機で確認できない項目は未検証として報告する。
 - 変更終了時は `git diff -- <対象>` と `git status --short -- <対象>` で、意図したファイルだけが変わったことを確認する。
+
+### ローカルリリースの実行
+
+リポジトリルートで事前確認を行い、失敗時は「署名証明書が見つからないよ。SimplySign Desktop を起動してトークンでログインしてから /vava を再実行してね」。公開依頼時に成功を確認してから実行する。
+
+```powershell
+pwsh -NoProfile -Command 'if (-not (Get-ChildItem Cert:\CurrentUser\My | Where-Object { $_.Subject -like "CN=Open Source Developer Yuichiro Shinozaki*" -and $_.NotAfter -gt (Get-Date) })) { exit 1 }'
+if ($LASTEXITCODE -eq 0) { pwsh -NoProfile -File scripts/release-local.ps1 } else { throw '署名証明書が見つからないよ。SimplySign Desktop を起動してトークンでログインしてから /vava を再実行してね' }
+```

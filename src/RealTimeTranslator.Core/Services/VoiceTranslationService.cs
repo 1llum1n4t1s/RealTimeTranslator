@@ -128,10 +128,9 @@ public sealed partial class VoiceTranslationService : IVoiceTranslationService
             var token = _sessionCancellation.Token;
             _processing = Task.Run(() => ProcessAsync(reader, token), CancellationToken.None);
         }
-        catch
+        catch (Exception error)
         {
-            await StopCoreAsync().ConfigureAwait(false);
-            SetState(VoiceTranslationState.Faulted);
+            await StopAfterFaultAsync(error).ConfigureAwait(false);
             throw;
         }
         finally { _lifecycle.Release(); }
@@ -192,9 +191,15 @@ public sealed partial class VoiceTranslationService : IVoiceTranslationService
         try
         {
             SetState(VoiceTranslationState.Stopping);
-            if (client is not null) await client.DisposeAsync().ConfigureAwait(false);
-            await StopCoreAsync().ConfigureAwait(false);
+            await CompleteCleanupAsync(
+                async () => { if (client is not null) await client.DisposeAsync().ConfigureAwait(false); },
+                StopCoreAsync).ConfigureAwait(false);
             SetState(VoiceTranslationState.Stopped);
+        }
+        catch
+        {
+            SetState(VoiceTranslationState.Faulted);
+            throw;
         }
         finally { _lifecycle.Release(); }
     }
@@ -231,7 +236,11 @@ public sealed partial class VoiceTranslationService : IVoiceTranslationService
                 if (ownsClient) _client = null;
             }
             // 接続待ちを止めた StopAsync が取得済みなら、その呼出元が破棄する。
-            if (ownsClient) await client.DisposeAsync().ConfigureAwait(false);
+            if (ownsClient)
+            {
+                try { await client.DisposeAsync().ConfigureAwait(false); }
+                catch (Exception cleanupError) { Logger.Error("ボイス通訳の接続失敗後の破棄に失敗しました", cleanupError); }
+            }
             throw;
         }
     }
@@ -412,9 +421,8 @@ public sealed partial class VoiceTranslationService : IVoiceTranslationService
             try
             {
                 if (!ReferenceEquals(session, _sessionCancellation)) return;
-                await StopCoreAsync().ConfigureAwait(false);
-                SetState(VoiceTranslationState.Faulted);
-                ErrorReceived?.Invoke(error);
+                Logger.Error($"ボイス通訳の障害により停止します（モード: {Mode}、状態: {State}）", error);
+                await StopAfterFaultAsync(error, notify: true).ConfigureAwait(false);
             }
             finally { _lifecycle.Release(); }
         });
@@ -442,9 +450,8 @@ public sealed partial class VoiceTranslationService : IVoiceTranslationService
                         || State != VoiceTranslationState.Running) return;
                     _faultScheduled = 1;
                 }
-                await StopCoreAsync().ConfigureAwait(false);
-                SetState(VoiceTranslationState.Faulted);
-                ErrorReceived?.Invoke(error);
+                Logger.Error($"マイク音声の処理障害によりボイス通訳を停止します（モード: {Mode}、状態: {State}）", error);
+                await StopAfterFaultAsync(error, notify: true).ConfigureAwait(false);
             }
             finally { _lifecycle.Release(); }
         });
@@ -487,26 +494,53 @@ public sealed partial class VoiceTranslationService : IVoiceTranslationService
         CancelSession();
         var channel = Interlocked.Exchange(ref _frames, null);
         channel?.Writer.TryComplete();
-        try
+        await CompleteCleanupAsync(
+            StopMonitoringCoreAsync,
+            _audio.StopAsync,
+            async () =>
+            {
+                try { if (_processing is not null) await _processing.ConfigureAwait(false); }
+                finally { _processing = null; }
+            },
+            async () => { if (client is not null) await client.DisposeAsync().ConfigureAwait(false); },
+            () =>
+            {
+                CancellationTokenSource? ended;
+                lock (_routing) { ended = _sessionCancellation; _sessionCancellation = null; }
+                ended?.Dispose();
+                LevelsChanged?.Invoke(0, 0);
+                return Task.CompletedTask;
+            }).ConfigureAwait(false);
+    }
+
+    private static async Task CompleteCleanupAsync(params Func<Task>[] steps)
+    {
+        List<Exception>? errors = null;
+        foreach (var step in steps)
         {
-            await StopMonitoringCoreAsync().ConfigureAwait(false);
-            await _audio.StopAsync().ConfigureAwait(false);
+            try { await step().ConfigureAwait(false); }
+            catch (Exception error) { (errors ??= []).Add(error); }
         }
+        if (errors is { Count: 1 }) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(errors[0]);
+        if (errors is not null) throw new AggregateException("ボイス通訳の終了処理で複数の障害が発生しました。", errors);
+    }
+
+    private async Task StopAfterFaultAsync(Exception error, bool notify = false)
+    {
+        try { await StopCoreAsync().ConfigureAwait(false); }
+        catch (Exception cleanupError) { Logger.Error("ボイス通訳の障害後の終了処理に失敗しました", cleanupError); }
         finally
         {
-            if (_processing is not null) await _processing.ConfigureAwait(false);
-            _processing = null;
-            if (client is not null) await client.DisposeAsync().ConfigureAwait(false);
-            CancellationTokenSource? ended;
-            lock (_routing) { ended = _sessionCancellation; _sessionCancellation = null; }
-            ended?.Dispose();
-            LevelsChanged?.Invoke(0, 0);
+            SetState(VoiceTranslationState.Faulted);
+            if (notify) ErrorReceived?.Invoke(error);
         }
     }
 
     private void SetState(VoiceTranslationState state)
     {
+        var previousState = State;
         Volatile.Write(ref _state, (int)state);
+        if (previousState != state) Logger.Info($"ボイス通訳の状態が変わりました: {previousState} → {state}");
         StateChanged?.Invoke(state);
     }
 
@@ -533,9 +567,12 @@ public sealed partial class VoiceTranslationService : IVoiceTranslationService
     public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
-        await StopAsync().ConfigureAwait(false);
-        _audio.MicrophoneFrame -= OnMicrophoneFrame;
-        _audio.ErrorReceived -= OnAudioError;
-        if (_playback is not null) _playback.ErrorReceived -= OnMonitoringError;
+        try { await StopAsync().ConfigureAwait(false); }
+        finally
+        {
+            _audio.MicrophoneFrame -= OnMicrophoneFrame;
+            _audio.ErrorReceived -= OnAudioError;
+            if (_playback is not null) _playback.ErrorReceived -= OnMonitoringError;
+        }
     }
 }

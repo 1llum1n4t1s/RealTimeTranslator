@@ -10,7 +10,7 @@ namespace RealTimeTranslator.Core.Services;
 /// <see cref="ITranslationLogger"/> の実装。 TSV 形式で日付別ファイルに翻訳ログを永続化する。
 ///
 /// 配置: %APPDATA%/Roaming/RealTimeTranslator/logs/translations/TranslationLog_yyyyMMdd.tsv
-/// (Roaming AppData なので Velopack 更新で消えない、 LoggerService と同じ設計)
+/// (履歴データの既存保存先を維持し、Velopack 更新から分離する)
 ///
 /// 並行性 (Phase 6 レビュー #R-C1 / #R-H1 / #R-H3 対応):
 /// - 読み書き (<see cref="Append"/> / <see cref="ReadAllAsync"/> / <see cref="ClearAllAsync"/> / <see cref="PerformRetentionCleanupAsync"/>) は

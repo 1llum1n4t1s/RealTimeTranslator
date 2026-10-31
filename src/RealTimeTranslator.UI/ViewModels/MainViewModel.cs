@@ -690,9 +690,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
     {
         try
         {
-            var logsDir = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                "RealTimeTranslator", "logs");
+            var logsDir = LoggerService.GetLogFilePath();
             if (!Directory.Exists(logsDir))
                 Directory.CreateDirectory(logsDir);
             Process.Start(new ProcessStartInfo { FileName = logsDir, UseShellExecute = true });

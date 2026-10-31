@@ -158,13 +158,13 @@ idle finalize は無音 padding の処理中に発火させません。実効値
 
 ## 設定、データ、セキュリティ
 
-設定と生成データは Velopack のインストール先から分離し、更新で消えない Roaming AppData に保存します。
+設定と翻訳履歴などの生成データは Velopack のインストール先から分離します。アプリログは Local AppData、それ以外は Roaming AppData に保存します。
 
 | データ | 保存先 | 方針 |
 | --- | --- | --- |
 | 設定 | `%APPDATA%/RealTimeTranslator/settings.json` | temp file を書いて原子的に置換。旧配置から初回移行 |
 | API キー | 上記 settings 内 | DPAPI CurrentUser で暗号化。実行中 object のみ平文 |
-| アプリログ | `%APPDATA%/RealTimeTranslator/logs/` | 日別ローテーション。診断用の字幕断片を含み得る |
+| アプリログ | `%LOCALAPPDATA%/RealTimeTranslator/logs/` | 日別ローテーション。診断用の字幕断片を含み得る。旧ログは起動時に移動し、同名は別名で保持、使用中などで移動できない場合は次回再試行する |
 | 翻訳ログ | `%APPDATA%/RealTimeTranslator/logs/translations/` | 確定字幕だけを日別 TSV として保存 |
 | デバッグ音声 | `%APPDATA%/RealTimeTranslator/debug/` | 明示的に有効化したセッションだけ、実送信レートの WAV を保存 |
 

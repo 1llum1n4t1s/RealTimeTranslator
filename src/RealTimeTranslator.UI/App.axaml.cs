@@ -55,7 +55,7 @@ public partial class App : Application
         // メインウィンドウを閉じたらアプリ終了（OverlayWindowが残っていても）
         desktop.ShutdownMode = ShutdownMode.OnMainWindowClose;
 
-        // クラッシュ・未捕捉例外を %APPDATA%/Roaming のログに残す。
+        // クラッシュ・未捕捉例外をアプリログに残す。
         // Task.Run(...) 経由の例外や Dispatcher の予期しない例外を取りこぼさないための最後の砦。
         AppDomain.CurrentDomain.UnhandledException += (s, ea) =>
         {
@@ -92,17 +92,7 @@ public partial class App : Application
 
         try
         {
-            // ログ出力先は Velopack 管理外の %APPDATA%/Roaming/RealTimeTranslator/logs に固定。
-            // %LocalAppData%/RealTimeTranslator は Velopack のインストールルートと衝突するため使わない。
-            var logDirectory = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                "RealTimeTranslator",
-                "logs");
-            LoggerService.Initialize(new LoggerConfig
-            {
-                LogDirectory = logDirectory,
-                FilePrefix = "RealTimeTranslator"
-            });
+            LoggerService.Initialize();
 
             // インシデント解析に必須の OS / .NET / CPU / バージョン情報をログ冒頭に必ず残す。
             LoggerService.LogStartup();
