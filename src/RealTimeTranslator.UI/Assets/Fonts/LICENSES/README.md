@@ -6,13 +6,13 @@
 |--|--|--|--|
 | IBM Plex Sans JP | `IBMPlexSansJP-Regular.ttf` / `IBMPlexSansJP-Bold.ttf` | Regular / Bold | https://github.com/google/fonts/tree/main/ofl/ibmplexsansjp |
 | Noto Sans JP | `NotoSansJP-Regular.ttf` / `NotoSansJP-Bold.ttf` | Regular / Bold (上流可変フォント Version 2.004-H2 から静的化) | https://github.com/google/fonts/tree/main/ofl/notosansjp |
-| LINE Seed JP | `LINESeedJP-Regular.ttf` / `LINESeedJP-Bold.ttf` | Regular / Bold | https://github.com/google/fonts/tree/main/ofl/lineseedjp |
+| LINE Seed JP | `LINESeedJP-Regular.ttf` / `LINESeedJP-Bold.ttf` | Regular / Bold | https://github.com/line/seed/releases/tag/v20260828（Version 1.016） |
 | Zen Maru Gothic | `ZenMaruGothic-Regular.ttf` / `ZenMaruGothic-Bold.ttf` | Regular / Bold | https://github.com/google/fonts/tree/main/ofl/zenmarugothic |
 | M PLUS Rounded 1c | `MPLUSRounded1c-Regular.ttf` / `MPLUSRounded1c-Bold.ttf` | Regular / Bold | https://github.com/google/fonts/tree/main/ofl/mplusrounded1c |
 
 ## ライセンス本文
 
-[OFL.txt](OFL.txt) を参照。 全フォント共通の SIL Open Font License Version 1.1 本文を 1 つ同梱している。 各フォントの個別 OFL.txt はファミリ名と Copyright 行のみ差異があるが、 ライセンス条文 (Permission / Conditions / Termination 等) は共通。
+[OFL.txt](OFL.txt) と [LINESeedJP-OFL.txt](LINESeedJP-OFL.txt) を参照。LINE Seed JP の提供元による著作権表示とライセンス本文も同梱している。
 
 ## 利用上の注意
 
