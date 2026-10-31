@@ -113,7 +113,7 @@ rg -n --fixed-strings '"net10.0-windows10.0.20348/win-x64"' src -g packages.lock
 
 - 更新元は `UpdateSettings.CanonicalUpdateBaseUrl` の `https://rtt.kagayoi.com`、channel は `win-x64`。利用者設定から任意 URL を受け取る設計へ変えない。
 - Velopack 操作は `UpdateService` の単一直列化境界を通す。
-- リリースを依頼された場合は `scripts/release-local.ps1` とリリース用手順を確認し、通常の build / publish を配信完了と見なさない。
+- リリースを依頼された場合は `scripts/release-local.ps1` と [リリース手順](docs/release_guide.md) を確認する。最初の upload 前に行う最終パッケージ検証を省略せず、通常の build / publish を配信完了と見なさない。検証と公開の境界は [DESIGN.md](DESIGN.md#配布物の検証と公開) を参照する。
 
 ### 依存関係と自動マージ
 
@@ -138,5 +138,5 @@ rg -n --fixed-strings '"net10.0-windows10.0.20348/win-x64"' src -g packages.lock
 
 ```powershell
 pwsh -NoProfile -Command 'if (-not (Get-ChildItem Cert:\CurrentUser\My | Where-Object { $_.Subject -like "CN=Open Source Developer Yuichiro Shinozaki*" -and $_.NotAfter -gt (Get-Date) })) { exit 1 }'
-if ($LASTEXITCODE -eq 0) { pwsh -NoProfile -File scripts/release-local.ps1 } else { throw '署名証明書が見つからないよ。SimplySign Desktop を起動してトークンでログインしてから /vava を再実行してね' }
+if ($LASTEXITCODE -eq 0) { pwsh -NoProfile -File scripts/release-local.ps1 -SkipCleanup } else { throw '署名証明書が見つからないよ。SimplySign Desktop を起動してトークンでログインしてから /vava を再実行してね' }
 ```

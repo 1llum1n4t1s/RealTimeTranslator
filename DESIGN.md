@@ -184,6 +184,12 @@ overlay 背景色は `BackgroundColorBase` (`#RRGGBB`) と `BackgroundOpacityPer
 
 更新 feed は `https://rtt.kagayoi.com` の `win-x64` channel に固定し、設定ファイルから変更できません。HTTPS、絶対 URI、userinfo なしを検証したうえで Velopack に渡します。自動確認は起動時の1回だけで、周期確認は行いません。check / download / apply は同じ lock で直列化し、起動時確認と手動確認の競合を防ぎます。
 
+### 配布物の検証と公開
+
+`scripts/release-local.ps1` は publish、署名、Velopack パッケージ作成の後、最初のアップロード前に最終成果物を検証します。win-x64 manifest と Full nupkg のサイズ・SHA256・SHA1、パッケージの ID・版・必須ファイル、同梱 main EXE の x64・版・署名と UI assembly の版、Setup の署名を照合します。利用者の `settings.json` の混入を拒否し、VAD 資産・ライセンスと、UI DLL に埋め込むフォント・ライセンス・カラーアイコンも確認します。publish 出力だけでなく署名・pack 後の実物を検証することで、配信 manifest と利用者が取得する内容の不一致を公開前に止めます。
+
+ローカルの restore・publish・MSBuild 評価は開発用と同じ `scripts/Dev.ps1` の出力境界を使います。検証記録 `release-verification.json` は作業先に保存し、作業先は自動削除しません。`-SkipUpload` は検証済み成果物を公開せず保持する経路です。公開時はパッケージなどの実体を先に、更新 metadata を最後に R2 へ配置し、未配置のパッケージを manifest が参照する期間を避けます。実行・公開確認・清掃の手順は [リリース手順](docs/release_guide.md) を参照してください。
+
 ## 開発出力の境界
 
 ローカル専用の `Directory.Build.local.props` が作業ルートを指定し、`Directory.Build.props` が作業別ディレクトリへビルド・中間生成物・テスト結果・パッケージキャッシュを振り分けます。製品利用者の AppData 保存先と OS 全体の一時ディレクトリは変更しません。CI と他の checkout ではローカル専用設定なしで従来の出力先を利用できます。
