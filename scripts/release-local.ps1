@@ -10,10 +10,9 @@
 #   - D:\Dev\Secret\secrets.json に cloudflare.api_token があること
 #
 # 使い方:
-#   pwsh scripts/release-local.ps1                # フルリリース (build + sign + upload + cleanup)
-#   pwsh scripts/release-local.ps1 -SkipUpload    # ビルド + 署名のみ (アップロードしない動作確認用)
-#   pwsh scripts/release-local.ps1 -SkipCleanup   # 配信確認後も外部の作業先を保持する
-#   WorkDirectory は未作成の絶対パス、DirectoryBuildPropsPath はその配下へ出力する既存 props。
+#   pwsh scripts/release-local.ps1 -SkipCleanup   # フルリリース (build + sign + verify + upload)
+#   pwsh scripts/release-local.ps1 -SkipUpload    # build + sign + verify の成果物を公開せず保持する
+#   ローカルの WorkDirectory は D:\Codex\RealTimeTranslator\run-*。清掃は確認後に Prunlet CLI で行う。
 
 [CmdletBinding()]
 param(
@@ -22,37 +21,9 @@ param(
     [string[]]$Runtimes = @('win-x64'),
     [string]$WorkDirectory,
     [string]$DirectoryBuildPropsPath,
-    [string]$LedgerDirectory
+    [string]$LedgerDirectory # 旧呼出しとの互換用。清掃台帳は自動生成しない。
 )
 
-
-# 検証済みの作業対象だけを標準APIで削除する。
-function Remove-LocalWorkItem {
-    param([string[]]$LiteralPath, [string]$AllowedRoot, [switch]$IgnoreMissing, [switch]$AllowLeafJunction)
-    if ([string]::IsNullOrWhiteSpace($AllowedRoot) -or -not [IO.Path]::IsPathRooted($AllowedRoot)) { throw 'Cleanup root must be absolute.' }
-    $boundary = [IO.Path]::GetFullPath($AllowedRoot).TrimEnd('\','/') + [IO.Path]::DirectorySeparatorChar
-    foreach ($target in $LiteralPath) {
-        if ([string]::IsNullOrWhiteSpace($target) -or -not [IO.Path]::IsPathRooted($target)) { throw 'Cleanup target must be absolute.' }
-        $resolved = [IO.Path]::GetFullPath($target)
-        if (-not $resolved.StartsWith($boundary, [StringComparison]::OrdinalIgnoreCase)) { throw 'Cleanup target is outside the allowed root.' }
-        $ancestor = $resolved
-        while ($ancestor) {
-            if (Test-Path -LiteralPath $ancestor) {
-                $item = Get-Item -LiteralPath $ancestor -Force -ErrorAction Stop
-                if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -and -not ($AllowLeafJunction -and $ancestor -eq $resolved -and $item.LinkType -eq 'Junction')) { throw 'Cleanup path contains a reparse point.' }
-            }
-            $ancestor = Split-Path $ancestor -Parent
-        }
-        if (-not (Test-Path -LiteralPath $resolved)) { if ($IgnoreMissing) { continue }; throw "Cleanup target is missing: $resolved" }
-        $item = Get-Item -LiteralPath $resolved -Force -ErrorAction Stop
-        $leafLink = [bool]($item.Attributes -band [IO.FileAttributes]::ReparsePoint)
-        if ($item.PSIsContainer -and -not $leafLink) {
-            if (@(Get-ChildItem -LiteralPath $resolved -Recurse -Force -ErrorAction Stop | Where-Object { $_.Attributes -band [IO.FileAttributes]::ReparsePoint }).Count) { throw 'Cleanup directory contains a reparse point.' }
-        }
-        Remove-Item -LiteralPath $resolved -Recurse:($item.PSIsContainer -and -not $leafLink) -Force -ErrorAction Stop
-        if (Test-Path -LiteralPath $resolved) { throw "Cleanup target remains: $resolved" }
-    }
-}
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -61,7 +32,7 @@ $releaseInitialTmp = $env:TMP
 
 # ---- 定数 (旧 CI 版 release.yml / velopack.yml と揃える) ----
 # Velopack (vpk) の最新安定版はプリフライト後に解決し、今回専用の tool-path へ入れる。
-$WranglerVersion = '4.151.1'        # サプライチェーン対策でバージョン固定
+$WranglerVersion = '4.156.0'        # サプライチェーン対策でバージョン固定
 $Bucket = 'realtimetranslator-updates'
 $BaseUrl = 'https://rtt.kagayoi.com'
 $AccountId = '10901bfadbf1005164774a7350082985'
@@ -77,6 +48,19 @@ $RuntimeMatrix = @{
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $RepoRoot
+. (Join-Path $PSScriptRoot 'DevelopmentOutput.ps1')
+$LocalWorkRoot = Get-RttWorkRoot
+$UseLocalWrapper = [bool]$LocalWorkRoot
+
+function Invoke-ReleaseDotnet {
+    param([string[]]$ToolArguments)
+    if ($UseLocalWrapper) {
+        & (Join-Path $PSScriptRoot 'Dev.ps1') -WorkDirectory $WorkDir -Tool dotnet -ToolArguments $ToolArguments
+    } else {
+        & dotnet @ToolArguments
+    }
+    if ($LASTEXITCODE -ne 0) { throw "リリース dotnet コマンドが失敗しました: $LASTEXITCODE" }
+}
 
 function Invoke-Native {
     param([string]$Description, [scriptblock]$Block)
@@ -138,24 +122,25 @@ if (-not $version) { throw 'Directory.Build.props から <Version> を取得で�
 Write-Host "バージョン: $version"
 if ($Runtimes.Count -ne 1 -or $Runtimes[0] -ne 'win-x64') { throw 'リリース対象は win-x64 のみです。' }
 if (-not $WorkDirectory) {
-    $WorkDirectory = Join-Path ([IO.Path]::GetTempPath()) "Codex\RealTimeTranslator\release-$version-$([Guid]::NewGuid().ToString('N'))"
+    $WorkDirectory = if ($UseLocalWrapper) { "D:\Codex\RealTimeTranslator\run-vava-$version-$([Guid]::NewGuid().ToString('N'))" }
+        else { Join-Path ([IO.Path]::GetTempPath()) "Codex\RealTimeTranslator\release-$version-$([Guid]::NewGuid().ToString('N'))" }
 }
 $WorkDir = Assert-ExternalPath $WorkDirectory
+if ($UseLocalWrapper) {
+    if ($DirectoryBuildPropsPath) { throw 'ローカルでは DirectoryBuildPropsPath の差替えは使用できません。' }
+    if (-not $LocalWorkRoot.Equals('D:\Codex\RealTimeTranslator', [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'ローカル作業先の正本は D:\Codex\RealTimeTranslator です。'
+    }
+    $null = Assert-RttPath $WorkDir $LocalWorkRoot
+}
 if (Test-Path -LiteralPath $WorkDir) { throw "既存の作業先は上書きしません。新しい WorkDirectory を指定してください: $WorkDir" }
-if (-not $LedgerDirectory) {
-    $LedgerDirectory = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) "Codex\TaskArtifacts\RealTimeTranslator\release-$version-$([Guid]::NewGuid().ToString('N'))\cleanup"
-}
-$LedgerDir = Assert-ExternalPath $LedgerDirectory
-if ($LedgerDir.Equals($WorkDir, [StringComparison]::OrdinalIgnoreCase) -or $LedgerDir.StartsWith($WorkDir + '\', [StringComparison]::OrdinalIgnoreCase)) {
-    throw 'LedgerDirectory は清掃対象の WorkDirectory の外に指定してください。'
-}
 if ($DirectoryBuildPropsPath) {
     $DirectoryBuildPropsPath = Assert-ExternalPath $DirectoryBuildPropsPath
     if (-not (Test-Path -LiteralPath $DirectoryBuildPropsPath -PathType Leaf)) { throw 'DirectoryBuildPropsPath が見つかりません。' }
 }
 $PackagesDir = Join-Path $WorkDir 'packages'
 New-Item -ItemType Directory -Path $PackagesDir | Out-Null
-Write-Host "作業先: $WorkDir / 清掃台帳: $LedgerDir"
+Write-Host "作業先: $WorkDir"
 
 # 生成物、ツールの download/cache/log、一時ファイルを今回の作業先へ集約する。
 foreach ($name in @('TEMP', 'TMP', 'DOTNET_CLI_HOME', 'NUGET_PACKAGES', 'NUGET_HTTP_CACHE_PATH', 'npm_config_cache',
@@ -171,7 +156,7 @@ $env:npm_config_update_notifier = 'false'
 $env:npm_config_userconfig = Join-Path $WorkDir 'npmrc'
 Set-Content -LiteralPath $env:npm_config_userconfig -Value ''
 
-if (-not $DirectoryBuildPropsPath) {
+if (-not $UseLocalWrapper -and -not $DirectoryBuildPropsPath) {
     $DirectoryBuildPropsPath = Join-Path $WorkDir 'ReleaseBuild.props'
     $repoProps = [Security.SecurityElement]::Escape((Join-Path $RepoRoot 'Directory.Build.props'))
     $buildRoot = [Security.SecurityElement]::Escape((Join-Path $WorkDir 'build'))
@@ -192,8 +177,9 @@ if (-not $DirectoryBuildPropsPath) {
 # 呼び出し側が渡した props も評価して、全プロジェクトの出力境界を確認する。
 foreach ($projectName in @('RealTimeTranslator.Core', 'RealTimeTranslator.UI', 'RealTimeTranslator.Tests')) {
     $project = Get-Item -LiteralPath (Join-Path $RepoRoot "src\$projectName\$projectName.csproj")
-    $properties = & dotnet msbuild $project.FullName -nologo -p:Configuration=Release -p:Platform=x64 `
-        "-p:DirectoryBuildPropsPath=$DirectoryBuildPropsPath" -getProperty:BaseOutputPath,OutputPath,BaseIntermediateOutputPath,IntermediateOutputPath,MSBuildProjectExtensionsPath
+    $arguments = @('msbuild', $project.FullName, '-nologo', '-p:Configuration=Release', '-p:Platform=x64', '-getProperty:BaseOutputPath,OutputPath,BaseIntermediateOutputPath,IntermediateOutputPath,MSBuildProjectExtensionsPath')
+    if (-not $UseLocalWrapper) { $arguments += "-p:DirectoryBuildPropsPath=$DirectoryBuildPropsPath" }
+    $properties = Invoke-ReleaseDotnet -ToolArguments $arguments
     if ($LASTEXITCODE -ne 0) { throw "外部出力先の評価に失敗しました: $($project.Name)" }
     foreach ($property in (($properties -join "`n" | ConvertFrom-Json).Properties.PSObject.Properties)) {
         $output = Assert-ExternalPath $property.Value
@@ -217,7 +203,7 @@ $VpkVersion = (Invoke-RestMethod 'https://api.nuget.org/v3-flatcontainer/vpk/ind
 if (-not $VpkVersion) { throw 'vpk の最新安定版バージョンを取得できませんでした。' }
 $toolDir = Join-Path $WorkDir 'tools'
 Write-Host "vpk 最新安定版: $VpkVersion"
-Invoke-Native 'vpk のインストール' { dotnet tool install --tool-path $toolDir vpk --version $VpkVersion }
+Invoke-ReleaseDotnet -ToolArguments @('tool', 'install', '--tool-path', $toolDir, 'vpk', '--version', $VpkVersion)
 $vpkExe = Join-Path $toolDir 'vpk.exe'
 
 # Cloudflare トークン (アップロード時のみ必要)
@@ -229,10 +215,9 @@ if (-not $SkipUpload) {
 }
 
 # 毎回新しい外部 obj を使うため、古い ReadyToRun キャッシュは再利用しない。
-Invoke-Native 'locked RID restore' {
-    dotnet restore RealTimeTranslator.slnx -r win-x64 --locked-mode -p:Configuration=Release -p:Platform=x64 `
-        "-p:DirectoryBuildPropsPath=$DirectoryBuildPropsPath"
-}
+$restoreArguments = @('restore', 'RealTimeTranslator.slnx', '-r', 'win-x64', '--locked-mode', '-p:Configuration=Release', '-p:Platform=x64')
+if (-not $UseLocalWrapper) { $restoreArguments += "-p:DirectoryBuildPropsPath=$DirectoryBuildPropsPath" }
+Invoke-ReleaseDotnet -ToolArguments $restoreArguments
 
 # ---- 1. ビルド + 署名付きパッケージング (RID ごと) ----
 foreach ($runtime in $Runtimes) {
@@ -241,10 +226,10 @@ foreach ($runtime in $Runtimes) {
     $publishDir = Join-Path $WorkDir "publish-$runtime"
 
     Write-Host "== publish: $runtime ==" -ForegroundColor Cyan
-    Invoke-Native "dotnet publish ($runtime)" {
-        dotnet publish src/RealTimeTranslator.UI/RealTimeTranslator.UI.csproj -c Release -r $runtime `
-            --self-contained true --no-restore -p:Platform=x64 "-p:DirectoryBuildPropsPath=$DirectoryBuildPropsPath" -o $publishDir
-    }
+    $publishArguments = @('publish', 'src/RealTimeTranslator.UI/RealTimeTranslator.UI.csproj', '-c', 'Release', '-r', $runtime,
+        '--self-contained', 'true', '--no-restore', '-p:Platform=x64', '-o', $publishDir)
+    if (-not $UseLocalWrapper) { $publishArguments += "-p:DirectoryBuildPropsPath=$DirectoryBuildPropsPath" }
+    Invoke-ReleaseDotnet -ToolArguments $publishArguments
 
     foreach ($required in @('RealTimeTranslator.UI.exe')) {
         if (-not (Test-Path (Join-Path $publishDir $required))) {
@@ -272,6 +257,8 @@ foreach ($runtime in $Runtimes) {
 
 # 署名検証 (Setup.exe が正しく署名されているかリリース前に確認)
 Write-Host '== 署名検証 ==' -ForegroundColor Cyan
+$setupFiles = @(Get-ChildItem $PackagesDir -Filter '*Setup.exe')
+if ($setupFiles.Count -ne 1) { throw '署名検証する Setup.exe が一意ではありません。' }
 foreach ($exe in Get-ChildItem $PackagesDir -Filter '*.exe') {
     $sig = Get-AuthenticodeSignature $exe.FullName
     if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notlike "CN=$CertSubjectName*") {
@@ -279,6 +266,84 @@ foreach ($exe in Get-ChildItem $PackagesDir -Filter '*.exe') {
     }
     Write-Host "  ✅ $($exe.Name): Valid ($($sig.SignerCertificate.Subject -replace ',.*$'))"
 }
+
+# 最初の upload より前に、署名・pack 済みの実物を照合する。
+Write-Host '== 最終パッケージ検証 ==' -ForegroundColor Cyan
+$manifestPath = Join-Path $PackagesDir 'releases.win-x64.json'
+$manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+$assets = @($manifest.Assets | Where-Object { $_.Version -eq $version -and $_.Type -eq 'Full' })
+if ($assets.Count -ne 1) { throw "win-x64 manifest の対象 Full package が一意ではありません: $version" }
+$asset = $assets[0]
+if ([IO.Path]::GetFileName($asset.FileName) -ne $asset.FileName) { throw 'manifest の FileName はファイル名だけに限定します。' }
+$package = Get-Item -LiteralPath (Join-Path $PackagesDir $asset.FileName)
+$packageSha256 = (Get-FileHash -LiteralPath $package.FullName -Algorithm SHA256).Hash
+$packageSha1 = (Get-FileHash -LiteralPath $package.FullName -Algorithm SHA1).Hash
+if ($package.Length -ne $asset.Size -or $packageSha256 -ne $asset.SHA256 -or $packageSha1 -ne $asset.SHA1) {
+    throw '最終 nupkg と win-x64 manifest の size/SHA256/SHA1 が一致しません。'
+}
+$inspectionDir = Join-Path $WorkDir 'package-verification'
+New-Item -ItemType Directory -Path $inspectionDir | Out-Null
+$archive = [IO.Compression.ZipFile]::OpenRead($package.FullName)
+try {
+    $nuspecs = @($archive.Entries | Where-Object { $_.FullName -match '^[^/]+\.nuspec$' })
+    if ($nuspecs.Count -ne 1) { throw 'nupkg の nuspec が一意ではありません。' }
+    $reader = [IO.StreamReader]::new($nuspecs[0].Open())
+    try { [xml]$nuspec = $reader.ReadToEnd() } finally { $reader.Dispose() }
+    if ($nuspec.package.metadata.id -ne 'RealTimeTranslator' -or $nuspec.package.metadata.version -ne $version) {
+        throw 'nupkg 内の ID/version がリリース入力と一致しません。'
+    }
+    $mainEntries = @($archive.Entries | Where-Object { $_.FullName -match '^lib/[^/]+/RealTimeTranslator\.UI\.exe$' })
+    if ($mainEntries.Count -ne 1) { throw 'nupkg 内の main EXE が一意ではありません。' }
+    $payloadRoot = $mainEntries[0].FullName.Substring(0, $mainEntries[0].FullName.LastIndexOf('/') + 1)
+    if (@($archive.Entries | Where-Object { $_.Name -ieq 'settings.json' }).Count) { throw 'nupkg に settings.json が含まれています。' }
+    $requiredFiles = @('RealTimeTranslator.UI.exe', 'RealTimeTranslator.UI.dll', 'settings.default.json',
+        'Assets/fireredvad_stream_vad_with_cache.onnx', 'Assets/fireredvad_cmvn.ark',
+        'Assets/LICENSE-firered_vad.txt', 'Assets/NOTICE-firered_vad.txt', 'Assets/FluentSystemIcons/LICENSE.txt')
+    foreach ($required in $requiredFiles) {
+        $entry = $archive.GetEntry($payloadRoot + $required)
+        if (-not $entry -or $entry.Length -le 0) { throw "nupkg の必須ファイルがありません: $required" }
+    }
+    foreach ($name in @('RealTimeTranslator.UI.exe', 'RealTimeTranslator.UI.dll')) {
+        [IO.Compression.ZipFileExtensions]::ExtractToFile($archive.GetEntry($payloadRoot + $name), (Join-Path $inspectionDir $name))
+    }
+} finally { $archive.Dispose() }
+$mainExe = Join-Path $inspectionDir 'RealTimeTranslator.UI.exe'
+$mainDll = Join-Path $inspectionDir 'RealTimeTranslator.UI.dll'
+$expectedAssemblyVersion = [version]"$version.0"
+if ([Reflection.AssemblyName]::GetAssemblyName($mainDll).Version -ne $expectedAssemblyVersion -or
+    [version]([Diagnostics.FileVersionInfo]::GetVersionInfo($mainExe).FileVersion) -ne $expectedAssemblyVersion) {
+    throw '最終 package 内の UI assembly/main EXE の版が一致しません。'
+}
+$exeBytes = [IO.File]::ReadAllBytes($mainExe)
+$peOffset = [BitConverter]::ToInt32($exeBytes, 0x3c)
+if ([BitConverter]::ToUInt16($exeBytes, $peOffset + 4) -ne 0x8664) { throw 'main EXE が x64 ではありません。' }
+$mainSignature = Get-AuthenticodeSignature -LiteralPath $mainExe
+if ($mainSignature.Status -ne 'Valid' -or $mainSignature.SignerCertificate.Subject -notlike "CN=$CertSubjectName*") {
+    throw "最終 package 内の main EXE の署名検証失敗: $($mainSignature.Status)"
+}
+# フォントとそのライセンス、アイコンは AvaloniaResource として UI DLL に埋め込まれる。
+$resourceIndex = [Text.Encoding]::UTF8.GetString([IO.File]::ReadAllBytes($mainDll))
+$embeddedFiles = @(Get-ChildItem -LiteralPath (Join-Path $RepoRoot 'src/RealTimeTranslator.UI/Assets/Fonts') -Filter '*.ttf' -File |
+    ForEach-Object { 'Assets/Fonts/' + $_.Name })
+$embeddedFiles += @(Get-ChildItem -LiteralPath (Join-Path $RepoRoot 'src/RealTimeTranslator.UI/Assets/Fonts/LICENSES') -Filter '*.txt' -File |
+    ForEach-Object { 'Assets/Fonts/LICENSES/' + $_.Name })
+$embeddedFiles += @(Get-ChildItem -LiteralPath (Join-Path $RepoRoot 'src/RealTimeTranslator.UI/Assets/FluentSystemIcons') -Filter '*.png' -File |
+    ForEach-Object { 'Assets/FluentSystemIcons/' + $_.Name })
+$embeddedFiles += 'Assets/app.ico'
+foreach ($resource in $embeddedFiles) {
+    if ($resourceIndex.IndexOf($resource, [StringComparison]::OrdinalIgnoreCase) -lt 0) {
+        throw "最終 UI DLL の埋め込みリソースがありません: $resource"
+    }
+}
+$sourceSha = & git rev-parse HEAD
+if ($LASTEXITCODE -ne 0) { throw 'source SHA の取得に失敗しました。' }
+@{ Version = $version; Runtime = 'win-x64'; SourceSha = $sourceSha; Package = $package.FullName;
+    SHA256 = $packageSha256; SHA1 = $packageSha1; Size = $package.Length; Manifest = $manifestPath;
+    MainExeSignature = [string]$mainSignature.Status;
+    Setup = @(Get-ChildItem $PackagesDir -Filter '*.exe' | ForEach-Object {
+        @{ Path = $_.FullName; SHA256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash; Signature = 'Valid' }
+    }) } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $WorkDir 'release-verification.json') -Encoding utf8
+Write-Host "  ✅ $($package.Name): $version / win-x64 / 署名・構成・manifest 一致"
 
 if ($SkipUpload) {
     Write-Host "`n✅ -SkipUpload 指定のため署名済み成果物を保持します: $PackagesDir" -ForegroundColor Green
@@ -433,33 +498,11 @@ if (-not $toDelete) {
     if ($failed -gt 0 -and $deleted -eq 0) { throw '旧 nupkg の削除がすべて失敗しました。API token の権限を確認してください。' }
 }
 
-# ---- 5. 今回の外部作業先だけを清掃 ----
-# SkipUpload と途中失敗は復元・再開用に保持する。再生成 restore は行わない。
-function Remove-ReleaseWorkDirectory {
-    param([string]$WorkDir, [string]$LedgerDir)
-
-    # pnpm の専用 store にできた junction はリンク自身を先に清掃する。
-    # 削除処理は子孫の reparse point を含むフォルダーの再帰削除を拒否する。
-    $links = @(Get-ChildItem -LiteralPath $WorkDir -Recurse -Directory -Force |
-        Where-Object { ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 })
-    foreach ($link in $links) {
-        if ($link.LinkType -ne 'Junction' -or @($link.Target).Count -ne 1 -or
-            -not ([IO.Path]::GetFullPath([string]$link.Target)).StartsWith($WorkDir + '\', [StringComparison]::OrdinalIgnoreCase)) {
-            throw "今回の作業先内へ向く junction 以外は保持します: $($link.FullName)"
-        }
-    }
-    foreach ($link in $links) {
-        Remove-LocalWorkItem -LiteralPath $link.FullName -AllowedRoot $WorkDir -AllowLeafJunction
-    }
-    Remove-LocalWorkItem -LiteralPath $WorkDir -AllowedRoot (Split-Path -Parent $WorkDir)
-    if (Test-Path -LiteralPath $WorkDir) { throw "清掃後も作業先が残っています: $WorkDir" }
-}
-if ($SkipCleanup) {
-    Write-Host "作業先を保持します: $WorkDir"
-} else {
-    $env:TEMP = $releaseInitialTemp
-    $env:TMP = $releaseInitialTmp
-    Remove-ReleaseWorkDirectory -WorkDir $WorkDir -LedgerDir $LedgerDir
-}
+# ---- 5. 公開確認後の清掃は Prunlet CLI で行う ----
+# 署名済み実物と checkpoint を保持し、確認後に CMD から直接 Prunlet を実行する。
+$env:TEMP = $releaseInitialTemp
+$env:TMP = $releaseInitialTmp
+Write-Host "作業先を保持します: $WorkDir"
+if (-not $SkipCleanup) { Write-Warning '自動削除は行いません。公開確認後、PRUNLET.md に従い Prunlet CLI で今回の作業先を清掃してください。' }
 
 Write-Host "`n🎉 リリース完了: v$version → $BaseUrl" -ForegroundColor Green
