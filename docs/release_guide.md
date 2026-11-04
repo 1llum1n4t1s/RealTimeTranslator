@@ -23,6 +23,6 @@
 
 公開前検証の記録は同じ作業先の `release-verification.json` に保存します。`-SkipUpload` は公開せず署名済み成果物を保持する場合に使い、通常公開の事前工程として二重に実行しません。公開確認後の清掃は `PRUNLET.md` に従い、Prunlet CLI を CMD から直接実行します。スクリプト自身は作業先を削除しません。
 
-R2 への書き込みは `wrangler r2 object put --remote` を使用し、パッケージを先に、更新マニフェストを後にアップロードします。公開 URL の内容を照合し、古い内容が返るときだけ対象 URL のキャッシュを削除します。
+R2 への書き込みは同梱 `scripts/R2Distribution.Common.ps1` の `Publish-R2Object`（PowerShell 7.2 以上）を使用し、パッケージを先に、更新マニフェストを後にアップロードします。公開 URL の内容を照合し、古い内容が返るときだけ対象 URL のキャッシュを削除します。
 
 配信元は Cloudflare R2 です。通常のリリースでは GitHub Releases へのアップロードを行いません。R2 の過去パッケージは最新2版を保持し、既存の旧ドメインによる更新経路を維持します。

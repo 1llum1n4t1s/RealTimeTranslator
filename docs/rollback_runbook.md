@@ -23,18 +23,19 @@ rere レビュー P1 #3 (F-1) で「Velopack ロールバック手段の欠如�
 v1.0.(X-1) 時点のもので上書き** すれば、これから起動するユーザーは正常な v1.0.(X-1) を取得する。
 v1.0.(X-1) の `releases.win-x64.json` は保持した署名済みリリース出力から入手する。
 
-```bash
-# wrangler 認証 (OAuth) 済み前提。未認証なら `wrangler login`。
-# 1. 直前の正常版 v1.0.(X-1) の releases.win-x64.json で R2 のマニフェストを上書き
-wrangler r2 object put "realtimetranslator-updates/releases.win-x64.json" \
-  --file=./good/releases.win-x64.json --remote
+```powershell
+# リポジトリルートで実行。CLOUDFLARE_API_TOKEN は既存の認証設定から投入する。
+. ./scripts/R2Distribution.Common.ps1
+Publish-R2Object -AccountId '10901bfadbf1005164774a7350082985' `
+  -Bucket 'realtimetranslator-updates' -FilePath ./good/releases.win-x64.json `
+  -ApiToken $env:CLOUDFLARE_API_TOKEN -ContentType 'application/json' `
+  -CacheControl 'no-cache, must-revalidate'
 
-# 2. (任意) 壊れた v1.0.X の nupkg を R2 から削除して、マニフェストを手で復元する余地も断つ
-wrangler r2 object delete "realtimetranslator-updates/RealTimeTranslator-1.0.X-win-x64-full.nupkg" --remote
-
-# 3. 配信確認: マニフェストの最新バージョンが v1.0.(X-1) に戻ったか
-curl -sS https://rtt.kagayoi.com/releases.win-x64.json | head -20
+# クライアントが利用する固定 URL の内容を照合する。
+Invoke-RestMethod https://rtt.kagayoi.com/releases.win-x64.json
 ```
+
+正常版への復元後は `scripts/release-local.ps1` と同じ手順で固定 URL のキャッシュをパージし、新旧両ホストの配信内容を照合する。壊れた版の nupkg の削除は、正常版が参照していないことを確認し、明示的に承認されたときだけ行う。
 
 > ⚠️ 「マニフェストを v1.0.(X-1) に戻す」のは、 **これから起動するユーザーが正常に動く v1.0.(X-1) を
 > 取得するため**。 既に v1.0.X をインストール済みのユーザーは Velopack downgrade 拒否仕様で
@@ -69,11 +70,14 @@ v1.0.(X+1) で修正版を準備中です。 完了次第改めて案内しま�
 - `/vava` スキルで修正版を準備し、`scripts/release-local.ps1` の署名・R2 公開経路で `releases.win-x64.json` を更新
 - v1.0.(X+1) 配信後、混乱を避けるため §1-A で R2 に残した壊れた v1.0.X の nupkg を **完全 delete** する
 
-```bash
-# wrangler 認証 (OAuth) 済み前提
-wrangler r2 object delete "realtimetranslator-updates/RealTimeTranslator-1.0.X-win-x64-full.nupkg" --remote
-# delta があれば delta nupkg も削除
-wrangler r2 object delete "realtimetranslator-updates/RealTimeTranslator-1.0.X-win-x64-delta.nupkg" --remote
+```powershell
+# 明示承認後、壊れた版の完全一致キーだけを Cloudflare REST API で削除する。
+$headers = @{ Authorization = "Bearer $env:CLOUDFLARE_API_TOKEN" }
+$objectsApi = 'https://api.cloudflare.com/client/v4/accounts/10901bfadbf1005164774a7350082985/r2/buckets/realtimetranslator-updates/objects'
+foreach ($key in @('RealTimeTranslator-1.0.X-win-x64-full.nupkg', 'RealTimeTranslator-1.0.X-win-x64-delta.nupkg')) {
+    $result = Invoke-RestMethod -Method Delete -Uri "$objectsApi/$([uri]::EscapeDataString($key))" -Headers $headers
+    if (-not $result.success) { throw 'R2 オブジェクト削除に失敗しました。' }
+}
 ```
 
 ## 4. 予防策 (議論中)

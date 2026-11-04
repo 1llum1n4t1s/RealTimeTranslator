@@ -1,4 +1,4 @@
-# release-local.ps1 — ローカル署名付き Velopack リリース
+﻿# release-local.ps1 — ローカル署名付き Velopack リリース
 #
 # SimplySign (Certum クラウド署名) は Desktop 接続 + スマホトークンが必要で
 # GitHub Actions からは署名できないため、リリースは本スクリプトでローカル実行する。
@@ -25,6 +25,24 @@ param(
 )
 
 
+# R2 への書込みは同梱の PowerShell/.NET 実装で行う。
+. (Join-Path $PSScriptRoot 'R2Distribution.Common.ps1')
+
+function Send-ReleaseR2Object {
+    param([Parameter(Mandatory)][System.IO.FileInfo]$File)
+    # バージョン付き成果物は不変、固定 URL とメタデータは毎回再検証する。
+    $immutable = $File.Extension -eq '.nupkg' -or $File.Name -match '\d+\.\d+\.\d+'
+    $cacheControl = if ($immutable) { 'public, max-age=31536000, immutable' } else { 'no-cache, must-revalidate' }
+    $contentType = switch ($File.Extension.ToLowerInvariant()) {
+        '.json' { 'application/json'; break }
+        '.exe' { 'application/vnd.microsoft.portable-executable'; break }
+        '.zip' { 'application/zip'; break }
+        default { if ($File.Name -like 'RELEASES*') { 'text/plain; charset=utf-8' } else { 'application/octet-stream' } }
+    }
+    $null = Publish-R2Object -AccountId $AccountId -Bucket $Bucket -FilePath $File.FullName `
+        -ApiToken $env:CLOUDFLARE_API_TOKEN -ContentType $contentType -CacheControl $cacheControl -Immutable:$immutable
+}
+
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $releaseInitialTemp = $env:TEMP
@@ -32,7 +50,6 @@ $releaseInitialTmp = $env:TMP
 
 # ---- 定数 (旧 CI 版 release.yml / velopack.yml と揃える) ----
 # Velopack (vpk) の最新安定版はプリフライト後に解決し、今回専用の tool-path へ入れる。
-$WranglerVersion = '4.156.0'        # サプライチェーン対策でバージョン固定
 $Bucket = 'realtimetranslator-updates'
 $BaseUrl = 'https://rtt.kagayoi.com'
 $AccountId = '10901bfadbf1005164774a7350082985'
@@ -143,18 +160,11 @@ New-Item -ItemType Directory -Path $PackagesDir | Out-Null
 Write-Host "作業先: $WorkDir"
 
 # 生成物、ツールの download/cache/log、一時ファイルを今回の作業先へ集約する。
-foreach ($name in @('TEMP', 'TMP', 'DOTNET_CLI_HOME', 'NUGET_PACKAGES', 'NUGET_HTTP_CACHE_PATH', 'npm_config_cache',
-        'npm_config_logs_dir', 'npm_config_store_dir', 'npm_config_cache_dir', 'npm_config_state_dir',
-        'PNPM_HOME', 'XDG_CACHE_HOME', 'XDG_CONFIG_HOME', 'WRANGLER_HOME')) {
+foreach ($name in @('TEMP', 'TMP', 'DOTNET_CLI_HOME', 'NUGET_PACKAGES', 'NUGET_HTTP_CACHE_PATH', 'XDG_CACHE_HOME', 'XDG_CONFIG_HOME')) {
     $directory = Join-Path $WorkDir "cache\$name"
     New-Item -ItemType Directory -Path $directory -Force | Out-Null
     [Environment]::SetEnvironmentVariable($name, $directory, 'Process')
 }
-$env:WRANGLER_LOG_PATH = Join-Path $WorkDir 'wrangler.log'
-$env:WRANGLER_SEND_METRICS = 'false'
-$env:npm_config_update_notifier = 'false'
-$env:npm_config_userconfig = Join-Path $WorkDir 'npmrc'
-Set-Content -LiteralPath $env:npm_config_userconfig -Value ''
 
 if (-not $UseLocalWrapper -and -not $DirectoryBuildPropsPath) {
     $DirectoryBuildPropsPath = Join-Path $WorkDir 'ReleaseBuild.props'
@@ -358,12 +368,10 @@ Write-Host '== R2 アップロード ==' -ForegroundColor Cyan
 $uploaded = 0
 # 更新 metadata は、参照する package と assets をすべて置いてから最後に公開する。
 $packageFiles = @(Get-ChildItem $PackagesDir -File)
-$uploadFiles = @($packageFiles | Sort-Object @{ Expression = { if ($_.Name -like 'releases.*.json' -or $_.Name -like 'RELEASES*') { 1 } else { 0 } } }, Name)
+$uploadFiles = @($packageFiles | Sort-Object @{ Expression = { if ($_.Name -like 'releases.*.json') { 3 } elseif ($_.Name -like 'RELEASES*') { 2 } elseif ($_.Name -like 'assets.*.json') { 1 } else { 0 } } }, Name)
 foreach ($f in $uploadFiles) {
     Write-Host "  ↑ $($f.Name)"
-    Invoke-Native "R2 put ($($f.Name))" {
-        pnpm dlx "wrangler@$WranglerVersion" r2 object put "$Bucket/$($f.Name)" --file $f.FullName --remote
-    }
+    Send-ReleaseR2Object -File $f
     $uploaded++
 }
 Write-Host "✅ R2 アップロード完了: $uploaded ファイル"
