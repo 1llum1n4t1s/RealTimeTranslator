@@ -200,7 +200,6 @@ MSBuild の初期 target より前に logger や response file が扱われる�
 
 `.github/dependabot.yml` は GitHub Actions と3プロジェクトの NuGet 更新を毎週月曜09:00（日本時間）に確認します。minor/patch はまとめ、major は個別 PR とし、特定パッケージの除外は設けていません。
 
-`.github/workflows/dependabot-auto-merge.yml` は既定ブランチ側の処理で GitHub API を使い、PR のコードを checkout・実行せずにマージ可否を判定します。同一リポジトリの Dependabot PR に限定し、コミット署名と作成者、許可した依存関連ファイルの差分、最新 head に対する `ci.yml` の成功、他の check/status を確認します。GitHub Actions の差分は `uses` の参照更新に限定します。マージ直前にも head/base とマージ可能状態を再確認し、GitHub のマージ要件に従います。これにより権限付き処理から PR コードを実行する経路を避け、依存更新の検証を通常の CI に分離します。更新種別の major/minor/patch 自体はマージ判定の除外条件ではありません。
 
 ## 採用した判断とトレードオフ
 

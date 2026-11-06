@@ -115,10 +115,9 @@ rg -n --fixed-strings '"net10.0-windows10.0.20348/win-x64"' src -g packages.lock
 - Velopack 操作は `UpdateService` の単一直列化境界を通す。
 - リリースを依頼された場合は `scripts/release-local.ps1` と [リリース手順](docs/release_guide.md) を確認する。最初の upload 前に行う最終パッケージ検証を省略せず、通常の build / publish を配信完了と見なさない。検証と公開の境界は [DESIGN.md](DESIGN.md#配布物の検証と公開) を参照する。
 
-### 依存関係と自動マージ
+### 依存関係
 
-- Dependabot の更新対象・頻度は `.github/dependabot.yml`、自動マージの判定は `.github/workflows/dependabot-auto-merge.yml` を正本とする。更新グループやバージョン範囲を変更するときは両方を確認する。
-- 自動マージ判定の変更では、PR のコードを権限付き処理で実行せず、対象 bot・署名・差分の範囲・最新 head の CI・他の check/status・マージ直前の head/base の再確認を維持する。構造と判定の理由は [DESIGN.md](DESIGN.md#依存関係更新の境界) を参照する。
+- Dependabot の更新対象・頻度は `.github/dependabot.yml` を正本とする。
 
 ## 検証の選び方
 
