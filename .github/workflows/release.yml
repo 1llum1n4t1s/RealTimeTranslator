@@ -1,0 +1,83 @@
+name: Release
+
+# 署名付き Velopack リリースを GitHub Actions で作り、R2 (rtt.kagayoi.com) へ配信する。
+# - 署名: Sigilune (https://github.com/1llum1n4t1s/Sigilune) が Certum SimplySign のクラウド鍵で行う。
+#   本人の PC や SimplySign Desktop は不要。
+# - 起動: 手動 (workflow_dispatch)。/vava で版を上げて push した後に、リリースしたいブランチを指定して実行する。
+#   誤配信を避けるため push / tag では自動起動しない。ci.yml / build.yml は検証専用で配信しない。
+# - 秘密情報: Environment "release" の Secrets だけを使う
+#   (SIGILUNE_EMAIL / SIGILUNE_TOTP_URI / CLOUDFLARE_API_TOKEN)。
+# 手順の本体は scripts/release-local.ps1 で、ローカル実行と同じ処理 (ビルド・署名・最終パッケージ検証・配信) を通す。
+on:
+  workflow_dispatch:
+    inputs:
+      skip_upload:
+        description: 'ビルドと署名だけ行い、R2 へ配信しない (成果物は Actions に残る)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  # 同じリポジトリのリリースは同時に走らせない (R2 の固定名ファイルを取り合わないように)。
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    # WASAPI Process Loopback 前提の win-x64 専用。ci.yml / build.yml と同じランナーにそろえる。
+    runs-on: windows-2022
+    timeout-minutes: 60
+    environment: release
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: リポジトリをチェックアウト
+        # actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: .NET SDK をセットアップ
+        # actions/setup-dotnet@v6.0.0 (既存ワークフローと同じ固定版)
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
+        with:
+          # global.json が無いため、ci.yml / build.yml と同じ SDK 系列を指定する。
+          dotnet-version: 10.0.x
+
+      - name: Sigilune を導入
+        uses: 1llum1n4t1s/Sigilune@v1
+
+      - name: ビルド・署名・配信
+        env:
+          SIGILUNE_EMAIL: ${{ secrets.SIGILUNE_EMAIL }}
+          SIGILUNE_TOTP_URI: ${{ secrets.SIGILUNE_TOTP_URI }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          SKIP_UPLOAD: ${{ inputs.skip_upload }}
+        run: |
+          # 作業先はリポジトリ外 (スクリプトが検査する) かつ未作成である必要がある。ランナーの一時領域に作る。
+          $work = Join-Path $env:RUNNER_TEMP "RealTimeTranslator-release-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          "WORK_DIR=$work" >> $env:GITHUB_ENV
+          # ランナーは使い捨てなので作業先の清掃案内 (Prunlet) は不要。-SkipCleanup で抑止する。
+          $arguments = @{ WorkDirectory = $work; SkipCleanup = $true }
+          if ($env:SKIP_UPLOAD -eq 'true') { $arguments.SkipUpload = $true }
+          try {
+            & ./scripts/release-local.ps1 @arguments
+          } finally {
+            # ランナー上の Certum セッションを残さない。
+            sigilune logout | Out-Null
+          }
+
+      - name: 成果物をアップロード
+        if: always()
+        # actions/upload-artifact@v7.0.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: realtimetranslator-release-packages
+          path: |
+            ${{ env.WORK_DIR }}/packages/*
+            ${{ env.WORK_DIR }}/release-verification.json
+          if-no-files-found: warn
+          retention-days: 7

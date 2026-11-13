@@ -1,12 +1,13 @@
 # 公開手順（Velopack + Cloudflare R2）
 
-公開は Windows の `scripts/release-local.ps1` で行います。SimplySign の証明書でアプリとインストーラを署名し、Velopack の win-x64 パッケージを Cloudflare R2 (`realtimetranslator-updates`) へアップロードします。自動更新は `https://rtt.kagayoi.com/releases.win-x64.json` を参照します。GitHub Actions は検証を担当し、ブランチへの push だけでは配布されません。
+公開は GitHub Actions の `.github/workflows/release.yml`（手動起動・Environment `release`）が Windows ランナーで `scripts/release-local.ps1` を実行して行います。[Sigilune](https://github.com/1llum1n4t1s/Sigilune) が Certum SimplySign のクラウド鍵でアプリとインストーラを署名し（SimplySign Desktop は不要）、Velopack の win-x64 パッケージを Cloudflare R2 (`realtimetranslator-updates`) へアップロードします。自動更新は `https://rtt.kagayoi.com/releases.win-x64.json` を参照します。`ci.yml` / `build.yml` は検証を担当し、ブランチへの push だけでは配布されません。同じスクリプトはローカルでも実行でき、検証や再開に使います。
 
 ## 前提
 
-- Windows x64、.NET 10 SDK と SimplySign Desktop が利用できること
-- SimplySign にログインし、コード署名証明書の秘密鍵を使用できること。証明書が表示されるだけでは署名成功を確認できません
-- `D:\Dev\Secret\secrets.json` の Cloudflare 設定で既存 R2 バケットへアクセスできること
+- CI: リポジトリの Environment `release` に Secrets `SIGILUNE_EMAIL` / `SIGILUNE_TOTP_URI` / `CLOUDFLARE_API_TOKEN` が登録されていること。これらを読むのは `release.yml` だけです
+- ローカル: Windows x64、.NET 10 SDK と Sigilune が利用でき、`sigilune setup` で Certum アカウントを登録済みであること（実行ファイルは `SIGILUNE_EXE` → PATH → `%USERPROFILE%\.local\Sigilune\bin\sigilune.exe` の順に探します）
+- 署名は Sigilune が署名後に有効性・署名者・タイムスタンプを検証します。ログインに失敗したら `sigilune status` で登録を確認し、署名を省略して続行しません
+- 環境変数 `CLOUDFLARE_API_TOKEN`、無ければ `D:\Dev\Secret\secrets.json` の Cloudflare 設定で既存 R2 バケットへアクセスできること
 - バージョン更新・公開は `/vava` スキルで行うこと
 
 ## 公開の流れ
@@ -14,7 +15,7 @@
 1. `/vava` で次のバージョンを一度決め、変更履歴と版情報を更新します。
 2. 開発工程の検証結果を引き継ぎます。`/vava` では開発テストや lint を再実行しません。
 3. リリース入力の変更を main へ commit・push し、同じ commit を指す `release/X.Y.Z` ブランチを作成・push します。
-4. `scripts/release-local.ps1 -SkipCleanup` を一度実行し、Release/x64 の publish・署名・Velopack パッケージ作成・公開前検証・R2 公開を行います。スクリプトは最初の upload より前に、最終 nupkg 内の版・必須ファイル・main EXE の署名、Setup の署名、win-x64 manifest のサイズ・SHA256・SHA1 を照合し、不一致なら公開を停止します。
+4. `gh workflow run release.yml --ref release/X.Y.Z` で `release.yml` を起動し（`-f skip_upload=true` は配信せず署名済み成果物だけを Actions に残す）、`gh run watch` で完了を確認します。ワークフローは `scripts/release-local.ps1 -SkipCleanup` を一度実行し、Release/x64 の publish・署名・Velopack パッケージ作成・公開前検証・R2 公開を行います。スクリプトは最初の upload より前に、最終 nupkg 内の版・必須ファイル・main EXE の署名、Setup の署名、win-x64 manifest のサイズ・SHA256・SHA1 を照合し、不一致なら公開を停止します。
 5. 配信マニフェストの版、配布物の署名・サイズ・ハッシュと公開 URL を確認します。
 
 ## 保存先と配信
