@@ -165,7 +165,7 @@
                             <StackPanel>
                                 <!-- OBS 風レベルメーター (ゲイン適用後のピーク)。 緑→黄→赤の固定ゾーン背景を、 現在レベルより右側を半透明マスクで覆って表現する。
                                      右端のクリップインジケータは 0 dBFS 到達 (= PCM16 変換で波形が潰れる) を点灯で知らせる。
-                                     AntiClipLimiter は v1.0.36 で削除済みなので、 歪みに気づく手掛かりはこの表示だけ。 -->
+                                     AntiClipLimiter は v1.0.40 で削除済みなので、 歪みに気づく手掛かりはこの表示だけ。 -->
                                 <Grid ColumnDefinitions="*,Auto" Margin="0,0,0,2">
                                     <Border Grid.Column="0" Height="14" CornerRadius="3" ClipToBounds="True">
                                         <Border.Background>

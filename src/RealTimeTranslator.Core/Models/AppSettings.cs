@@ -187,8 +187,8 @@ public class AudioCaptureSettings
     // ────────── 入力プリプロセス DSP (v1.0.30 新規) ──────────
 
     /// <summary>
-    /// WASAPI capture 直後・リサンプル前に挟まる 2 段プリプロセス DSP の設定 (InputGain → AntiClip)。
-    /// VAD パス / API 送信パス両方に同じ前処理が乗る。 すべてのフラグが false かつ
+    /// WASAPI capture 直後・リサンプル前に挟まるプリプロセス DSP の設定 (現在は InputGain の 1 段だけ。
+    /// AntiClipLimiter は v1.0.40 で削除済み)。 VAD パス / API 送信パス両方に同じ前処理が乗る。
     /// InputGainDb=0 なら完全 bypass で現状動作 (v1.0.29 以前) と一致。
     /// </summary>
     public AudioPreprocessingSettings Preprocessing { get; set; } = new();
@@ -223,6 +223,7 @@ public class AudioCaptureSettings
 /// - v1.0.36: NightModeCompressor を削除。 ON 時に server VAD が句点を返さなくなる経路を誘発しやすく、
 ///   多層防御パラメータ相互依存 (DSP → VAD threshold → D-7 fallback → 類似抑制) を増やすデメリットが大きかった。
 ///   遠距離小音量の声拾いは InputGainStage で底上げする方針に統一。
+/// - v1.0.40: AntiClipLimiter を削除。 レベルメーターを見て手動でレベル管理する OBS 方式に変更。
 /// </summary>
 public class AudioPreprocessingSettings
 {

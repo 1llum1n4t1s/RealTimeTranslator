@@ -20,14 +20,12 @@ namespace RealTimeTranslator.Core.Services;
 public class AudioCaptureService : IAudioCaptureService
 {
     private const int AudioChunkDurationMs = 100; // 音声チャンクの長さ（ミリ秒）
-    private const int MonoChannelCount = 1; // モノラルチャンネル数
     private const int RetryIntervalMs = 1000; // リトライ間隔（ミリ秒）
     private const int ProcessLoopbackBufferMs = 20; // 旧フォーク版と同じ Process Loopback バッファ長
     private const int CaptureStateTransitionTimeoutMs = 3000;
     private const int MaxBufferSize = 48000; // 最大バッファサイズ（1秒分の48kHzオーディオ）
     private static readonly WaveFormat ProcessLoopbackFormat = new(48000, 16, 2);
     private ICaptureRecorder? _capture;
-    private WaveFormat? _targetFormat;
     private readonly AudioCaptureSettings _settings;
     private readonly Func<int, CancellationToken, Task<ICaptureRecorder>> _createRecorder;
     // Queue&lt;float&gt; を使うことで先頭からの Dequeue が O(1) になる。
@@ -79,7 +77,6 @@ public class AudioCaptureService : IAudioCaptureService
         Func<int, CancellationToken, Task<ICaptureRecorder>> createRecorder)
     {
         _settings = settings ?? new AudioCaptureSettings();
-        _targetFormat = WaveFormat.CreateIeeeFloatWaveFormat(_settings.SampleRate, MonoChannelCount);
         _createRecorder = createRecorder;
     }
 
@@ -125,9 +122,9 @@ public class AudioCaptureService : IAudioCaptureService
 
         lock (_bufferLock)
         {
+            // SampleRate は保存済み設定との互換のため保持する。取得は 48 kHz 固定で、
+            // 16/24 kHz への変換は TranslationPipelineService が担うため、ここでは形式を作らない。
             _settings.SampleRate = settings.SampleRate;
-
-            _targetFormat = WaveFormat.CreateIeeeFloatWaveFormat(_settings.SampleRate, MonoChannelCount);
             _audioBuffer.Clear();
         }
     }

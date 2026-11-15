@@ -164,12 +164,12 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     private readonly StreamingResampler _vadResampler = new(48000, 16000);
     private readonly StreamingResampler _sendResampler = new(48000, 24000);
 
-    // ───────── 入力プリプロセス DSP 2 段 (v1.0.30 新規、 v1.0.32 LoudnessNormalizer 削除、 v1.0.36 NightModeCompressor 削除) ─────────
-    // WASAPI 48kHz mono float32 を受け取った直後・リサンプル前に挟まる前処理チェーン。
-    // 全 IsEnabled=false / InputGainDb=0 がデフォルトで、 完全 bypass 動作 (v1.0.29 以前と同一)。
-    // 信号フロー: WASAPI → [InputGain] → [AntiClip] → _vadResampler →...
-    // ステートフルなので _vadResampler と同じくシングルインスタンスで保持 + StartCoreAsync で Reset
-    // (詳細は _global/systemPatterns.md の DSP 教訓と各 DSP クラスの XML doc 参照)。
+    // ───────── 入力プリプロセス DSP (v1.0.30 新規。 v1.0.32 / v1.0.36 / v1.0.40 で段を削り、 現在は InputGain の 1 段だけ) ─────────
+    // WASAPI 48kHz mono float32 を受け取った直後・リサンプル前に挟まる前処理。
+    // InputGainDb=0 がデフォルトで、 そのときは完全 bypass 動作 (v1.0.29 以前と同一)。
+    // 信号フロー: WASAPI → [InputGain] → _vadResampler / _sendResampler →...
+    // (AntiClipLimiter は v1.0.40 で削除済み。 クリップを防ぐ自動保護は無い)
+    // 詳細は InputGainStage の XML doc を参照。
     private readonly InputGainStage _inputGain = new(0f);
     // レベルメーター用: ゲイン適用後のピーク振幅を ~50ms スロットルで UI へ通知する状態。
     private DateTime _lastLevelEmitUtc = DateTime.MinValue;
@@ -627,10 +627,8 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
                         _lastEnableVad = audioCaptureSettings.EnableVad;
                     }
 
-                    // ─── 入力プリプロセス DSP (v1.0.30 新規、 v1.0.32 で 4 段 → 3 段、 v1.0.36 で 3 段 → 2 段に削減) ───
-                    // 設定 InputGainDb / EnableAntiClip を毎 chunk 同期 (hot-reload 対応)。
-                    // 全 default (false / 0dB) なら各 Process は内部の IsEnabled で即 return するため
-                    // CPU オーバーヘッドはチェック分のみ。 信号フローは InputGain → AntiClip。
+                    // ─── 入力プリプロセス DSP (現在は InputGain の 1 段だけ) ───
+                    // 設定 InputGainDb を毎 chunk 同期 (hot-reload 対応)。
                     var preproc = audioCaptureSettings.Preprocessing;
                     _inputGain.GainDb = preproc.InputGainDb;
                     var preprocSpan = audioData.AsSpan();
@@ -1803,8 +1801,8 @@ public sealed class TranslationPipelineService : ITranslationPipelineService, IA
     // ═══════════════════════════════════════════════════════════════
 
     /// <summary>
-    /// VAD 有効時の音声処理: 16kHz raw audio を VAD フレームサイズ単位 (512 サンプル/32ms)
-    /// に切り出して順次 <see cref="ProcessVadFrame"/> へ流す。 audio chunk 境界とフレーム境界が
+    /// VAD 有効時の音声処理: 48kHz 入力を VAD 用 16kHz と送信用 24kHz へ並列にリサンプルし、
+    /// VAD フレームサイズ単位 (16kHz 512 サンプル / 24kHz 768 サンプル = 32ms) に切り出して順次 <see cref="ProcessVadFrame"/> へ流す。 audio chunk 境界とフレーム境界が
     /// ズレるため、 _frameAccumulator に残り部分を保持して次 chunk と結合する。
     /// テスト目的で internal (InternalsVisibleTo=RealTimeTranslator.Tests)。
     /// </summary>

@@ -1,34 +1,15 @@
+using System.Buffers.Binary;
 using NAudio.Wave;
 using NAudio.Wave.SampleProviders;
 
 namespace RealTimeTranslator.Core.Services;
 
+/// <summary>
+/// float32 と PCM16 (little endian) の相互変換。OpenAI へ送る 24 kHz / mono / PCM16 と、
+/// OpenAI から受け取る PCM16 を再生用 float へ戻す経路が共用する。
+/// </summary>
 public static class AudioFormatConverter
 {
-    private const int SourceSampleRate = 16000;
-    private const int TargetSampleRate = 24000;
-    private static readonly WaveFormat InputFormat = WaveFormat.CreateIeeeFloatWaveFormat(SourceSampleRate, 1);
-
-    public static float[] ResampleTo24kHz(float[] samples16k)
-    {
-        ArgumentNullException.ThrowIfNull(samples16k);
-        if (samples16k.Length == 0) return [];
-
-        var inputProvider = new BufferSampleProvider(samples16k, InputFormat);
-        var resampler = new WdlResamplingSampleProvider(inputProvider, TargetSampleRate);
-
-        var outputCount = (int)(samples16k.Length * (double)TargetSampleRate / SourceSampleRate) + 1;
-        var output = new float[outputCount];
-        var read = resampler.Read(output);
-        if (read == 0) return [];
-        if (read == outputCount) return output; // 全長取れた場合は再確保しない（約 9 割のケース）
-
-        // 端数のみ trim（AsSpan().ToArray() は内部で new float[read] + CopyTo を呼ぶので等価だが明示する）
-        var trimmed = new float[read];
-        Array.Copy(output, trimmed, read);
-        return trimmed;
-    }
-
     public static byte[] Float32ToPcm16(float[] samples)
     {
         ArgumentNullException.ThrowIfNull(samples);
@@ -46,43 +27,25 @@ public static class AudioFormatConverter
         return bytes;
     }
 
-    public static string ToPcm16Base64(float[] samples16k)
+    /// <summary>
+    /// PCM16 (little endian) を -1.0〜1.0 未満の float へ戻す。端数の 1 byte は無視する。
+    /// 送話 (仮想マイク) と試聴の出力バッファが同じ変換を使い、両者の音量と波形を一致させる。
+    /// </summary>
+    public static float[] Pcm16ToFloat32(ReadOnlySpan<byte> pcm16)
     {
-        var resampled = ResampleTo24kHz(samples16k);
-        var pcm16 = Float32ToPcm16(resampled);
-        return Convert.ToBase64String(pcm16);
-    }
-
-}
-
-internal sealed class BufferSampleProvider : ISampleProvider
-{
-    private readonly float[] _buffer;
-    private int _position;
-
-    public WaveFormat WaveFormat { get; }
-
-    public BufferSampleProvider(float[] buffer, WaveFormat waveFormat)
-    {
-        _buffer = buffer;
-        WaveFormat = waveFormat;
-    }
-
-    public int Read(Span<float> buffer)
-    {
-        var available = Math.Min(buffer.Length, _buffer.Length - _position);
-        if (available <= 0) return 0;
-        _buffer.AsSpan(_position, available).CopyTo(buffer);
-        _position += available;
-        return available;
+        var samples = new float[pcm16.Length / sizeof(short)];
+        for (var i = 0; i < samples.Length; i++)
+            samples[i] = BinaryPrimitives.ReadInt16LittleEndian(pcm16.Slice(i * sizeof(short), sizeof(short))) / 32768f;
+        return samples;
     }
 }
 
 /// <summary>
-/// セッションをまたいで状態を保持するストリーミングリサンプラ (16kHz → 24kHz)。
+/// セッションをまたいで状態を保持するストリーミングリサンプラ (任意のレート間。 既定は 16kHz → 24kHz)。
+/// 字幕経路の 48k→16k / 48k→24k、 ボイス通訳のマイク→16k/24k、 出力機器向けの変換が使う。
 ///
-/// ⚠️ 重要: <see cref="AudioFormatConverter.ResampleTo24kHz"/> は呼び出しごとに
-/// WdlResamplingSampleProvider を新規生成するため、 連続音声を細切れ (例: VAD ゲートの
+/// ⚠️ 重要: 旧実装 (一括リサンプル関数、 撤去済み) は呼び出しごとに
+/// WdlResamplingSampleProvider を新規生成していたため、 連続音声を細切れ (例: VAD ゲートの
 /// 512 サンプル/32ms フレーム) で渡すと、 各フレーム境界で FIR フィルタのヒストリが
 /// ゼロリセットされ、 振幅最大 90% のクリックノイズが規則的に挿入される
 /// (2026-05-23 実証: フレーム内部の誤差は 0、 境界だけに誤差が局在)。
@@ -126,9 +89,9 @@ public sealed class StreamingResampler
     }
 
     /// <summary>
-    /// 16kHz フレームをリサンプルして 24kHz サンプルを返す。 連続して呼ぶことで
+    /// 入力フレームを targetSampleRate へリサンプルして返す。 連続して呼ぶことで
     /// フィルタヒストリが引き継がれ、 フレーム境界のアーティファクトが出ない。
-    /// 入力 N サンプルに対し出力は約 1.5N だが、 フィルタ遅延 (sinc 補間の先読み) のため
+    /// 入力 N サンプルに対し出力は約 N × target/source だが、 フィルタ遅延 (sinc 補間の先読み) のため
     /// 各呼び出しの出力数は変動する (トータルでは帳尻が合う)。
     /// </summary>
     public float[] Resample(float[] input16k)

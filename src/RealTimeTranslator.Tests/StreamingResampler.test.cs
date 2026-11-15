@@ -1,4 +1,6 @@
 using Microsoft.VisualStudio.TestTools.UnitTesting;
+using NAudio.Wave;
+using NAudio.Wave.SampleProviders;
 using RealTimeTranslator.Core.Services;
 
 namespace RealTimeTranslator.Tests;
@@ -7,7 +9,7 @@ namespace RealTimeTranslator.Tests;
 /// StreamingResampler の回帰テスト。
 ///
 /// 背景 (2026-05-23): VADゲートパスが 512 サンプル/32ms フレームごとに
-/// AudioFormatConverter.ResampleTo24kHz を呼んでいた (＝呼び出しごとに WdlResamplingSampleProvider
+/// 一括リサンプル関数 (現在は撤去済み) を呼んでいた (＝呼び出しごとに WdlResamplingSampleProvider
 /// を新規生成)。 WDL は FIR sinc 補間でステートフルなため、 フレーム境界でフィルタヒストリが
 /// ゼロリセットされ、 振幅最大 90% のクリックノイズが 32ms ごとに挿入されていた。
 /// これが OpenAI Realtime Translation の文境界検出を破壊し「区切りがおかしい / 句点が来ない」を
@@ -22,6 +24,34 @@ public sealed class StreamingResamplerTests
     private const int SourceRate = 16000;
     private const int TargetRate = 24000;
     private const int FrameSize = 512; // VAD フレームサイズ (32ms @ 16kHz)
+
+    /// <summary>
+    /// 比較基準: WdlResamplingSampleProvider を直接使い、入力全体を 1 回でリサンプルする。
+    /// StreamingResampler 自身を基準にしないことで、ラッパー側のレート・位置の誤りも検出できる。
+    /// </summary>
+    private static float[] ResampleOneShotWithWdl(float[] input, int sourceRate, int targetRate)
+    {
+        var resampler = new WdlResamplingSampleProvider(
+            new ArraySampleProvider(input, WaveFormat.CreateIeeeFloatWaveFormat(sourceRate, 1)), targetRate);
+        var output = new float[(int)((long)input.Length * targetRate / sourceRate) + 1];
+        var read = resampler.Read(output);
+        return output.AsSpan(0, read).ToArray();
+    }
+
+    private sealed class ArraySampleProvider(float[] buffer, WaveFormat waveFormat) : ISampleProvider
+    {
+        private int _position;
+        public WaveFormat WaveFormat { get; } = waveFormat;
+
+        public int Read(Span<float> destination)
+        {
+            var count = Math.Min(destination.Length, buffer.Length - _position);
+            if (count <= 0) return 0;
+            buffer.AsSpan(_position, count).CopyTo(destination);
+            _position += count;
+            return count;
+        }
+    }
 
     private static float[] MakeSine(int samples, double freq = 440.0)
     {
@@ -43,7 +73,8 @@ public sealed class StreamingResamplerTests
         const int n = FrameSize * frames;
         var signal = MakeSine(n);
 
-        var continuous = AudioFormatConverter.ResampleTo24kHz(signal);
+        // 正解: ラッパーを通さず WDL へ全体を 1 回で渡す (= フレーム境界が存在しない連続リサンプル)。
+        var continuous = ResampleOneShotWithWdl(signal, SourceRate, TargetRate);
 
         var streamer = new StreamingResampler();
         var streamed = new List<float>();
@@ -75,7 +106,8 @@ public sealed class StreamingResamplerTests
         const int n = FrameSize * frames;
         var signal = MakeSine(n);
 
-        var continuous = AudioFormatConverter.ResampleTo24kHz(signal);
+        // 正解: ラッパーを通さず WDL へ全体を 1 回で渡す (= フレーム境界が存在しない連続リサンプル)。
+        var continuous = ResampleOneShotWithWdl(signal, SourceRate, TargetRate);
 
         var streamer = new StreamingResampler();
         var streamed = new List<float>();

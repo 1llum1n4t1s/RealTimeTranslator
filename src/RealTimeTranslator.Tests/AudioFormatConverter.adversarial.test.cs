@@ -16,26 +16,9 @@ public sealed class AudioFormatConverterAdversarialTests
     /// <adversarial category="boundary" severity="high" />
     [TestMethod]
     [TestCategory("Adversarial")]
-    public void ResampleTo24kHz_NullInput_ShouldThrowArgumentNullException()
-    {
-        Assert.ThrowsExactly<ArgumentNullException>(() => AudioFormatConverter.ResampleTo24kHz(null!));
-    }
-
-    /// <adversarial category="boundary" severity="high" />
-    [TestMethod]
-    [TestCategory("Adversarial")]
     public void Float32ToPcm16_NullInput_ShouldThrowArgumentNullException()
     {
         Assert.ThrowsExactly<ArgumentNullException>(() => AudioFormatConverter.Float32ToPcm16(null!));
-    }
-
-    /// <adversarial category="boundary" severity="medium" />
-    [TestMethod]
-    [TestCategory("Adversarial")]
-    public void ResampleTo24kHz_EmptyArray_ShouldReturnEmpty()
-    {
-        var result = AudioFormatConverter.ResampleTo24kHz([]);
-        Assert.AreEqual(0, result.Length);
     }
 
     /// <adversarial category="boundary" severity="medium" />
@@ -45,15 +28,6 @@ public sealed class AudioFormatConverterAdversarialTests
     {
         var result = AudioFormatConverter.Float32ToPcm16([]);
         Assert.AreEqual(0, result.Length);
-    }
-
-    /// <adversarial category="boundary" severity="high" />
-    [TestMethod]
-    [TestCategory("Adversarial")]
-    public void ResampleTo24kHz_SingleSample_ShouldNotCrash()
-    {
-        var result = AudioFormatConverter.ResampleTo24kHz([0.5f]);
-        Assert.IsTrue(result.Length >= 1, $"出力サンプル数: {result.Length}");
     }
 
     /// <adversarial category="boundary" severity="high" />
@@ -165,56 +139,9 @@ public sealed class AudioFormatConverterAdversarialTests
         Assert.AreEqual(result[1], (byte)((value >> 8) & 0xFF), "上位バイトが後（LE）");
     }
 
-    /// <adversarial category="boundary" severity="medium" />
-    [TestMethod]
-    [TestCategory("Adversarial")]
-    public void ToPcm16Base64_EmptyArray_ShouldReturnEmptyBase64()
-    {
-        var result = AudioFormatConverter.ToPcm16Base64([]);
-        Assert.AreEqual("", result);
-    }
-
-    /// <adversarial category="boundary" severity="medium" />
-    [TestMethod]
-    [TestCategory("Adversarial")]
-    public void ToPcm16Base64_ValidInput_ShouldReturnValidBase64()
-    {
-        var input = new float[1600]; // 100ms of 16kHz audio
-        var result = AudioFormatConverter.ToPcm16Base64(input);
-        Assert.IsTrue(result.Length > 0, "Base64出力が空であってはならない");
-        // Base64デコードできることを確認
-        var decoded = Convert.FromBase64String(result);
-        Assert.IsTrue(decoded.Length > 0, "デコード後のバイト列が空であってはならない");
-    }
-
-    /// <adversarial category="boundary" severity="high" />
-    [TestMethod]
-    [TestCategory("Adversarial")]
-    public void ResampleTo24kHz_OutputLengthRatio_ShouldBe1_5x()
-    {
-        // 16kHz→24kHz = 1.5倍のサンプル数
-        var input = new float[16000]; // 1秒分
-        var result = AudioFormatConverter.ResampleTo24kHz(input);
-        var expectedApprox = 24000;
-        Assert.IsTrue(Math.Abs(result.Length - expectedApprox) <= 2,
-            $"出力 {result.Length} サンプルは約 {expectedApprox} であるべき（±2）");
-    }
-
     // ═══════════════════════════════════════════════════════════════
     // 💀 カテゴリ3: リソース枯渇・DoS耐性（Resource Exhaustion）
     // ═══════════════════════════════════════════════════════════════
-
-    /// <adversarial category="resource" severity="high" />
-    [TestMethod]
-    [TestCategory("Adversarial")]
-    [Timeout(10000)]
-    public void ResampleTo24kHz_LargeInput_ShouldCompleteWithinTimeout()
-    {
-        // 10秒分の16kHz音声（160,000サンプル）
-        var input = new float[160000];
-        var result = AudioFormatConverter.ResampleTo24kHz(input);
-        Assert.IsTrue(result.Length > 0);
-    }
 
     /// <adversarial category="resource" severity="high" />
     [TestMethod]
@@ -228,47 +155,9 @@ public sealed class AudioFormatConverterAdversarialTests
         Assert.AreEqual(2_000_000, result.Length);
     }
 
-    /// <adversarial category="resource" severity="medium" />
-    [TestMethod]
-    [TestCategory("Adversarial")]
-    [DoNotParallelize]
-    public void ResampleTo24kHz_RepeatedCalls_ShouldNotLeakMemory()
-    {
-        // NAudio/WDL の初回型ロード・JIT を定常時の保持メモリと誤認しないようウォームアップする。
-        _ = AudioFormatConverter.ResampleTo24kHz(new float[1600]);
-        var before = GC.GetTotalMemory(true);
-        for (int i = 0; i < 100; i++)
-        {
-            var input = new float[1600]; // 100ms chunks
-            _ = AudioFormatConverter.ResampleTo24kHz(input);
-        }
-        GC.Collect();
-        GC.WaitForPendingFinalizers();
-        var after = GC.GetTotalMemory(true);
-        var growth = after - before;
-        // 許容範囲: 5MB以内の成長
-        Assert.IsTrue(growth < 5 * 1024 * 1024,
-            $"メモリ成長が異常: {growth / 1024.0:F0}KB");
-    }
-
     // ═══════════════════════════════════════════════════════════════
     // 🔀 カテゴリ4: 状態遷移の矛盾（State Machine Abuse）
     // ═══════════════════════════════════════════════════════════════
-
-    /// <adversarial category="state" severity="medium" />
-    [TestMethod]
-    [TestCategory("Adversarial")]
-    public void ResampleTo24kHz_ConsecutiveCallsWithDifferentSizes_ShouldBeIndependent()
-    {
-        // static メソッドが内部状態を持っていないことを確認
-        var r1 = AudioFormatConverter.ResampleTo24kHz([1.0f]);
-        var r2 = AudioFormatConverter.ResampleTo24kHz(new float[1600]);
-        var r3 = AudioFormatConverter.ResampleTo24kHz([0.5f, -0.5f]);
-
-        Assert.IsTrue(r1.Length >= 1);
-        Assert.IsTrue(r2.Length > 100);
-        Assert.IsTrue(r3.Length >= 2);
-    }
 
     /// <adversarial category="state" severity="medium" />
     [TestMethod]
@@ -305,54 +194,9 @@ public sealed class AudioFormatConverterAdversarialTests
         }
     }
 
-    /// <adversarial category="type" severity="low" />
-    [TestMethod]
-    [TestCategory("Adversarial")]
-    public void ToPcm16Base64_OutputIsValidBase64()
-    {
-        var input = new float[160]; // 10ms
-        for (int i = 0; i < input.Length; i++)
-            input[i] = MathF.Sin(2 * MathF.PI * 440 * i / 16000); // 440Hz tone
-
-        var base64 = AudioFormatConverter.ToPcm16Base64(input);
-
-        // Base64文字セットのみで構成されていることを確認
-        Assert.IsTrue(base64.All(c =>
-            char.IsLetterOrDigit(c) || c == '+' || c == '/' || c == '='),
-            "Base64以外の文字が含まれている");
-    }
-
     // ═══════════════════════════════════════════════════════════════
     // ⚡ カテゴリ2: 並行性（Concurrency Chaos）
     // ═══════════════════════════════════════════════════════════════
-
-    /// <adversarial category="concurrency" severity="medium" />
-    [TestMethod]
-    [TestCategory("Adversarial")]
-    [Timeout(10000)]
-    public void ResampleTo24kHz_ConcurrentCalls_ShouldBeThreadSafe()
-    {
-        // static メソッドが並行呼び出しで壊れないことを確認
-        var exceptions = new System.Collections.Concurrent.ConcurrentBag<Exception>();
-        var tasks = Enumerable.Range(0, 10).Select(i => Task.Run(() =>
-        {
-            try
-            {
-                for (int j = 0; j < 50; j++)
-                {
-                    var input = new float[1600];
-                    input[0] = i * 0.1f;
-                    var result = AudioFormatConverter.ResampleTo24kHz(input);
-                    Assert.IsTrue(result.Length > 0);
-                }
-            }
-            catch (Exception ex) { exceptions.Add(ex); }
-        })).ToArray();
-
-        Task.WaitAll(tasks);
-        Assert.AreEqual(0, exceptions.Count,
-            $"並行実行で {exceptions.Count} 件のエラー: {exceptions.FirstOrDefault()?.Message}");
-    }
 
     /// <adversarial category="concurrency" severity="medium" />
     [TestMethod]
@@ -401,19 +245,6 @@ public sealed class AudioFormatConverterAdversarialTests
         }
     }
 
-    /// <adversarial category="chaos" severity="medium" />
-    [TestMethod]
-    [TestCategory("Adversarial")]
-    public void ResampleTo24kHz_SilentAudio_ShouldProduceSilentOutput()
-    {
-        var input = new float[1600]; // 全ゼロ = 無音
-        var result = AudioFormatConverter.ResampleTo24kHz(input);
-        // リサンプリング後もゼロ（無音）であるべき
-        var maxAbs = result.Max(MathF.Abs);
-        Assert.IsTrue(maxAbs < 0.001f,
-            $"無音入力のリサンプリング出力の最大絶対値: {maxAbs}（0.001未満であるべき）");
-    }
-
     /// <adversarial category="chaos" severity="low" />
     [TestMethod]
     [TestCategory("Adversarial")]
@@ -424,5 +255,38 @@ public sealed class AudioFormatConverterAdversarialTests
         var pVal = BitConverter.ToInt16(positive, 0);
         var nVal = BitConverter.ToInt16(negative, 0);
         Assert.AreEqual(pVal, (short)-nVal, "正負対称な入力は対称な出力を生むべき");
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // 🔁 Pcm16ToFloat32（送話・試聴の出力バッファが共用する逆変換）
+    // ═══════════════════════════════════════════════════════════════
+
+    /// <adversarial category="boundary" severity="medium" />
+    [TestMethod]
+    [TestCategory("Adversarial")]
+    public void Pcm16ToFloat32_BoundaryValues_ShouldScaleBy32768()
+    {
+        // 送話と試聴で同じ音量になる契約: short / 32768。最小値は -1.0、最大値は 1.0 未満。
+        short[] values = [short.MinValue, -1, 0, 1, short.MaxValue];
+        var bytes = new byte[values.Length * 2];
+        for (int i = 0; i < values.Length; i++)
+            BitConverter.TryWriteBytes(bytes.AsSpan(i * 2), values[i]);
+
+        var result = AudioFormatConverter.Pcm16ToFloat32(bytes);
+
+        Assert.AreEqual(values.Length, result.Length);
+        for (int i = 0; i < values.Length; i++)
+            Assert.AreEqual(values[i] / 32768f, result[i], $"index {i}");
+    }
+
+    /// <adversarial category="boundary" severity="medium" />
+    [TestMethod]
+    [TestCategory("Adversarial")]
+    public void Pcm16ToFloat32_OddByteCount_ShouldIgnoreTrailingByte()
+    {
+        var result = AudioFormatConverter.Pcm16ToFloat32([0x00, 0x40, 0x7F]);
+        Assert.AreEqual(1, result.Length);
+        Assert.AreEqual(0.5f, result[0]);
+        Assert.AreEqual(0, AudioFormatConverter.Pcm16ToFloat32([]).Length);
     }
 }

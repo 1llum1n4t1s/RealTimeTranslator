@@ -8,9 +8,9 @@ namespace RealTimeTranslator.Core.Services.Audio;
 ///
 /// 各 DSP は <see cref="TranslationPipelineService"/> にシングルインスタンスで保持し、
 /// 連続音声ストリームを途切れず供給することで境界クリック / 過渡応答リセットを回避する。
-/// 詳細な背景は <c>_global/systemPatterns.md</c> の「DSP: ステートフルなリサンプラ/フィルタを
-/// フレームごとに新規生成しない」教訓を参照 (RealTimeTranslator v1.0.23 リサンプラ境界
-/// クリック事件の対策として確立されたパターン)。
+/// 「ステートフルなリサンプラ/フィルタをフレームごとに新規生成しない」という方針の背景は
+/// <see cref="StreamingResampler"/> の XML doc を参照 (v1.0.23 リサンプラ境界クリック事件の
+/// 対策として確立されたパターン)。
 /// </summary>
 public interface IAudioPreprocessor
 {

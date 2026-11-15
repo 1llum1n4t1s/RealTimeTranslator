@@ -665,12 +665,13 @@ public partial class SettingsViewModel : ObservableObject
         }
     }
 
-    // ───── 入力プリプロセス DSP (v1.0.30 新規、 v1.0.32 で 4 段 → 3 段、 v1.0.36 で 3 段 → 2 段) ─────
-    // WASAPI capture 直後・リサンプル前に挟む 2 段 DSP (InputGain + AntiClip) の設定。
-    // 全部 false / InputGainDb=0 が default で、 完全 bypass 動作 (v1.0.29 以前と同一)。
+    // ───── 入力プリプロセス DSP (v1.0.30 新規。 現在は InputGain の 1 段だけ) ─────
+    // WASAPI capture 直後・リサンプル前に挟む DSP (InputGain) の設定。
+    // InputGainDb=0 が default で、 完全 bypass 動作 (v1.0.29 以前と同一)。
     // 削除履歴:
     //   v1.0.32: LoudnessNormalizer 削除 (NightMode と機能重複)
     //   v1.0.36: NightModeCompressor 削除 (server VAD が句点を返さなくなる経路を誘発しやすく多層防御の相互依存が重かった)
+    //   v1.0.40: AntiClipLimiter 削除 (レベルメーターを見て手動でレベル管理する OBS 方式に変更)
 
     // Input level meter (audio tab): peak after input gain. Pushed in by MainViewModel. Norm=0..1, PeakDb numeric, Text label.
     private double _inputLevelNorm;
@@ -686,7 +687,7 @@ public partial class SettingsViewModel : ObservableObject
     // 入力ゲインを上げすぎると AudioFormatConverter.Float32ToPcm16 の Math.Clamp(-1, 1) で
     // 波形が潰れ (歪み)、 OpenAI へ送る音声の品質が落ちて翻訳精度が下がる。 ところがメーターは
     // norm=1.0 で頭打ちになるため「どれだけ歪んでいるか」が画面から分からない。 到達を明示する。
-    // ⚠️ AntiClipLimiter は v1.0.36 で削除済みで、 クリップを防ぐ自動保護はもう無い
+    // ⚠️ AntiClipLimiter は v1.0.40 で削除済みで、 クリップを防ぐ自動保護はもう無い
     //    (OBS 方式 = ユーザーがメーターを見て手動で管理する設計)。 この表示がその唯一の手掛かり。
 
     /// <summary>
