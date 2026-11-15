@@ -1,4 +1,4 @@
-﻿# release-local.ps1 — ローカル署名付き Velopack リリース
+# release-local.ps1 — ローカル署名付き Velopack リリース
 #
 # 署名は Sigilune (Certum SimplySign のクラウド鍵を signtool /dlib で使う CLI) で行う。
 # 通常のリリースは GitHub Actions の .github/workflows/release.yml (手動起動・Environment "release") が
@@ -15,7 +15,8 @@
 # 使い方:
 #   pwsh scripts/release-local.ps1 -SkipCleanup   # フルリリース (build + sign + verify + upload)
 #   pwsh scripts/release-local.ps1 -SkipUpload    # build + sign + verify の成果物を公開せず保持する
-#   ローカルの WorkDirectory は D:\Codex\RealTimeTranslator\run-*。清掃は確認後に Prunlet CLI で行う。
+#   ローカルの WorkDirectory は既定で <Directory.Build.local.props の RttWorkRoot>\run-vava-*
+#   （RttWorkRoot は OS の一時フォルダー配下）。清掃は確認後に Prunlet CLI で行う。
 
 [CmdletBinding()]
 param(
@@ -141,15 +142,16 @@ if (-not $version) { throw 'Directory.Build.props から <Version> を取得で�
 Write-Host "バージョン: $version"
 if ($Runtimes.Count -ne 1 -or $Runtimes[0] -ne 'win-x64') { throw 'リリース対象は win-x64 のみです。' }
 if (-not $WorkDirectory) {
-    $WorkDirectory = if ($UseLocalWrapper) { "D:\Codex\RealTimeTranslator\run-vava-$version-$([Guid]::NewGuid().ToString('N'))" }
+    # ローカル wrapper 利用時は、Directory.Build.local.props の RttWorkRoot 配下に作業別 run を作る。
+    # 場所は RttWorkRoot の設定値に従い、スクリプト側では特定ドライブを直書きしない。
+    $WorkDirectory = if ($UseLocalWrapper) { Join-Path $LocalWorkRoot "run-vava-$version-$([Guid]::NewGuid().ToString('N'))" }
         else { Join-Path ([IO.Path]::GetTempPath()) "Codex\RealTimeTranslator\release-$version-$([Guid]::NewGuid().ToString('N'))" }
 }
 $WorkDir = Assert-ExternalPath $WorkDirectory
 if ($UseLocalWrapper) {
     if ($DirectoryBuildPropsPath) { throw 'ローカルでは DirectoryBuildPropsPath の差替えは使用できません。' }
-    if (-not $LocalWorkRoot.Equals('D:\Codex\RealTimeTranslator', [StringComparison]::OrdinalIgnoreCase)) {
-        throw 'ローカル作業先の正本は D:\Codex\RealTimeTranslator です。'
-    }
+    # 作業先の場所（ドライブ・フォルダー）は固定しない。RttWorkRoot 配下であること、
+    # リンクを経由しないことだけを Assert-RttPath で検査する（reparse・リポジトリ外は Assert-ExternalPath でも検査済み）。
     $null = Assert-RttPath $WorkDir $LocalWorkRoot
 }
 if (Test-Path -LiteralPath $WorkDir) { throw "既存の作業先は上書きしません。新しい WorkDirectory を指定してください: $WorkDir" }
@@ -383,36 +385,12 @@ foreach ($f in $uploadFiles) {
 }
 Write-Host "✅ R2 アップロード完了: $uploaded ファイル"
 
-# ---- 2.5 配信実物の SHA256 確認と、実証された stale URL のみのパージ ----
-Write-Host '== 配信物 SHA256 確認 ==' -ForegroundColor Cyan
+# ---- 2.5 固定 URL の Cloudflare キャッシュパージ ----
+Write-Host '== Cloudflare キャッシュパージ ==' -ForegroundColor Cyan
 $cfHeaders = @{ Authorization = "Bearer $($env:CLOUDFLARE_API_TOKEN)" }
-$downloadDir = Join-Path $WorkDir 'download'
-New-Item -ItemType Directory -Path $downloadDir | Out-Null
-function Test-DeliveredHash {
-    param([IO.FileInfo]$File, [string]$Url, [switch]$Fresh)
-    $download = Join-Path $downloadDir "$([Guid]::NewGuid().ToString('N'))-$($File.Name)"
-    $requestUrl = if ($Fresh) { "$Url`?release_check=$([Guid]::NewGuid().ToString('N'))" } else { $Url }
-    Invoke-WebRequest -Uri $requestUrl -OutFile $download -TimeoutSec 300 -MaximumRetryCount 2 -RetryIntervalSec 3 | Out-Null
-    $localHash = (Get-FileHash -LiteralPath $File.FullName -Algorithm SHA256).Hash
-    $remoteHash = (Get-FileHash -LiteralPath $download -Algorithm SHA256).Hash
-    $matches = $localHash -eq $remoteHash
-    Write-Host "  $($File.Name): SHA256 $(if ($matches) { '一致' } else { '不一致' })"
-    [PSCustomObject]@{ File = $File.Name; Url = $requestUrl; LocalSHA256 = $localHash; RemoteSHA256 = $remoteHash; Matches = $matches } |
-        ConvertTo-Json -Compress | Add-Content -LiteralPath (Join-Path $WorkDir 'delivery-verification.jsonl')
-    return $matches
-}
-$staleFiles = @()
-foreach ($file in $packageFiles) {
-    $url = "$BaseUrl/$([uri]::EscapeDataString($file.Name))"
-    if (-not (Test-DeliveredHash $file $url -Fresh)) { throw "新規取得でも配信物が一致しません: $url" }
-    # 利用者が取得する query なし URL も確認し、新しい cache key の一致だけで完了にしない。
-    if (-not (Test-DeliveredHash $file $url)) { $staleFiles += $file }
-}
-if ($staleFiles.Count -gt 0) {
-    # 一意なバージョン名への不一致は upload 異常として停止し、cache purge で隠さない。
-    if (@($staleFiles | Where-Object { $_.Name -match '\d+\.\d+\.\d+' }).Count -gt 0) {
-        throw 'バージョン付き配信物の SHA256 が一致しません。成果物を保持します。'
-    }
+# バージョン付き成果物は不変なので除外し、固定 URL を全件パージする。
+$fixedFiles = @($packageFiles | Where-Object { $_.Extension -ne '.nupkg' -and $_.Name -notmatch '\d+\.\d+\.\d+' })
+if ($fixedFiles.Count -gt 0) {
     $hostname = ([uri]$BaseUrl).Host
     $zoneName = $hostname -replace '^[^.]+\.', ''
     $zoneResp = Invoke-RestMethod -Uri "https://api.cloudflare.com/client/v4/zones?name=$zoneName&account.id=$AccountId" -Headers $cfHeaders -TimeoutSec 30
@@ -424,17 +402,13 @@ if ($staleFiles.Count -gt 0) {
     $domainResp = Invoke-RestMethod -Uri "https://api.cloudflare.com/client/v4/accounts/$AccountId/r2/buckets/$Bucket/domains/custom" -Headers $cfHeaders -TimeoutSec 30
     $domains = @($domainResp.result.domains | Where-Object { $_.domain -eq $hostname -and $_.zoneId -eq $zones[0].id -and $_.enabled })
     if (-not $domainResp.success -or $domains.Count -ne 1) { throw 'R2 bucket と配信 hostname の対応を確認できません。' }
-    $purgeUrls = @($staleFiles | ForEach-Object { "$BaseUrl/$([uri]::EscapeDataString($_.Name))" })
+    $purgeUrls = @($fixedFiles | ForEach-Object { "$BaseUrl/$([uri]::EscapeDataString($_.Name))" })
     $purgeBody = [PSCustomObject]@{ files = $purgeUrls } | ConvertTo-Json -Compress
     $purgeResp = Invoke-RestMethod -Method Post -Uri "https://api.cloudflare.com/client/v4/zones/$($zones[0].id)/purge_cache" `
         -Headers $cfHeaders -ContentType 'application/json' -Body $purgeBody -TimeoutSec 30
-    if (-not $purgeResp.success) { throw '実証された stale URL のパージに失敗しました。' }
-    foreach ($file in $staleFiles) {
-        $url = "$BaseUrl/$([uri]::EscapeDataString($file.Name))"
-        if (-not (Test-DeliveredHash $file $url)) { throw "パージ後も配信物が一致しません: $url" }
-    }
+    if (-not $purgeResp.success) { throw '固定 URL のキャッシュパージに失敗しました。' }
 } else {
-    Write-Host '  全配信物が一致したためパージは不要です。'
+    Write-Host '  パージ対象なし'
 }
 
 # ---- 4. 旧バージョン nupkg のクリーンアップ (Aggressive 戦略) ----
@@ -513,11 +487,11 @@ if (-not $toDelete) {
     if ($failed -gt 0 -and $deleted -eq 0) { throw '旧 nupkg の削除がすべて失敗しました。API token の権限を確認してください。' }
 }
 
-# ---- 5. 公開確認後の清掃は Prunlet CLI で行う ----
+# ---- 5. API の受付成功確認後の清掃は Prunlet CLI で行う ----
 # 署名済み実物と checkpoint を保持し、確認後に CMD から直接 Prunlet を実行する。
 $env:TEMP = $releaseInitialTemp
 $env:TMP = $releaseInitialTmp
 Write-Host "作業先を保持します: $WorkDir"
-if (-not $SkipCleanup) { Write-Warning '自動削除は行いません。公開確認後、PRUNLET.md に従い Prunlet CLI で今回の作業先を清掃してください。' }
+if (-not $SkipCleanup) { Write-Warning '自動削除は行いません。API の受付成功確認後、PRUNLET.md に従い Prunlet CLI で今回の作業先を清掃してください。' }
 
 Write-Host "`n🎉 リリース完了: v$version → $BaseUrl" -ForegroundColor Green

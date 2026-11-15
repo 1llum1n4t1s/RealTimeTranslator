@@ -5,7 +5,7 @@
 ## 前提
 
 - UI、コメント、テスト名、ドキュメント、コミットメッセージは日本語を基本とする。
-- 対象は Windows x64、`.NET 10`、`net10.0-windows10.0.20348.0`。x86 や他 OS を暗黙に追加しない。
+- 対象は Windows x64、`.NET 11`、`net11.0-windows10.0.20348.0`。x86 や他 OS を暗黙に追加しない。
 - `TreatWarningsAsErrors` とビルド時コードスタイル検査が有効。警告を残さない。
 - 通常の修正では `Directory.Build.props` の `Version` を変更しない。バージョン更新はリリース作業として扱う。
 - API キーを含む `settings.json`、ログ、デバッグ WAV、ビルド・リリース成果物をコミットしない。
@@ -22,12 +22,12 @@
 
 ## 正規の restore・build・test
 
-このPCのローカル検証は `D:\Codex\RealTimeTranslator` が正本。`Directory.Build.local.props` はこのcheckoutだけの設定でGit対象外。D不在/使用不可、C出力、祖先reparseは開始前に拒否し、Cへfallbackしない。CI/他利用者にはDを強制しない。OS全体TEMPと製品利用者の保存先は変更しない。
+このPCのローカル検証の作業ルートは、OSの一時フォルダー（`[IO.Path]::GetTempPath()`）配下の `Codex\RealTimeTranslator` とし、`Directory.Build.local.props` の `RttWorkRoot` に絶対パスで記録する（Cドライブでもよい）。`Directory.Build.local.props` はこのcheckoutだけの設定でGit対象外。設定の欠落、作業ルート外への出力、祖先reparseは開始前に拒否する。CI/他利用者にはローカル設定を強制しない。OS全体TEMPと製品利用者の保存先は変更しない。
 
 PowerShellでrepo rootから同じ作業別runを指定する。bin/obj、results、fixtures、TEMP/TMP、CLI/NuGet作業cacheは同run配下。ログの出力pathも同runへ明示する。初期targetより前に開くlogger/responseを検査するため正規wrapperを使う。外部props/targets/runsettings差替えは拒否する。
 
 ```powershell
-$work = 'D:\Codex\RealTimeTranslator\run-<一意な作業名>'
+$work = Join-Path ([IO.Path]::GetTempPath()) 'Codex\RealTimeTranslator\run-<一意な作業名>'
 # 初回/依存更新時。lockfileのRIDを保つ。
 & .\scripts\Dev.ps1 -WorkDirectory $work -Tool dotnet -ToolArguments @('restore', 'RealTimeTranslator.slnx', '-r', 'win-x64', '-p:Configuration=Release', '-p:Platform=x64', '--locked-mode')
 & .\scripts\Dev.ps1 -WorkDirectory $work -Tool dotnet -ToolArguments @('build', 'RealTimeTranslator.slnx', '-c', 'Release', '-p:Platform=x64', '--no-restore')
@@ -43,14 +43,14 @@ solution の build / test に `-r win-x64` を付けると `NETSDK1134` にな�
 
 ### lockfile の不変条件
 
-3つの `packages.lock.json` は `net10.0-windows10.0.20348/win-x64` ターゲットを保持する。RID なしの暗黙 restore はこのセクションを除去し、CI の locked restore / publish を `NU1004` で失敗させる。
+3つの `packages.lock.json` は `net11.0-windows10.0.20348/win-x64` ターゲットを保持する。RID なしの暗黙 restore はこのセクションを除去し、CI の locked restore / publish を `NU1004` で失敗させる。
 
 - NuGet 参照を変更したら、上記の `restore -r win-x64 --force-evaluate` で3つの lockfile を同時に更新する。
 - 以後の build / test / run / publish は `--no-restore` を使う。
 - lockfile を含む変更の終了前に、次を実行して3ファイルすべてに RID があることを確認する。
 
 ```powershell
-rg -n --fixed-strings '"net10.0-windows10.0.20348/win-x64"' src -g packages.lock.json
+rg -n --fixed-strings '"net11.0-windows10.0.20348/win-x64"' src -g packages.lock.json
 ```
 
 ## 変更時に守る境界

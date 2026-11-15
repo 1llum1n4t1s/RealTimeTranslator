@@ -4,14 +4,16 @@
       <Output TaskParameter="Result" PropertyName="_RttCanonicalWorkRoot" />
     </XmlPeek>
     <Error Condition="'$(RttWorkRoot)' != '' and '$(RttWorkRoot)' != '$(_RttCanonicalWorkRoot)'" Text="RttWorkRootをローカル正本から上書きできません。" />
-    <!-- このcheckoutだけの設定が消えた場合もCへ戻さない。CIや別利用者には適用しない。 -->
+    <!-- このcheckoutだけの設定が消えた場合も repo 内 bin/obj へ戻さない。CIや別利用者には適用しない。
+         作業ルートの場所（ドライブ）は Directory.Build.local.props の値に任せ、ここでは強制しない。 -->
     <Error Condition="$([MSBuild]::IsOSPlatform('Windows')) and '$(GITHUB_ACTIONS)' != 'true' and '$(TF_BUILD)' != 'true' and '$(CI)' != 'true' and '$(USERPROFILE)' == 'C:\Users\IMT' and '$(MSBuildThisFileDirectory)' == 'D:\Dev\RealTimeTranslator\' and '$(RttWorkRoot)' == ''"
-           Text="Directory.Build.local.props が必要です。scripts/Dev.ps1 を使用してください。Cへのfallbackは禁止です。" />
+           Text="Directory.Build.local.props が必要です。scripts/Dev.ps1 を使用してください。作業ルート設定なしで repo 内へ出力しません。" />
     <!-- Exec自身が一時cmdを作る前にTEMP/TMPを検証する。 -->
     <Error Condition="'$(RttWorkRoot)' != '' and ('$(TEMP)' == '' or '$(TMP)' == '')" Text="TEMP/TMPが未設定です。scripts/Dev.ps1を使用してください。" />
     <Error Condition="'$(RttWorkRoot)' != '' and (!$([System.IO.Path]::GetFullPath('$(TEMP)').StartsWith('$(RttWorkRoot)\', System.StringComparison.OrdinalIgnoreCase)) or !$([System.IO.Path]::GetFullPath('$(TMP)').StartsWith('$(RttWorkRoot)\', System.StringComparison.OrdinalIgnoreCase)))"
            Text="TEMP/TMP は開発workroot配下に必要です。scripts/Dev.ps1 を使用してください。" />
-    <Error Condition="'$(RttWorkRoot)' != '' and !Exists('D:\')" Text="Dドライブが使用できません。Cへのfallbackは禁止です。" />
+    <!-- 特定ドライブは要求せず、設定された作業ルートのドライブが使用可能かだけを確認する。 -->
+    <Error Condition="'$(RttWorkRoot)' != '' and !Exists('$([System.IO.Path]::GetPathRoot($(RttWorkRoot)))')" Text="作業ルートのドライブが使用できません: $(RttWorkRoot)" />
     <ItemGroup Condition="'$(RttWorkRoot)' != ''">
       <_RttTempAncestor Include="$(TEMP);$(TEMP)\..;$(TEMP)\..\..;$(TEMP)\..\..\..;$(TEMP)\..\..\..\..;$(TEMP)\..\..\..\..\..;$(TEMP)\..\..\..\..\..\..;$(TEMP)\..\..\..\..\..\..\..;$(TEMP)\..\..\..\..\..\..\..\..;$(TEMP)\..\..\..\..\..\..\..\..\..;$(TEMP)\..\..\..\..\..\..\..\..\..\..;$(TEMP)\..\..\..\..\..\..\..\..\..\..\..;$(TEMP)\..\..\..\..\..\..\..\..\..\..\..\..;$(TEMP)\..\..\..\..\..\..\..\..\..\..\..\..\..;$(TEMP)\..\..\..\..\..\..\..\..\..\..\..\..\..\..;$(TEMP)\..\..\..\..\..\..\..\..\..\..\..\..\..\..\..;$(TEMP)\..\..\..\..\..\..\..\..\..\..\..\..\..\..\..\..;$(TMP);$(TMP)\..;$(TMP)\..\..;$(TMP)\..\..\..;$(TMP)\..\..\..\..;$(TMP)\..\..\..\..\..;$(TMP)\..\..\..\..\..\..;$(TMP)\..\..\..\..\..\..\..;$(TMP)\..\..\..\..\..\..\..\..;$(TMP)\..\..\..\..\..\..\..\..\..;$(TMP)\..\..\..\..\..\..\..\..\..\..;$(TMP)\..\..\..\..\..\..\..\..\..\..\..;$(TMP)\..\..\..\..\..\..\..\..\..\..\..\..;$(TMP)\..\..\..\..\..\..\..\..\..\..\..\..\..;$(TMP)\..\..\..\..\..\..\..\..\..\..\..\..\..\..;$(TMP)\..\..\..\..\..\..\..\..\..\..\..\..\..\..\..;$(TMP)\..\..\..\..\..\..\..\..\..\..\..\..\..\..\..\.." />
     </ItemGroup>

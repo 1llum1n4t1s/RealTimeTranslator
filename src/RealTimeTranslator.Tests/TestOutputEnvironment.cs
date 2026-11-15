@@ -46,8 +46,9 @@ public sealed class TestOutputEnvironment
         if (!string.IsNullOrWhiteSpace(configuredRoot))
         {
             var canonicalRoot = Path.GetFullPath(configuredRoot);
+            // 特定ドライブは要求せず、設定された作業ルート（既定はOSの一時フォルダー配下）のドライブが使えるかだけを確認する。
             if (!Directory.Exists(Path.GetPathRoot(canonicalRoot)))
-                throw new InvalidOperationException("作業ドライブが使用できません。Cへのfallbackは禁止です。");
+                throw new InvalidOperationException($"作業ルートのドライブが使用できません: {canonicalRoot}");
             var work = Environment.GetEnvironmentVariable("RTT_WORK_DIRECTORY");
             if (string.IsNullOrWhiteSpace(work) || !Path.IsPathFullyQualified(work))
                 throw new InvalidOperationException("RTT_WORK_DIRECTORYには正本の作業別directoryが必要です。scripts/Dev.ps1を使用してください。");

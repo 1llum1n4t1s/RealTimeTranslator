@@ -8,7 +8,9 @@ function Get-RttWorkRoot {
         return [IO.Path]::GetFullPath([string]$settings.Project.PropertyGroup.RttWorkRoot).TrimEnd('\', '/')
     }
     if ([IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..')) -eq 'D:\Dev\RealTimeTranslator') {
-        throw 'Directory.Build.local.props が必要です。正本設定なしでCへfallbackしません。'
+        # このPCの checkout では作業ルート設定を必須にし、設定なしで repo 内 bin/obj へ出力するのを防ぐ。
+        # 作業ルートの場所（ドライブ）は設定値に任せ、ここでは強制しない。
+        throw 'Directory.Build.local.props が必要です。作業ルート設定なしで repo 内へ出力しません。'
     }
     return $null
 }
