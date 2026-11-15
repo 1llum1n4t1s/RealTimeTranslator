@@ -29,6 +29,9 @@ public sealed partial class VoiceTranslationService
     private async Task RefreshSessionAsync(IRealtimeSpeechTranslator client,
         CancellationTokenSource session, CancellationToken ct)
     {
+        // 停止は _lifecycle を待たずに先にミュートするため、確定時に停止保留を検出したら
+        // 取消前でも更新を確定せず、障害ではなく停止へ任せる (SetModeAsync と同じ扱い)。
+        var mutedExternally = false;
         try
         {
             await _lifecycle.WaitAsync(ct).ConfigureAwait(false);
@@ -53,6 +56,11 @@ public sealed partial class VoiceTranslationService
                     lock (_routing)
                     {
                         ct.ThrowIfCancellationRequested();
+                        if (_stopPending != 0)
+                        {
+                            mutedExternally = true;
+                            throw new OperationCanceledException("接続更新中にボイス通訳が停止されました。");
+                        }
                         if (_faultScheduled != 0)
                             throw new IOException("接続更新中に音声送信の異常を検出しました。");
                         // 更新待ちに取得されたフレームと DSP 履歴も、新接続へ持ち越さない。
@@ -68,7 +76,7 @@ public sealed partial class VoiceTranslationService
                     throw;
                 }
             }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested || mutedExternally) { }
             catch (Exception ex)
             {
                 Logger.Error("ボイス通訳のセッション更新に失敗しました", ex);

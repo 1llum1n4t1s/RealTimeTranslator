@@ -32,6 +32,10 @@ public sealed partial class VoiceTranslationService : IVoiceTranslationService
     private int _state;
     private int _mode = (int)VoiceSendMode.Muted;
     private int _epoch;
+    // StopAsync の入口から完了までを示す停止保留数。停止は _lifecycle を待たずに先にミュートと
+    // 取消を行うため、その間に開始・送信モード切替・予定更新が routing を開き直さないよう、
+    // 各確定点は _routing ロック内でこの値を照合する。
+    private int _stopPending;
     private int _faultScheduled;
     private long _audioSessionBaseline;
     private int _disposed;
@@ -122,7 +126,12 @@ public sealed partial class VoiceTranslationService : IVoiceTranslationService
             }
             await _audio.StartAsync(_settings.InputDeviceId, _settings.OutputDeviceId,
                 _sessionCancellation.Token).ConfigureAwait(false);
-            lock (_routing) _mode = (int)_settings.Mode;
+            lock (_routing)
+            {
+                // 停止のミュートと取消の間に確定すると、閉じた routing を開いて Running にしてしまう。
+                if (_stopPending != 0) throw new OperationCanceledException("開始中にボイス通訳が停止されました。");
+                _mode = (int)_settings.Mode;
+            }
             SetState(VoiceTranslationState.Running);
             var reader = _frames.Reader;
             var token = _sessionCancellation.Token;
@@ -141,6 +150,9 @@ public sealed partial class VoiceTranslationService : IVoiceTranslationService
         if (!Enum.IsDefined(mode)) throw new ArgumentOutOfRangeException(nameof(mode));
         await _lifecycle.WaitAsync(ct).ConfigureAwait(false);
         CancellationTokenSource? session = null;
+        // 停止 (StopAsync) は _lifecycle を待たずに先にミュートするため、確定時に停止保留を照合する。
+        // 検出時は障害ではなく停止へ任せる。
+        var mutedExternally = false;
         try
         {
             ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
@@ -161,6 +173,13 @@ public sealed partial class VoiceTranslationService : IVoiceTranslationService
             lock (_routing)
             {
                 _sessionCancellation!.Token.ThrowIfCancellationRequested();
+                // 停止の MuteRouting と CancelSession の間や、停止のミュート後に始まった切替が
+                // 確定すると、閉じた routing を開き直してしまう。停止が進行中なら確定しない。
+                if (_stopPending != 0)
+                {
+                    mutedExternally = true;
+                    throw new OperationCanceledException("送信モードの切替中にボイス通訳が停止されました。");
+                }
                 _mode = (int)mode;
                 _epoch++;
             }
@@ -175,7 +194,7 @@ public sealed partial class VoiceTranslationService : IVoiceTranslationService
             finally
             {
                 // 停止操作のキャンセルは正常終了に任せ、切替失敗は通知の有無によらず停止する。
-                if (session is not null && !session.IsCancellationRequested) ScheduleFault(ex, session);
+                if (!mutedExternally && session is not null && !session.IsCancellationRequested) ScheduleFault(ex, session);
             }
             throw;
         }
@@ -184,24 +203,41 @@ public sealed partial class VoiceTranslationService : IVoiceTranslationService
 
     public async Task StopAsync()
     {
-        // 接続待ち中でも、停止操作は出力とマイク送信をただちに閉じる。
-        var client = MuteRouting();
-        CancelSession();
-        await _lifecycle.WaitAsync().ConfigureAwait(false);
+        // 停止保留はミュートより先に上げる。以後、確定点はこの停止を観測して routing を開かない。
+        lock (_routing) _stopPending++;
+        var pendingCleared = false;
         try
         {
-            SetState(VoiceTranslationState.Stopping);
-            await CompleteCleanupAsync(
-                async () => { if (client is not null) await client.DisposeAsync().ConfigureAwait(false); },
-                StopCoreAsync).ConfigureAwait(false);
-            SetState(VoiceTranslationState.Stopped);
+            // 接続待ち中でも、停止操作は出力とマイク送信をただちに閉じる。
+            var client = MuteRouting();
+            CancelSession();
+            await _lifecycle.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                SetState(VoiceTranslationState.Stopping);
+                // 先に外した client も StopCoreAsync へ渡し、DESIGN.md の終了順
+                // (試聴停止 → 音声停止 → 処理 task 待ち → client 破棄 → 資源解放) で破棄する。
+                // client の破棄待ちの間にマイク取得・再生・ゲームPTTフックを開いたままにしない。
+                await StopCoreAsync(client).ConfigureAwait(false);
+                SetState(VoiceTranslationState.Stopped);
+            }
+            catch
+            {
+                SetState(VoiceTranslationState.Faulted);
+                throw;
+            }
+            finally
+            {
+                // 次の開始が _lifecycle を取得する前に停止保留を下ろし、停止後の正当な開始を妨げない。
+                lock (_routing) _stopPending--;
+                pendingCleared = true;
+                _lifecycle.Release();
+            }
         }
-        catch
+        finally
         {
-            SetState(VoiceTranslationState.Faulted);
-            throw;
+            if (!pendingCleared) lock (_routing) _stopPending--;
         }
-        finally { _lifecycle.Release(); }
     }
 
     private async Task ConnectClientAsync(CancellationToken ct)
@@ -488,7 +524,8 @@ public sealed partial class VoiceTranslationService : IVoiceTranslationService
         catch (ObjectDisposedException) { }
     }
 
-    private async Task StopCoreAsync()
+    /// <param name="detachedClient">呼出元が先に routing から外した client。音声停止の後で破棄する。</param>
+    private async Task StopCoreAsync(IRealtimeSpeechTranslator? detachedClient = null)
     {
         var client = MuteRouting();
         CancelSession();
@@ -502,7 +539,12 @@ public sealed partial class VoiceTranslationService : IVoiceTranslationService
                 try { if (_processing is not null) await _processing.ConfigureAwait(false); }
                 finally { _processing = null; }
             },
-            async () => { if (client is not null) await client.DisposeAsync().ConfigureAwait(false); },
+            async () => { if (detachedClient is not null) await detachedClient.DisposeAsync().ConfigureAwait(false); },
+            async () =>
+            {
+                if (client is not null && !ReferenceEquals(client, detachedClient))
+                    await client.DisposeAsync().ConfigureAwait(false);
+            },
             () =>
             {
                 CancellationTokenSource? ended;

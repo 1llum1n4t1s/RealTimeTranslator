@@ -136,6 +136,11 @@ public sealed class OpenAIRealtimeClient : Interfaces.IRealtimeSpeechTranslator
         if (Interlocked.CompareExchange(ref _disposed, 0, 0) != 0) return;
         if (!e.IsAvailable) return;
         if (!_shouldReconnect) return;
+        // 再接続を許可しない設定 (ボイス通訳の MaxReconnectAttempts = 0) では復帰検知でも再接続しない。
+        // ここで TryReconnectAsync を起動すると、初回接続中でも試行 1 回目で上限超過と判定され、
+        // 接続が成功しても Failed と「再接続の上限」エラーで開始を失敗させてしまう。
+        // (55 分の予定更新タイマー OnSessionRefreshTimerElapsed と同じ扱い)
+        if (_settings.MaxReconnectAttempts <= 0) return;
         if (_state == ConnectionState.Connected) return;
 
         Logger.Info("ネットワーク復帰検知: 再接続カウンタをリセットして再接続を試みます");

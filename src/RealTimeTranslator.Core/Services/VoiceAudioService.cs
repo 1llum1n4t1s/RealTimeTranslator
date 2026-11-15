@@ -60,9 +60,18 @@ public sealed class VoiceAudioService : IVoiceAudioService
         {
             using (device)
             {
-                var kind = WaveLinkDeviceIdentity.Classify(device);
-                if (flow == DataFlow.Render ? kind == VoiceAudioDeviceKind.WaveLinkOutput : kind == VoiceAudioDeviceKind.Microphone)
-                    result.Add(new VoiceAudioDevice(device.ID, device.FriendlyName, kind == VoiceAudioDeviceKind.WaveLinkOutput));
+                // 1 台の照会失敗 (取り外し中・topology 非対応など) で一覧全体を失敗させず、
+                // 確認できない機器だけを候補から外す (DESIGN.md: 確認できない機器は許可しない)。
+                try
+                {
+                    var kind = WaveLinkDeviceIdentity.Classify(device);
+                    if (flow == DataFlow.Render ? kind == VoiceAudioDeviceKind.WaveLinkOutput : kind == VoiceAudioDeviceKind.Microphone)
+                        result.Add(new VoiceAudioDevice(device.ID, device.FriendlyName, kind == VoiceAudioDeviceKind.WaveLinkOutput));
+                }
+                catch (Exception exception)
+                {
+                    LoggerService.LogException("ボイス通訳の音声機器を確認できなかったため候補から外しました。", exception);
+                }
             }
         }
         return result.OrderBy(device => device.Name, StringComparer.CurrentCultureIgnoreCase).ToArray();
@@ -406,9 +415,7 @@ public sealed class VoiceAudioService : IVoiceAudioService
                     _inputSampleRate = inputSampleRate;
                     _resampler = inputSampleRate == sampleRate ? null : new StreamingResampler(inputSampleRate, sampleRate);
                 }
-                var samples = new float[pcm16.Length / sizeof(short)];
-                for (var i = 0; i < samples.Length; i++)
-                    samples[i] = BinaryPrimitives.ReadInt16LittleEndian(pcm16.AsSpan(i * sizeof(short))) / 32768f;
+                var samples = AudioFormatConverter.Pcm16ToFloat32(pcm16);
                 if (_resampler is not null) samples = _resampler.Resample(samples);
                 // 末尾を押し出すため無音もリサンプルする。実音が残らない無音だけなら Read のゼロ補完へ任せる。
                 // 既存キューは消さず、実音に続く間隔とフィルタの残留音は通常どおり保持する。

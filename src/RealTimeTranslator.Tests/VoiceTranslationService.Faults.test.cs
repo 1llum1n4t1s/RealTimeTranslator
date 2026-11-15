@@ -50,10 +50,103 @@ public sealed class VoiceTranslationServiceFaultTests
 
         var error = await Assert.ThrowsExactlyAsync<AggregateException>(() => service.StopAsync());
 
-        CollectionAssert.AreEqual(new Exception[] { disposeError, stopError }, error.Flatten().InnerExceptions.ToArray());
+        // DESIGN.md の終了順 (音声停止 → client 破棄) で両方を実行し、その順で原因を保持する。
+        CollectionAssert.AreEqual(new Exception[] { stopError, disposeError }, error.Flatten().InnerExceptions.ToArray());
         Assert.AreEqual(VoiceTranslationState.Faulted, service.State);
         await service.StartAsync(Settings(), ApiSettings());
         await service.StopAsync();
+    }
+
+    [TestMethod]
+    public async Task 通常停止は音声を停止してからクライアントを破棄する()
+    {
+        // DESIGN.md の終了順。client の破棄待ちの間にマイク・再生・ゲームPTTフックを開いたままにしない。
+        var order = new List<string>();
+        var audio = new Audio { Log = order };
+        var client = new Client { Log = order };
+        await using var service = new VoiceTranslationService(audio, () => client.DisposeCount == 0 ? client : new Client(), _ => false);
+        await service.StartAsync(Settings(), ApiSettings());
+
+        await service.StopAsync();
+
+        CollectionAssert.AreEqual(new[] { "audio.stop", "client.dispose" }, order);
+        Assert.AreEqual(1, client.DisposeCount);
+        Assert.AreEqual(VoiceTranslationState.Stopped, service.State);
+    }
+
+    // 停止は _lifecycle を待たずに先にミュート・取消するため、その途中で確定点に達した操作が
+    // routing を開き直さないことを、停止保留を直接立てて決定的に再現する。
+    private static void SetStopPending(VoiceTranslationService service, int value) =>
+        typeof(VoiceTranslationService).GetField("_stopPending", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(service, value);
+
+    private static int ReadPrivateInt(VoiceTranslationService service, string field) =>
+        (int)typeof(VoiceTranslationService).GetField(field, BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(service)!;
+
+    [TestMethod]
+    public async Task 停止はミュートの時点で停止保留を立て完了後に下ろす()
+    {
+        var audio = new Audio();
+        await using var service = new VoiceTranslationService(audio, () => new Client(), _ => false);
+        await service.StartAsync(Settings(), ApiSettings());
+        var observed = new List<int>();
+        // 停止のミュート (MuteRouting) は送話出力を消去する。その時点で確定点が停止を観測できること。
+        audio.OnClearOutput = () => observed.Add(ReadPrivateInt(service, "_stopPending"));
+
+        await service.StopAsync();
+
+        Assert.IsTrue(observed.Count > 0 && observed.All(x => x == 1), $"停止中の停止保留: {string.Join(",", observed)}");
+        Assert.AreEqual(0, ReadPrivateInt(service, "_stopPending"));
+    }
+
+    [TestMethod]
+    public async Task 停止中に開始の確定点へ達しても送信経路を開かない()
+    {
+        var audio = new Audio();
+        var client = new Client();
+        await using var service = new VoiceTranslationService(audio, () => client, _ => false);
+        var errors = 0;
+        service.ErrorReceived += _ => Interlocked.Increment(ref errors);
+        audio.OnStart = () => SetStopPending(service, 1);
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() => service.StartAsync(Settings(), ApiSettings()));
+
+        Assert.AreEqual(VoiceSendMode.Muted, service.Mode);
+        Assert.AreNotEqual(VoiceTranslationState.Running, service.State);
+        Assert.AreEqual(0, errors);
+        audio.OnStart = null;
+        SetStopPending(service, 0);
+        await service.StartAsync(Settings(), ApiSettings());
+        Assert.AreEqual(VoiceTranslationState.Running, service.State);
+        await service.StopAsync();
+    }
+
+    [TestMethod]
+    public async Task 停止中に送信モード切替の確定点へ達しても送信経路を開かず障害にしない()
+    {
+        var audio = new Audio();
+        VoiceTranslationService? target = null;
+        // 原音モードで開始し (client を作らない)、翻訳モードへの切替の接続中に停止が始まった状態を作る。
+        await using var service = new VoiceTranslationService(audio,
+            () => new Client { OnConnect = () => SetStopPending(target!, 1) }, _ => false);
+        target = service;
+        var errors = 0;
+        service.ErrorReceived += _ => Interlocked.Increment(ref errors);
+        var settings = Settings();
+        settings.Mode = VoiceSendMode.Original;
+        await service.StartAsync(settings, ApiSettings());
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() => service.SetModeAsync(VoiceSendMode.Translated));
+
+        // 障害停止は非同期に走るため、予約フラグを同期で確認して「障害にしない」を決定的に検証する。
+        Assert.AreEqual(0, ReadPrivateInt(service, "_faultScheduled"));
+        Assert.AreEqual(VoiceSendMode.Muted, service.Mode);
+        // 停止へ任せるため、障害停止の予約・通知をしない。
+        Assert.AreEqual(VoiceTranslationState.Running, service.State);
+        Assert.AreEqual(0, errors);
+        SetStopPending(service, 0);
+        await service.StopAsync();
+        Assert.AreEqual(VoiceTranslationState.Stopped, service.State);
     }
 
     [TestMethod]
@@ -175,15 +268,18 @@ public sealed class VoiceTranslationServiceFaultTests
         public int StopCount { get; private set; }
         public Exception? StartError { get; set; }
         public Exception? StopError { get; set; }
+        public List<string>? Log { get; init; }
         public event Action<VoiceMicrophoneFrame>? MicrophoneFrame;
 #pragma warning disable CS0067
         public event Action<long, Exception>? ErrorReceived;
 #pragma warning restore CS0067
         public IReadOnlyList<VoiceAudioDevice> GetMicrophones() => [];
         public IReadOnlyList<VoiceAudioDevice> GetOutputs() => [];
+        public Action? OnStart { get; set; }
         public Task StartAsync(string microphoneId, string outputDeviceId, CancellationToken ct = default)
         {
             SessionId++;
+            OnStart?.Invoke();
             var error = StartError;
             StartError = null;
             return error is null ? Task.CompletedTask : Task.FromException(error);
@@ -191,13 +287,15 @@ public sealed class VoiceTranslationServiceFaultTests
         public Task StopAsync()
         {
             StopCount++;
+            Log?.Add("audio.stop");
             var error = StopError;
             StopError = null;
             return error is null ? Task.CompletedTask : Task.FromException(error);
         }
         public void Emit(VoiceMicrophoneFrame frame) => MicrophoneFrame?.Invoke(frame);
         public void WriteOutput(byte[] pcm16, int sampleRate) { }
-        public void ClearOutput() { }
+        public Action? OnClearOutput { get; set; }
+        public void ClearOutput() => OnClearOutput?.Invoke();
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
@@ -218,6 +316,7 @@ public sealed class VoiceTranslationServiceFaultTests
         public int DisposeCount { get; private set; }
         public Exception? DisposeError { get; set; }
         public Exception? ConnectError { get; set; }
+        public List<string>? Log { get; init; }
         public event Action<Exception>? ErrorReceived;
         public event Action<ConnectionState>? StateChanged;
 #pragma warning disable CS0067
@@ -225,8 +324,10 @@ public sealed class VoiceTranslationServiceFaultTests
         public event Action<string>? TranscriptCompleted;
         public event Action<byte[]>? TranslatedAudioReceived;
 #pragma warning restore CS0067
+        public Action? OnConnect { get; set; }
         public Task ConnectAsync(OpenAIRealtimeSettings settings, CancellationToken ct = default)
         {
+            OnConnect?.Invoke();
             var error = ConnectError;
             ConnectError = null;
             if (error is not null) return Task.FromException(error);
@@ -247,6 +348,7 @@ public sealed class VoiceTranslationServiceFaultTests
         public async ValueTask DisposeAsync()
         {
             DisposeCount++;
+            Log?.Add("client.dispose");
             await _parser.DisposeAsync();
             var error = DisposeError;
             DisposeError = null;

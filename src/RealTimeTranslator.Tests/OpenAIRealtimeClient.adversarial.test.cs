@@ -25,6 +25,38 @@ public sealed class OpenAIRealtimeClientAdversarialTests
         Assert.AreEqual(ConnectionState.Disconnected, client.State);
     }
 
+    /// <summary>
+    /// 再接続を許可しない設定 (ボイス通訳の MaxReconnectAttempts = 0) では、初回接続中に
+    /// ネットワーク復帰を検知しても再接続ループを起動しない。起動すると試行 1 回目で上限超過と
+    /// 判定され、接続が成功しても Failed と「再接続の上限」エラーで開始が失敗していた。
+    /// </summary>
+    /// <adversarial category="state" severity="medium" />
+    [TestMethod]
+    [TestCategory("Adversarial")]
+    public async Task NetworkAvailable_WhileConnectingWithoutReconnect_ShouldNotFail()
+    {
+        await using var client = new OpenAIRealtimeClient();
+        var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+        var type = typeof(OpenAIRealtimeClient);
+        // ConnectAsync の接続待ち中と同じ内部状態を作る (実ネットワークには接続しない)。
+        type.GetField("_settings", flags)!.SetValue(client, new OpenAIRealtimeSettings { MaxReconnectAttempts = 0 });
+        type.GetField("_shouldReconnect", flags)!.SetValue(client, true);
+        type.GetField("_state", flags)!.SetValue(client, ConnectionState.Connecting);
+        var error = new TaskCompletionSource<Exception>(TaskCreationOptions.RunContinuationsAsynchronously);
+        client.ErrorReceived += e => error.TrySetResult(e);
+        var available = (System.Net.NetworkInformation.NetworkAvailabilityEventArgs)Activator.CreateInstance(
+            typeof(System.Net.NetworkInformation.NetworkAvailabilityEventArgs), flags, null, [true], null)!;
+
+        type.GetMethod("OnNetworkAvailabilityChanged", flags)!.Invoke(client, [null, available]);
+
+        // 旧実装は Task.Run で非同期にエラーを出すため、少し待ってから何も起きないことを確かめる。
+        var completed = await Task.WhenAny(error.Task, Task.Delay(500));
+        Assert.AreNotSame(error.Task, completed, "再接続を許可しない接続待ち中にエラーを出してはならない");
+        Assert.AreEqual(ConnectionState.Connecting, client.State);
+        // 後片付けで再接続経路が動かないよう、接続意図を戻してから破棄する。
+        type.GetField("_shouldReconnect", flags)!.SetValue(client, false);
+    }
+
     /// <adversarial category="state" severity="high" />
     [TestMethod]
     [TestCategory("Adversarial")]

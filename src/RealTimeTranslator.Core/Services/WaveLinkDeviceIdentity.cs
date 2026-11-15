@@ -38,12 +38,21 @@ internal static partial class WaveLinkDeviceIdentity
             device.Properties.TryGetValue<string>(PropertyKeys.PKEY_Device_DeviceDesc, out var description);
             return Classify(device.DataFlow, description, adapterNode, node => ReadNode(node, rootNode));
         }
-        catch (COMException)
+        catch (Exception exception) when (IsDeviceQueryFailure(exception))
         {
-            // 取り外し中などでプロパティを読めない機器は候補にしない。
+            // 取り外し中などでプロパティや topology を読めない機器は候補にしない。
             return VoiceAudioDeviceKind.Unavailable;
         }
     }
+
+    /// <summary>
+    /// 機器照会の失敗とみなす例外。NAudio の topology / connector wrapper は HRESULT を
+    /// 確認せずに COM 参照を扱う箇所があり、COMException 以外 (null 参照の引数例外や
+    /// キャスト失敗、未対応の PROPVARIANT 型) も出得るため、判定側でまとめて扱う。
+    /// </summary>
+    private static bool IsDeviceQueryFailure(Exception exception) => exception is COMException
+        or InvalidOperationException or NotSupportedException or NotImplementedException
+        or ArgumentException or InvalidCastException;
 
     /// <summary>試聴先から除外する、確認できた Wave Link アダプターだけを検出する。</summary>
     internal static bool IsWaveLinkAdapter(MMDevice device)
@@ -71,6 +80,8 @@ internal static partial class WaveLinkDeviceIdentity
             }
             return false;
         }
+        // 許可側に倒すのは topology を取得できない既知の型だけにする。想定外の例外は呼出元へ返し、
+        // 列挙ではその機器を候補から外す (Wave Link 関連機器を試聴先へ誤って許可しない)。
         catch (Exception exception) when (exception is COMException or InvalidOperationException or NotSupportedException)
         {
             // 試聴は明示選択した通常 Render を許可する。RDP など topology を

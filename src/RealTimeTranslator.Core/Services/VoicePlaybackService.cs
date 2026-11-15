@@ -1,4 +1,3 @@
-using System.Buffers.Binary;
 using System.Runtime.InteropServices;
 using NAudio.CoreAudioApi;
 using NAudio.Wave;
@@ -26,8 +25,16 @@ public sealed class VoicePlaybackService : IVoicePlaybackService
         {
             using (device)
             {
-                if (IsPlaybackDevice(device))
-                    devices.Add(new VoiceAudioDevice(device.ID, device.FriendlyName, false));
+                // 1 台の照会失敗 (取り外し中など) で試聴先の一覧全体を失敗させず、その機器だけを外す。
+                try
+                {
+                    if (IsPlaybackDevice(device))
+                        devices.Add(new VoiceAudioDevice(device.ID, device.FriendlyName, false));
+                }
+                catch (Exception exception)
+                {
+                    LoggerService.LogException("試聴先の機器を確認できなかったため候補から外しました。", exception);
+                }
             }
         }
         return devices.OrderBy(device => device.Name, StringComparer.CurrentCultureIgnoreCase).ToArray();
@@ -250,9 +257,7 @@ public sealed class VoicePlaybackService : IVoicePlaybackService
                     _inputSampleRate = inputSampleRate;
                     _resampler = inputSampleRate == sampleRate ? null : new StreamingResampler(inputSampleRate, sampleRate);
                 }
-                var samples = new float[pcm16.Length / sizeof(short)];
-                for (var i = 0; i < samples.Length; i++)
-                    samples[i] = BinaryPrimitives.ReadInt16LittleEndian(pcm16.AsSpan(i * sizeof(short))) / 32768f;
+                var samples = AudioFormatConverter.Pcm16ToFloat32(pcm16);
                 if (_resampler is not null)
                     samples = _resampler.Resample(samples);
                 // 送話と同じく、実音のない無音待機は Read のゼロ補完へ任せる。フィルタ末尾は先に処理する。

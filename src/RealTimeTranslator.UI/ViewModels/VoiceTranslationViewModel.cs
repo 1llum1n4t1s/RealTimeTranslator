@@ -126,13 +126,22 @@ public partial class VoiceTranslationViewModel : ObservableObject, IDisposable
             Outputs.Clear();
             foreach (var device in _audio.GetMicrophones()) Microphones.Add(device);
             foreach (var device in _audio.GetOutputs().Where(x => x.IsWaveLink)) Outputs.Add(device);
-            RefreshMonitorOutputs();
             SelectedMicrophone = Microphones.FirstOrDefault(x => x.Id == _settings.InputDeviceId);
             SelectedOutput = Outputs.FirstOrDefault(x => x.Id == _settings.OutputDeviceId);
             _deviceEnumerationSucceeded = true;
             ErrorText = string.Empty;
         }
         catch (Exception ex) { ErrorText = $"音声機器を取得できませんでした: {ex.Message}"; }
+        try
+        {
+            // 試聴先の列挙は送話用の一覧・選択復元とは独立させる。試聴側の失敗で送話を
+            // 開始できなくしない (試聴の失敗は試聴だけに留める)。送話側のエラー表示を優先する。
+            RefreshMonitorOutputs();
+        }
+        catch (Exception ex)
+        {
+            if (_deviceEnumerationSucceeded) ErrorText = $"試聴先を取得できませんでした: {ex.Message}";
+        }
         finally { _initializing = wasInitializing; UpdateState(); }
     }
 
@@ -227,11 +236,12 @@ public partial class VoiceTranslationViewModel : ObservableObject, IDisposable
         {
             if (ex is not OperationCanceledException || !_stopRequested)
                 ErrorText = $"送信モードを変更できませんでした: {ex.Message}";
+            // 切替に失敗・停止取消されたので、保存値は切替前のモードのまま変えない。
+            // サービスは失敗処理で一時的に「ミュート」へ閉じるが、それは利用者の選択ではないため、
+            // _service.Mode を保存すると次回開始が無送信で始まってしまう。表示も保存値へ戻す。
             _initializing = true;
-            SelectedMode = ModeOptions.First(x => x.Value == _service.Mode);
+            SelectedMode = ModeOptions.FirstOrDefault(x => x.Value == _settings.Mode) ?? ModeOptions[1];
             _initializing = false;
-            _settings.Mode = _service.Mode;
-            SaveSettings();
         }
         finally { _operationPending = false; UpdateState(); }
     }
