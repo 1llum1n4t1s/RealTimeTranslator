@@ -15,7 +15,7 @@
 1. `/vava` で次のバージョンを一度決め、変更履歴と版情報を更新します。
 2. 開発工程の検証結果を引き継ぎます。`/vava` では開発テストや lint を再実行しません。
 3. リリース入力の変更を main へ commit・push し、同じ commit を指す `release/X.Y.Z` ブランチを作成・push します。
-4. `gh workflow run release.yml --ref release/X.Y.Z` で `release.yml` を起動し（`-f skip_upload=true` は配信せず署名済み成果物だけを Actions に残す）、`gh run watch` で完了を確認します。ワークフローは `scripts/release-local.ps1 -SkipCleanup` を一度実行し、Release/x64 の publish・署名・Velopack パッケージ作成・公開前検証・R2 公開を行います。スクリプトは最初の upload より前に、最終 nupkg 内の版・必須ファイル・main EXE の署名、Setup の署名、win-x64 manifest のサイズ・SHA256・SHA1 を照合し、不一致なら公開を停止します。
+4. `gh workflow run release.yml --ref release/X.Y.Z` で `release.yml` を起動し（`-f skip_upload=true` は配信せず署名済み成果物だけを Actions に残す）、`vigilia watch HEAD` で完了を確認します（REST枠を使わずGraphQLで取得し、同じ対象は全セッションでキャッシュ共有されるため複数セッションが同時に見てよい）。ワークフローは `scripts/release-local.ps1 -SkipCleanup` を一度実行し、Release/x64 の publish・署名・Velopack パッケージ作成・公開前検証・R2 公開を行います。スクリプトは最初の upload より前に、最終 nupkg 内の版・必須ファイル・main EXE の署名、Setup の署名、win-x64 manifest のサイズ・SHA256・SHA1 を照合し、不一致なら公開を停止します。
 5. 公開前検証済みの成果物について、R2 書込みと固定 URL 全件のキャッシュパージ API の受付成功を確認します。公開後の配信内容取得・署名やハッシュの再照合・CDN 伝播待ちは行いません。
 
 ## 保存先と配信
