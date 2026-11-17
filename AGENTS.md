@@ -18,7 +18,7 @@
 | `src/RealTimeTranslator.UI` | Avalonia の View / ViewModel、DI、更新 UI、アプリの起動・終了制御 |
 | `src/RealTimeTranslator.Tests` | Core と UI の MSTest。実機依存テストは `Integration` カテゴリ |
 | `scripts/release-local.ps1` | win-x64 の publish、署名、Velopack パッケージ作成・配信 |
-| `.github/workflows/ci.yml` | Release/x64 の restore、build、非 Integration テスト |
+| `.github/workflows/ci.yml` | Release/x64 の restore、build、非 Integration テスト（`release.yml` の `test` job からも `workflow_call` で呼ばれる） |
 
 ## 正規の restore・build・test
 
@@ -134,7 +134,7 @@ rg -n --fixed-strings '"net11.0-windows10.0.20348/win-x64"' src -g packages.lock
 
 ### リリースの実行
 
-通常は GitHub Actions の `.github/workflows/release.yml`（Environment `release`）で公開する。`release/**` ブランチへの push で起動し（/vava が `release/<version>` を push すると始まる。タグは使わず、Environment は `release/*` だけを許可する）、`vigilia watch HEAD` で完了を確認する（REST枠を使わずGraphQLで取得し、同じ対象は全セッションでキャッシュ共有されるため複数セッションが同時に見てよい）。手動起動（`gh workflow run release.yml --ref release/<version>`）は同じブランチの再実行にだけ使い、`-f skip_upload=true` は配信せず署名済み成果物だけを Actions に残す。Sigilune Action は tag ではなくコミット SHA で固定する。ワークフローは `scripts/release-local.ps1 -SkipCleanup` をランナーの一時領域を作業先にして実行するため、ビルド・公開前検証・配信の契約はローカル実行と同じ。署名は [Sigilune](https://github.com/1llum1n4t1s/Sigilune)（Certum SimplySign のクラウド鍵を signtool `/dlib` で使う CLI。SimplySign Desktop・手入力コード不要）が `scripts/Sigilune.Common.ps1` 経由で行い、Velopack には `--signTemplate "<sigilune> sign {{file}}"` を渡す。CI の資格情報は Environment `release` の Secrets（`SIGILUNE_EMAIL` / `SIGILUNE_TOTP_URI` / `CLOUDFLARE_API_TOKEN`）だけに置き、終了時に `sigilune logout` する。ci.yml / build.yml は検証専用で Secrets を読まない。
+通常は GitHub Actions の `.github/workflows/release.yml`（Environment `release`）で公開する。`release/**` ブランチへの push で起動し（/vava が `release/<version>` を push すると始まる。タグは使わず、Environment は `release/*` だけを許可する）、`vigilia watch HEAD` で完了を確認する（REST枠を使わずGraphQLで取得し、同じ対象は全セッションでキャッシュ共有されるため複数セッションが同時に見てよい）。手動起動（`gh workflow run release.yml --ref release/<version>`）は同じブランチの再実行にだけ使い、`-f skip_upload=true` は配信せず署名済み成果物だけを Actions に残す。配信前に `test` job が `ci.yml` を呼んでビルドと非 Integration テストを通し、失敗したら `release` job（署名・配信）は動かない（`needs: test`）。Sigilune Action は tag ではなくコミット SHA で固定する。ワークフローは `scripts/release-local.ps1 -SkipCleanup` をランナーの一時領域を作業先にして実行するため、ビルド・公開前検証・配信の契約はローカル実行と同じ。署名は [Sigilune](https://github.com/1llum1n4t1s/Sigilune)（Certum SimplySign のクラウド鍵を signtool `/dlib` で使う CLI。SimplySign Desktop・手入力コード不要）が `scripts/Sigilune.Common.ps1` 経由で行い、Velopack には `--signTemplate "<sigilune> sign {{file}}"` を渡す。CI の資格情報は Environment `release` の Secrets（`SIGILUNE_EMAIL` / `SIGILUNE_TOTP_URI` / `CLOUDFLARE_API_TOKEN`）だけに置き、終了時に `sigilune logout` する。ci.yml / build.yml は検証専用で Secrets を読まない。
 
 ローカルで実行・再開する場合は、リポジトリルートで Sigilune のクラウドログインを事前確認し、成功した場合だけ実行する（`release-local.ps1` もビルド前に同じ確認を行う）。失敗時は `sigilune status` で登録を確認するよう案内し、ログインを自動再試行せず、署名を省略して続行しない。
 

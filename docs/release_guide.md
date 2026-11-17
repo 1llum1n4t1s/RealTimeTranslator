@@ -1,6 +1,6 @@
 # 公開手順（Velopack + Cloudflare R2）
 
-公開は GitHub Actions の `.github/workflows/release.yml`（手動起動・Environment `release`）が Windows ランナーで `scripts/release-local.ps1` を実行して行います。[Sigilune](https://github.com/1llum1n4t1s/Sigilune) が Certum SimplySign のクラウド鍵でアプリとインストーラを署名し（SimplySign Desktop は不要）、Velopack の win-x64 パッケージを Cloudflare R2 (`realtimetranslator-updates`) へアップロードします。自動更新は `https://rtt.kagayoi.com/releases.win-x64.json` を参照します。`ci.yml` / `build.yml` は検証を担当し、ブランチへの push だけでは配布されません。同じスクリプトはローカルでも実行でき、検証や再開に使います。
+公開は GitHub Actions の `.github/workflows/release.yml`（手動起動・Environment `release`）が Windows ランナーで `scripts/release-local.ps1` を実行して行います。[Sigilune](https://github.com/1llum1n4t1s/Sigilune) が Certum SimplySign のクラウド鍵でアプリとインストーラを署名し（SimplySign Desktop は不要）、Velopack の win-x64 パッケージを Cloudflare R2 (`realtimetranslator-updates`) へアップロードします。自動更新は `https://rtt.kagayoi.com/releases.win-x64.json` を参照します。配信前には `test` job が `ci.yml` を呼び、ビルドとテストが通らなければ署名・配信は行いません。`ci.yml` / `build.yml` は検証を担当し、ブランチへの push だけでは配布されません。同じスクリプトはローカルでも実行でき、検証や再開に使います。
 
 ## 前提
 
