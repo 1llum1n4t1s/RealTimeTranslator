@@ -29,7 +29,14 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # 署名・R2 配信より前に ci.yml のビルドとテスト (WASAPI 実機依存の Integration を除く) を通す。
+  # 失敗したら release job は動かず、署名も配信もしない。
+  test:
+    name: テスト
+    uses: ./.github/workflows/ci.yml
+
   release:
+    needs: test
     # WASAPI Process Loopback 前提の win-x64 専用。ci.yml / build.yml と同じランナーにそろえる。
     runs-on: windows-2022
     timeout-minutes: 60

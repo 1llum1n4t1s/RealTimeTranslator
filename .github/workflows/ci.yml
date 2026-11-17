@@ -5,6 +5,8 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+  # release.yml から配信前のテストとして呼ばれる (署名・R2 配信の前に通す)。
+  workflow_call:
 
 permissions:
   contents: read
