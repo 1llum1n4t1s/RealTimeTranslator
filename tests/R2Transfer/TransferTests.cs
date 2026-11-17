@@ -80,7 +80,9 @@ namespace Kagayoi.R2.Tests
             {
                 using (var client = Transfer.NewClient())
                 {
-                    client.Timeout = TimeSpan.FromSeconds(2);
+                    // 直前の Add-Type 直後は JIT・proxy 解決・初回接続で遅くなり得る(CI で 2 秒超過して失敗した)。
+                    // loopback の固定 502 を返すだけなので、短すぎるタイムアウトによる誤検知を避けて余裕を持たせる。
+                    client.Timeout = TimeSpan.FromSeconds(15);
                     try { using (var response = client.GetAsync("https://192.0.2.1/").GetAwaiter().GetResult()) Check((int)response.StatusCode == 502, "egress denied"); }
                     catch (HttpRequestException) { }
                     Check(Volatile.Read(ref intercepted) > 0, "negative egress probe reached loopback blocker");
