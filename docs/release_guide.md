@@ -1,6 +1,6 @@
 # 公開手順（Velopack + Cloudflare R2）
 
-公開は GitHub Actions の `.github/workflows/release.yml`（手動起動・Environment `release`）が Windows ランナーで `scripts/release-local.ps1` を実行して行います。[Sigilune](https://github.com/1llum1n4t1s/Sigilune) が Certum SimplySign のクラウド鍵でアプリとインストーラを署名し（SimplySign Desktop は不要）、Velopack の win-x64 パッケージを Cloudflare R2 (`realtimetranslator-updates`) へアップロードします。自動更新は `https://rtt.kagayoi.com/releases.win-x64.json` を参照します。配信前には `test` job が `ci.yml` を呼び、ビルドとテストが通らなければ署名・配信は行いません。`ci.yml` / `build.yml` は検証を担当し、ブランチへの push だけでは配布されません。同じスクリプトはローカルでも実行でき、検証や再開に使います。
+公開は GitHub Actions の `.github/workflows/release.yml`（軽量タグ `vX.Y.Z` の push で起動・Environment `release`）が Windows ランナーで `scripts/release-local.ps1` を実行して行います。[Sigilune](https://github.com/1llum1n4t1s/Sigilune) が Certum SimplySign のクラウド鍵でアプリとインストーラを署名し（SimplySign Desktop は不要）、Velopack の win-x64 パッケージを Cloudflare R2 (`realtimetranslator-updates`) へアップロードします。自動更新は `https://rtt.kagayoi.com/releases.win-x64.json` を参照します。配信前には `test` job が `ci.yml` を呼び、ビルドとテストが通らなければ署名・配信は行いません。`ci.yml` / `build.yml` は検証を担当し、ブランチへの push だけでは配布されません。同じスクリプトはローカルでも実行でき、検証や再開に使います。
 
 ## 前提
 
@@ -14,8 +14,8 @@
 
 1. `/vava` で次のバージョンを一度決め、変更履歴と版情報を更新します。
 2. 開発工程の検証結果を引き継ぎます。`/vava` では開発テストや lint を再実行しません。
-3. リリース入力の変更を main へ commit・push し、同じ commit を指す `release/X.Y.Z` ブランチを作成・push します。
-4. `gh workflow run release.yml --ref release/X.Y.Z` で `release.yml` を起動し（`-f skip_upload=true` は配信せず署名済み成果物だけを Actions に残す）、`vigilia watch HEAD` で完了を確認します（REST枠を使わずGraphQLで取得し、同じ対象は全セッションでキャッシュ共有されるため複数セッションが同時に見てよい）。ワークフローは `scripts/release-local.ps1 -SkipCleanup` を一度実行し、Release/x64 の publish・署名・Velopack パッケージ作成・公開前検証・R2 公開を行います。スクリプトは最初の upload より前に、最終 nupkg 内の版・必須ファイル・main EXE の署名、Setup の署名、win-x64 manifest のサイズ・SHA256・SHA1 を照合し、不一致なら公開を停止します。
+3. リリース入力の変更を main へ commit・push し、その commit に軽量タグ `vX.Y.Z` を付けて push します（GitHub Release は作りません）。
+4. タグの push で `release.yml` が起動します。`guard` job がタグであること・`vX.Y.Z` の形・軽量タグが同じ commit を指すこと・main の祖先であること・`Directory.Build.props` の版との一致を確かめます。やり直しは `gh workflow run release.yml --ref vX.Y.Z`（`-f skip_upload=true` は配信せず署名済み成果物だけを Actions に残す）で行い、`vigilia watch HEAD` で完了を確認します（REST枠を使わずGraphQLで取得し、同じ対象は全セッションでキャッシュ共有されるため複数セッションが同時に見てよい）。ワークフローは `scripts/release-local.ps1 -SkipCleanup` を一度実行し、Release/x64 の publish・署名・Velopack パッケージ作成・公開前検証・R2 公開を行います。スクリプトは最初の upload より前に、最終 nupkg 内の版・必須ファイル・main EXE の署名、Setup の署名、win-x64 manifest のサイズ・SHA256・SHA1 を照合し、不一致なら公開を停止します。
 5. 公開前検証済みの成果物について、R2 書込みと固定 URL 全件のキャッシュパージ API の受付成功を確認します。公開後の配信内容取得・署名やハッシュの再照合・CDN 伝播待ちは行いません。
 
 ## 保存先と配信
